@@ -169,3 +169,37 @@ RDP_TEST_CASE(happy_eyeballs_resolves_ipv6_literal_without_dns_worker) {
     RDP_ASSERT(!result.addresses.empty());
     RDP_ASSERT(result.addresses.front().family == AF_INET6);
 }
+
+RDP_TEST_CASE(happy_eyeballs_resolves_hostname_and_connects) {
+    const int listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    RDP_ASSERT(listener >= 0);
+    int reuse = 1;
+    (void)::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    sockaddr_in bound{};
+    bound.sin_family = AF_INET;
+    bound.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bound.sin_port = 0;
+    RDP_ASSERT(::bind(listener, reinterpret_cast<sockaddr*>(&bound), sizeof(bound)) == 0);
+    RDP_ASSERT(::listen(listener, 1) == 0);
+    socklen_t boundLength = sizeof(bound);
+    RDP_ASSERT(::getsockname(listener, reinterpret_cast<sockaddr*>(&bound),
+                             &boundLength) == 0);
+    const std::uint16_t port = ntohs(bound.sin_port);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto resolution = remotedesk::net::ResolveTcpAddresses(
+        "localhost", std::to_string(port), deadline, {}, AF_UNSPEC);
+    RDP_ASSERT(resolution.status == remotedesk::net::ResolveStatus::Ready);
+    RDP_ASSERT(!resolution.addresses.empty());
+
+    remotedesk::net::ConnectOptions options;
+    options.deadline = deadline;
+    options.fallbackDelay = std::chrono::milliseconds(20);
+    const auto connection = remotedesk::net::ConnectTcpCandidates(
+        resolution.addresses, options);
+    RDP_ASSERT(connection.status == remotedesk::net::ConnectStatus::Connected);
+    RDP_ASSERT(connection.descriptor >= 0);
+    RDP_ASSERT(connection.family == AF_INET || connection.family == AF_INET6);
+    ::close(connection.descriptor);
+    ::close(listener);
+}

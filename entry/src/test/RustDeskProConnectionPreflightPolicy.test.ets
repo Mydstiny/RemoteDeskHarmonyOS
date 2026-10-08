@@ -15,7 +15,8 @@ import { RemoteHost } from '../main/ets/model/RemoteHost';
 import {
   rustDeskCardEndpoint,
   rustDeskConnectionError,
-  shouldBindLegacyRustDeskHostToRelay
+  shouldBindLegacyRustDeskHostToRelay,
+  rustDeskAddControlIdError
 } from '../main/ets/services/RustDeskHostConfigPolicy';
 import { rustDeskCodecConfigValue } from '../main/ets/services/RustDeskDiagnosticsPolicy';
 
@@ -72,6 +73,14 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
       host.rustdeskDirectPort = 21118;
       host.password = '';
       expect(host.getValidationErrors().indexOf('RustDesk 直连模式需要设备密码') >= 0).assertTrue();
+    });
+
+    it('allows_fixed_direct_hosts_to_omit_the_remote_id', 0, (): void => {
+      expect(rustDeskAddControlIdError(true, false, '')).assertEqual('');
+      expect(rustDeskAddControlIdError(true, false, '  ')).assertEqual('');
+      expect(rustDeskAddControlIdError(false, false, '')).assertEqual('请输入 RustDesk 控制 ID');
+      expect(rustDeskAddControlIdError(true, true, '')).assertEqual('局域网直连需要已选择设备 ID');
+      expect(rustDeskAddControlIdError(true, true, 'peer-123')).assertEqual('');
     });
 
     it('rejects_a_non_direct_host_without_a_bound_relay', 0, (): void => {

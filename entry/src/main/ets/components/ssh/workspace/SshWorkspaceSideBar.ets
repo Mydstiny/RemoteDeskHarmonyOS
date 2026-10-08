@@ -1,3 +1,4 @@
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import {
   sshTerminalTabChromeRenderKey,
   SshTerminalTabView
@@ -49,7 +50,7 @@ export struct SshWorkspaceSideBar {
   }
 
   private tabBackground(tab: SshTerminalTabView): string {
-    if (tab.active) { return this.accentColor + '2E'; }
+    if (tab.active) { return appUiTint(this.accentColor, '2E'); }
     if (this.hoveredTabId === tab.tabId) { return 'rgba(255,255,255,0.09)'; }
     return 'rgba(0,0,0,0)';
   }
@@ -68,7 +69,7 @@ export struct SshWorkspaceSideBar {
           .borderRadius(12)
           .backgroundColor(this.tabBackground(tab))
           .border({ width: tab.active ? 1 : 0.5,
-            color: tab.active ? this.accentColor + '99' : 'rgba(255,255,255,0.08)' })
+            color: tab.active ? appUiTint(this.accentColor, '99') : 'rgba(255,255,255,0.08)' })
         Column()
           .width(8).height(8).borderRadius(4)
           .backgroundColor(this.tabStateColor(tab))
@@ -89,7 +90,7 @@ export struct SshWorkspaceSideBar {
             .textAlign(TextAlign.Center)
             .width(34).height(34)
             .borderRadius(10)
-            .backgroundColor(tab.active ? this.accentColor + '38' : 'rgba(255,255,255,0.06)')
+            .backgroundColor(tab.active ? appUiTint(this.accentColor, '38') : 'rgba(255,255,255,0.06)')
           Column().width(7).height(7).borderRadius(4)
             .backgroundColor(this.tabStateColor(tab))
         }.width(36).height(36)

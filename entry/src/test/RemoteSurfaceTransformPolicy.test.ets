@@ -5,6 +5,7 @@ import {
   surfaceDeltaToRemote,
   RemoteSurfaceTransform
 } from '../main/ets/services/RemoteSurfaceTransformPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 const HIGH_DENSITY_TRANSFORM: RemoteSurfaceTransform = {
   remoteWidth: 1920,
@@ -115,11 +116,9 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       expect(Math.abs(horizontalRemote.x - 20) < 0.01).assertTrue();
       expect(Math.abs(horizontalRemote.y - 30) < 0.01).assertTrue();
 
-      const vertical: RemoteSurfaceTransform = {
-        ...horizontal,
-        flipX: false,
-        flipY: true
-      };
+      const vertical: RemoteSurfaceTransform = withOverrides(horizontal, {
+        'flipX': false,
+        'flipY': true });
       const verticalLocal = remotePointToSurface(vertical, 20, 30);
       expect(Math.abs(verticalLocal.x - 20) < 0.01).assertTrue();
       expect(Math.abs(verticalLocal.y - 50) < 0.01).assertTrue();
@@ -139,7 +138,7 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       const horizontal = surfaceDeltaToRemote(base, 10, 5);
       expect(Math.abs(horizontal.x + 10) < 0.01).assertTrue();
       expect(Math.abs(horizontal.y - 5) < 0.01).assertTrue();
-      const vertical = surfaceDeltaToRemote({ ...base, flipX: false, flipY: true }, 10, 5);
+      const vertical = surfaceDeltaToRemote(withOverrides(base, { 'flipX': false, 'flipY': true }), 10, 5);
       expect(Math.abs(vertical.x - 10) < 0.01).assertTrue();
       expect(Math.abs(vertical.y + 5) < 0.01).assertTrue();
     });
@@ -156,12 +155,12 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       expect(left.inside).assertTrue();
       expect(left.x).assertEqual(99);
 
-      const vertical: RemoteSurfaceTransform = { ...horizontal, flipX: false, flipY: true };
+      const vertical: RemoteSurfaceTransform = withOverrides(horizontal, { 'flipX': false, 'flipY': true });
       const top = surfacePointToRemote(vertical, 50, 0);
       expect(top.inside).assertTrue();
       expect(top.y).assertEqual(79);
 
-      const both: RemoteSurfaceTransform = { ...horizontal, flipY: true };
+      const both: RemoteSurfaceTransform = withOverrides(horizontal, { 'flipY': true });
       const topLeft = surfacePointToRemote(both, 0, 0);
       expect(topLeft.inside).assertTrue();
       expect(topLeft.x).assertEqual(99);

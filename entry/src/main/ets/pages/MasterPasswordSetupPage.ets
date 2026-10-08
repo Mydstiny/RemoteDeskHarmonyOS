@@ -12,6 +12,7 @@ import { CloudStore } from '../services/CloudStore';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { promptAction, router } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../common/Theme';
+import { masterPasswordSetupError } from '../services/MasterPasswordPolicy';
 
 const TAG = 'MasterPasswordSetup';
 const DOMAIN = 0x0012;
@@ -72,9 +73,10 @@ struct MasterPasswordSetupPage {
       // 密码输入区
       if (this.isNewSetup) {
         // 首次设置: NEW_PASSWORD 触发密码保险箱 + 强密码生成
-        TextInput({ placeholder: '输入主密码 (12-32位, 大写开头, 含特殊字符)', text: this.password })
+        TextInput({ placeholder: '输入主密码', text: this.password })
           .type(InputType.NEW_PASSWORD)
-          .passwordRules('begin:[upper],special:[yes],len:[maxlen:32,minlen:12]')
+          // Shapes the Password Vault suggestion only; typed passwords are not restricted.
+          .passwordRules('special:[yes],len:[maxlen:32,minlen:12]')
           .enableAutoFill(true)
           .height(48)
           .width('85%')
@@ -187,20 +189,9 @@ struct MasterPasswordSetupPage {
       return false;
     }
     if (this.isNewSetup) {
-      return this.password.length >= 12
-        && this.confirmPassword.length >= 12
-        && this.password[0] >= 'A' && this.password[0] <= 'Z'
-        && this.hasSpecialChar(this.password);
+      return masterPasswordSetupError(this.password, this.confirmPassword) === '';
     }
     return this.password.length > 0;
-  }
-
-  private hasSpecialChar(s: string): boolean {
-    const specials = '!@#$%^&*()-_=+[]{}|;:\'",.<>?/`~';
-    for (let i = 0; i < s.length; i++) {
-      if (specials.indexOf(s[i]) >= 0) { return true; }
-    }
-    return false;
   }
 
   private async handleSubmit(): Promise<void> {
@@ -212,21 +203,9 @@ struct MasterPasswordSetupPage {
   }
 
   private async doSetup(): Promise<void> {
-    // 验证密码 (对齐 passwordRules: minlen:12 + begin:[upper] + special:[yes])
-    if (this.password !== this.confirmPassword) {
-      this.errorMessage = '两次输入的密码不一致';
-      return;
-    }
-    if (this.password.length < 12) {
-      this.errorMessage = '密码长度不足 (最少 12 位)';
-      return;
-    }
-    if (this.password[0] < 'A' || this.password[0] > 'Z') {
-      this.errorMessage = '密码必须以大写字母开头';
-      return;
-    }
-    if (!this.hasSpecialChar(this.password)) {
-      this.errorMessage = '密码必须包含特殊字符 (!@#$%...)';
+    const setupError: string = masterPasswordSetupError(this.password, this.confirmPassword);
+    if (setupError !== '') {
+      this.errorMessage = setupError;
       return;
     }
 

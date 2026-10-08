@@ -1,9 +1,11 @@
+import { AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
 import {
   MoonlightToolbarLayout,
   moonlightToolbarAutoHideDelayMs,
-  moonlightToolbarLayout
+  moonlightToolbarLayout,
+  sessionToolbarPcWidth
 } from '../../services/MoonlightUiPolicy';
 import {
   REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
@@ -23,8 +25,8 @@ import {
   RDP_SESSION_CONTROL_ACCENT_SOFT
 } from '../../services/RdpSessionSidebarPolicy';
 
-export type RdpToolbarAction = 'control' | 'keyboard' | 'shortcuts' |
-  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'disconnect';
+export type RdpToolbarAction = 'control' | 'fileTransfer' | 'keyboard' | 'shortcuts' |
+  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect' | 'ai';
 
 interface RdpToolbarItem {
   action: RdpToolbarAction;
@@ -45,8 +47,16 @@ export struct RdpSessionToolbar {
   @Prop canvasResetAvailable: boolean = false;
   @Prop qualityLabel: string = '实时';
   @Prop qualityColor: string = RDP_SESSION_CONTROL_ACCENT;
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
+  /** Pro AI 助理: its button sits right after RDP 控制. */
+  @Prop aiVisible: boolean = false;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
-  @State private expanded: boolean = false;
+  /** The session window's width (vp); 0 while unknown. */
+  @Prop viewportWidth: number = 0;
+  @State @Watch('publishRail') private expanded: boolean = false;
+  /** The session AI is up: its button shows it on (a tap there closes it). */
+  @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
   @State private pinned: boolean = false;
   @State private railSwipeX: number = 0;
   private hideTimer: number = -1;
@@ -61,6 +71,7 @@ export struct RdpSessionToolbar {
   private items(): Array<RdpToolbarItem> {
     const items: Array<RdpToolbarItem> = [
       { action: 'control', label: 'RDP 控制', dangerous: false },
+      { action: 'fileTransfer', label: '文件', dangerous: false },
       { action: 'keyboard', label: '键盘', dangerous: false },
       { action: 'shortcuts', label: '组合键', dangerous: false },
       { action: 'ctrlAltDel', label: '安全键', dangerous: false },
@@ -68,6 +79,14 @@ export struct RdpSessionToolbar {
       { action: 'diagnostics', label: '性能', dangerous: false },
       { action: 'disconnect', label: '断开', dangerous: true }
     ];
+    if (this.aiVisible) {
+      items.splice(1, 0, { action: 'ai', label: 'AI 助理', dangerous: false });
+    }
+    if (this.portraitDisplayEnabled) {
+      items.splice(items.length - 1, 0, {
+        action: 'portrait', label: '竖屏显示', dangerous: false
+      });
+    }
     if (this.canvasResetAvailable) {
       items.splice(1, 0, { action: 'resetCanvas', label: '复位', dangerous: false });
     }
@@ -84,11 +103,14 @@ export struct RdpSessionToolbar {
 
   private icon(action: RdpToolbarAction): Resource {
     if (action === 'control') { return $r('sys.symbol.display'); }
+    if (action === 'fileTransfer') { return $r('sys.symbol.folder'); }
     if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
     if (action === 'keyboard' || action === 'shortcuts') { return $r('sys.symbol.keyboard'); }
     if (action === 'ctrlAltDel') { return $r('sys.symbol.exclamationmark_triangle'); }
     if (action === 'refresh') { return $r('sys.symbol.bolt_fill'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
+    if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
+    if (action === 'ai') { return $r('sys.symbol.wand_and_stars'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 
@@ -97,7 +119,14 @@ export struct RdpSessionToolbar {
     if (action === 'keyboard') { return this.keyboardOpen; }
     if (action === 'shortcuts') { return this.shortcutsOpen; }
     if (action === 'resetCanvas') { return this.canvasResetAvailable; }
+    if (action === 'portrait') { return this.portraitDisplayActive; }
+    if (action === 'ai') { return this.sessionAiOpen; }
     return action === 'diagnostics' && this.diagnosticsVisible;
+  }
+
+  /** The AI orb keeps clear of the rail while it is open, and may use the edge while it is only the handle. */
+  private publishRail(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, this.expanded);
   }
 
   private clearTimer(): void {
@@ -149,6 +178,13 @@ export struct RdpSessionToolbar {
     this.scheduleHide();
   }
 
+  /** A long press: on the AI button, AI 控制面板; on any other, the same as a tap. */
+  private longPress(action: RdpToolbarAction): void {
+    if (action !== 'ai') { this.invoke(action); return; }
+    AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now());
+    this.scheduleHide();
+  }
+
   private closeActiveKeyboardSurface(): boolean {
     if (this.keyboardOpen) {
       this.invoke('keyboard');
@@ -183,7 +219,8 @@ export struct RdpSessionToolbar {
     });
   }
 
-  aboutToAppear(): void { this.scheduleHide(); }
+  aboutToAppear(): void {
+    this.publishRail(); this.scheduleHide(); }
 
   aboutToDisappear(): void { this.clearTimer(); }
 
@@ -206,7 +243,8 @@ export struct RdpSessionToolbar {
       (this.active(item.action) ? RDP_SESSION_CONTROL_ACCENT_SOFT : this.pal().surface))
     .focusable(false).focusOnTouch(false)
     .onClick((): void => { this.invoke(item.action); })
-    .accessibilityText(item.label + (this.active(item.action) ? '，已打开' : ''))
+    .gesture(LongPressGesture({ duration: 500 }).onAction((): void => { this.longPress(item.action); }))
+    .accessibilityText(item.label + (this.active(item.action) ? '，已打开' : '') + (item.action === 'ai' ? '，长按打开 AI 设置' : ''))
   }
 
   @Builder private collapseItem(layout: MoonlightToolbarLayout) {
@@ -321,7 +359,7 @@ export struct RdpSessionToolbar {
         .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
         .border({ width: 1, color: this.pal().floatBorder })
         .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
-      }.width('100%').constraintSize({ maxWidth: 480 }).height(68)
+      }.width(sessionToolbarPcWidth(this.items().length, 52, layout.itemGap, 44, this.viewportWidth)).height(68)
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }

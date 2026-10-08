@@ -1,4 +1,4 @@
-import { bundleManager, common, StartOptions, Want } from '@kit.AbilityKit';
+import { AbilityConstant, bundleManager, common, StartOptions, Want } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -18,6 +18,8 @@ import {
   remoteSessionWindowAuthorizationRequiresLiveHandoff
 } from './RemoteSessionWindowAuthorization';
 import { REMOTE_SESSION_WINDOW_READY_TIMEOUT_MS } from './RemoteSessionWindowReadiness';
+import { WorkspaceHandoff, WorkspaceSplitSide } from './pro/workspace/WorkspaceHandoff';
+import { WorkspaceFrame, workspaceWindowRect, WorkspaceWindowRect } from './pro/workspace/WorkspacePolicy';
 
 const DOMAIN: number = 0x0025;
 const TAG: string = 'SessionWindowLaunch';
@@ -47,11 +49,25 @@ export class RemoteSessionWindowLauncher {
     const record = coordinator.reserve(request, nativeHandoff);
     if (record === null) { return false; }
     let densityPixels: number = 1;
+    let displayWidth: number = 0;
+    let displayHeight: number = 0;
     try {
-      densityPixels = Math.max(1, display.getDefaultDisplaySync().densityPixels);
+      const defaultDisplay: display.Display = display.getDefaultDisplaySync();
+      densityPixels = Math.max(1, defaultDisplay.densityPixels);
+      displayWidth = defaultDisplay.width;
+      displayHeight = defaultDisplay.height;
     } catch (_err) {}
     const placement = remoteSessionWindowPlacement(
       coordinator.nextPlacementSequence() - 1, densityPixels);
+    // A session opened from a Pro workspace starts at the rectangle saved in its layout.
+    const workspaceFrame: WorkspaceFrame | null = WorkspaceHandoff.getInstance().takeFrame(request.hostId);
+    if (workspaceFrame !== null && displayWidth > 0 && displayHeight > 0) {
+      const rect: WorkspaceWindowRect = workspaceWindowRect(workspaceFrame, displayWidth, displayHeight,
+        Math.round(REMOTE_SESSION_WINDOW_MIN_WIDTH_VP * densityPixels),
+        Math.round(REMOTE_SESSION_WINDOW_MIN_HEIGHT_VP * densityPixels));
+      placement.left = rect.left; placement.top = rect.top;
+      placement.width = rect.width; placement.height = rect.height;
+    }
     const want: Want = {
       bundleName: context.abilityInfo.bundleName,
       moduleName: context.abilityInfo.moduleName,
@@ -75,8 +91,27 @@ export class RemoteSessionWindowLauncher {
         bundleManager.SupportWindowMode.FLOATING
       ]
     };
+    // A Pad workspace places its two sessions side by side. If the system refuses split screen,
+    // the same window opens normally instead of losing the already-authenticated session.
+    const splitSide: WorkspaceSplitSide | null = WorkspaceHandoff.getInstance().takeSplit(request.hostId);
     try {
-      await context.startAbility(want, options);
+      if (splitSide !== null) {
+        const splitOptions: StartOptions = {
+          withAnimation: false,
+          windowMode: splitSide === 'primary' ? AbilityConstant.WindowMode.WINDOW_MODE_SPLIT_PRIMARY :
+            AbilityConstant.WindowMode.WINDOW_MODE_SPLIT_SECONDARY,
+          supportWindowModes: options.supportWindowModes
+        };
+        try {
+          await context.startAbility(want, splitOptions);
+        } catch (splitError) {
+          hilog.warn(DOMAIN, TAG, 'split-screen session window refused, opening normally: %{public}s',
+            JSON.stringify(splitError));
+          await context.startAbility(want, options);
+        }
+      } else {
+        await context.startAbility(want, options);
+      }
       hilog.info(DOMAIN, TAG,
         'independent session window requested protocol=%{public}s target=%{public}s',
         request.protocol, request.target);

@@ -1,9 +1,18 @@
+import { RustDeskPhoneOwner } from './RustDeskPhoneActions';
+import { RustDeskClipboardNative } from './RustDeskClipboardClient';
 /**
  * ExtensionLoader.ets — NAPI 桥接门面
  *
  * 对接 librdpnapi.so 的 C++ ExtensionSystem
  */
 import rdpnapi from 'librdpnapi.so';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import {
+  isRemotePictureProtocolName,
+  REMOTE_PICTURE_SESSION_LIMIT_CODE,
+  remotePictureSessionAllowed,
+  remotePictureSessionLimit
+} from './RemotePictureSessionLimitPolicy';
 import {
   disconnectAllSubmissionMayReleaseTracking,
   nativeSessionStateBlocksAutomaticTransition,
@@ -33,10 +42,25 @@ import {
   RustDeskDisplayCapabilities,
   RustDeskDisplaySwitchRequest,
   RustDeskMultiCanvasPreviewSnapshot,
+  VncDisplayCapabilities,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
+  RustDeskClipboardSnapshot, RustDeskClipboardEntry, RustDeskClipboardSource, RustDeskClipboardPublication,
   SessionTransferStatus,
+  SessionClipboardSnapshot,
+  ClipboardPublicationResult,
+  SessionTransferPermissions,
+  SessionRemoteDirectory,
+  SessionTransferAuthentication,
+  SessionTransferResult,
+  SessionRdpDrive,
+  SessionRdpFileOfferProgress,
+  SessionRdpClipboardFiles,
+  SessionRdpClipboardContent,
+  SessionRdpClipboardFormats,
+  SessionRdpClipboardFormatResult,
+  SessionRdpClipboardReceive,
   SshCommandResult,
   SshTerminalDiagnosticsSnapshot,
   SshTerminalInputEnqueueResult,
@@ -81,20 +105,32 @@ import {
 import {
   DiagnosticNetworkFacts,
   DiagnosticOutcome,
+  DiagnosticResourceFacts,
   DiagnosticRuntimeFacts,
   diagnosticNetworkFactsForEndpoints,
   emptyDiagnosticNetworkFacts
 } from './DiagnosticCapturePolicy';
 import {
+  DiagnosticCaptureRuntime,
   diagnosticCaptureIdForModule,
+  isDiagnosticFullLogEnabled,
   isDiagnosticModuleCapturing,
   recordDiagnosticEvent
 } from './DiagnosticCaptureRuntime';
+import { recordVncUpdateFailure } from './VncUpdateDiagnostics';
+import {
+  DiagnosticRdpGraphicsFacts,
+  rdpGraphicsFactsFromRenderStats,
+  rdpGraphicsTransitionCode,
+  rdpGraphicsTransitionSignature
+} from './RdpGraphicsEvidencePolicy';
 import {
   DiagnosticDesktopModule,
   DiagnosticRuntimeSamplingLoop,
   DiagnosticRuntimeSamplingScheduler,
   DiagnosticRuntimeSnapshotGate,
+  DIAGNOSTIC_FULL_RUNTIME_SNAPSHOT_INTERVAL_MS,
+  DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS,
   diagnosticDesktopRuntimeEventCode,
   diagnosticDesktopRuntimeFacts,
   diagnosticSshRuntimeFacts
@@ -133,6 +169,7 @@ type DiagnosticConnectionEventKind = 'request' | 'state' | 'disconnect';
 interface DiagnosticConnectionObservation {
   captureId: string;
   state: number;
+  vncFailureRecorded?: boolean;
 }
 
 function diagnosticConnectionModule(protocol: string): DiagnosticConnectionModule | null {
@@ -161,6 +198,11 @@ function diagnosticConnectionEventCode(moduleId: DiagnosticConnectionModule,
       (kind === 'state' ? 'vnc_state_changed' : 'vnc_disconnect');
   }
   return kind === 'disconnect' ? 'ssh_disconnect' : 'ssh_session_event';
+}
+
+/** rdp_preflight count: 1 when the host could only be reached over legacy TLS (the AI glossary reads it). */
+function rdpPreflightLegacyTlsCount(flags: string[] | undefined): number {
+  return (flags ?? []).indexOf('LEGACY_TLS') >= 0 ? 1 : 0;
 }
 
 function diagnosticRouteTypeCode(value: string): number {
@@ -235,7 +277,7 @@ export interface NativeDisconnectSubmission extends
 export interface NativeDisconnectIdentity extends
   RemoteSessionExactDisconnectIdentity {}
 
-export class ExtensionLoader {
+export class ExtensionLoader implements RustDeskClipboardNative {
   private static instance: ExtensionLoader;
   private static nextFacadeGeneration: number = 1;
   private static nextSshOperationId: number = 1;
@@ -258,6 +300,9 @@ export class ExtensionLoader {
     new Map<number, DiagnosticConnectionObservation>();
   private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
     new DiagnosticRuntimeSnapshotGate();
+  // Last recorded RDP graphics negotiation per session; a change records one
+  // rdp_graphics_negotiation event independent of runtime snapshot throttling.
+  private diagnosticRdpGraphicsSignatures: Map<number, string> = new Map<number, string>();
   private readonly diagnosticRuntimeSamplingLoop: DiagnosticRuntimeSamplingLoop;
 
   constructor(diagnosticRuntimeScheduler: DiagnosticRuntimeSamplingScheduler =
@@ -265,7 +310,27 @@ export class ExtensionLoader {
     this.diagnosticRuntimeSamplingLoop = new DiagnosticRuntimeSamplingLoop(
       diagnosticRuntimeScheduler, (sessionId: number): void => {
         this.sampleDiagnosticRuntimeForSession(sessionId);
-      });
+      }, (): number => this.diagnosticRuntimeIntervalMs());
+    DiagnosticCaptureRuntime.getInstance().onBoundary((boundary): void => {
+      // A capture can start between two five-second timer ticks.  Sample
+      // immediately so a short capture still contains live session state.
+      // Clear the dedup gate before the stop boundary to force one final
+      // snapshot even when counters did not change since the last tick.
+      if (boundary === 'stopping') {
+        this.diagnosticRuntimeSnapshots.clear();
+      }
+      // A new capture must start with the current graphics state; the stop
+      // boundary keeps signatures so its final sample records no false change.
+      if (boundary === 'started') {
+        this.diagnosticRdpGraphicsSignatures.clear();
+      }
+      this.diagnosticRuntimeSamplingLoop.sampleNow();
+    });
+  }
+
+  private diagnosticRuntimeIntervalMs(): number {
+    return isDiagnosticFullLogEnabled() ? DIAGNOSTIC_FULL_RUNTIME_SNAPSHOT_INTERVAL_MS :
+      DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS;
   }
 
   private recordDiagnosticDesktopRuntime(sessionId: number,
@@ -278,14 +343,25 @@ export class ExtensionLoader {
       const desktopModule: DiagnosticDesktopModule = moduleId as DiagnosticDesktopModule;
       const captureId: string = diagnosticCaptureIdForModule(desktopModule);
       const facts: DiagnosticRuntimeFacts =
-        diagnosticDesktopRuntimeFacts(desktopModule, source);
+        diagnosticDesktopRuntimeFacts(desktopModule, source, AppStorage.get<number>('rustdeskCodec') ?? 0);
+      if (moduleId === 'connection.rdp') {
+        this.mergeRdpRenderDiagnostics(sessionId, facts);
+      }
+      facts.resources = this.diagnosticResourceFacts();
+      if (moduleId === 'connection.rdp' && facts.rdpGraphics !== undefined) {
+        this.recordRdpGraphicsTransition(sessionId, facts);
+      }
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
-        desktopModule, sessionId, captureId, facts, Date.now())) { return; }
+        desktopModule, sessionId, captureId, facts, Date.now(),
+        this.diagnosticRuntimeIntervalMs())) { return; }
+      // RDP event bytes are observed RDPGFX wire bytes, never local copies.
+      const eventBytes: number = moduleId === 'connection.rdp' ?
+        (facts.rdpGraphics !== undefined ? facts.rdpGraphics.wireBytes : 0) :
+        (Number.isSafeInteger(source.receivedBytes) && source.receivedBytes > 0 ?
+          source.receivedBytes : 0);
       recordDiagnosticEvent(desktopModule,
         diagnosticDesktopRuntimeEventCode(desktopModule), 'state', sessionId, 0,
-        source.codec, facts.latencyMs, facts.frames,
-        Number.isSafeInteger(source.receivedBytes) && source.receivedBytes > 0 ?
-          source.receivedBytes : 0, facts,
+        source.codec, facts.latencyMs, facts.frames, eventBytes, facts,
         this.diagnosticSessionNetworks.get(sessionId));
     } catch (_err) {
       // Runtime capture must never affect a diagnostics HUD or session poll.
@@ -300,8 +376,10 @@ export class ExtensionLoader {
       if (moduleId !== 'connection.ssh_sftp') { return; }
       const captureId: string = diagnosticCaptureIdForModule(moduleId);
       const facts: DiagnosticRuntimeFacts = diagnosticSshRuntimeFacts(source);
+      facts.resources = this.diagnosticResourceFacts();
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
-        moduleId, sessionId, captureId, facts, Date.now())) { return; }
+        moduleId, sessionId, captureId, facts, Date.now(),
+        this.diagnosticRuntimeIntervalMs())) { return; }
       recordDiagnosticEvent(moduleId, 'ssh_runtime_snapshot', 'state', sessionId,
         source.sessionGeneration > 0 ? source.sessionGeneration : 0, 0,
         facts.latencyMs, facts.frames,
@@ -310,6 +388,81 @@ export class ExtensionLoader {
         this.diagnosticSessionNetworks.get(sessionId));
     } catch (_err) {
       // Runtime capture must never affect terminal diagnostics.
+    }
+  }
+
+  private diagnosticResourceFacts(): DiagnosticResourceFacts {
+    try {
+      const source: LocalResourceStats = this.getLocalResourceStats(false);
+      const safePercent = (value: number): number =>
+        Number.isFinite(value) && value >= 0 && value <= 100 ? value : 0;
+      return {
+        supported: source.supported === true,
+        cpuAvailable: source.cpuAvailable === true,
+        cpuPercent: safePercent(source.cpuPercent),
+        memoryAvailable: source.memoryAvailable === true,
+        memoryBytes: Number.isSafeInteger(source.memoryBytes) && source.memoryBytes >= 0 ?
+          source.memoryBytes : 0,
+        gpuAvailable: source.gpuAvailable === true,
+        gpuPercent: safePercent(source.gpuPercent),
+        sampledAtMs: Number.isSafeInteger(source.sampledAtMs) && source.sampledAtMs >= 0 ?
+          source.sampledAtMs : 0
+      };
+    } catch (_err) {
+      return {
+        supported: false, cpuAvailable: false, cpuPercent: 0,
+        memoryAvailable: false, memoryBytes: 0, gpuAvailable: false,
+        gpuPercent: 0, sampledAtMs: 0
+      };
+    }
+  }
+
+  private recordRdpGraphicsTransition(sessionId: number, facts: DiagnosticRuntimeFacts): void {
+    const graphics: DiagnosticRdpGraphicsFacts | undefined = facts.rdpGraphics;
+    if (graphics === undefined) { return; }
+    const signature: string = rdpGraphicsTransitionSignature(graphics);
+    if (this.diagnosticRdpGraphicsSignatures.get(sessionId) === signature) { return; }
+    this.diagnosticRdpGraphicsSignatures.set(sessionId, signature);
+    recordDiagnosticEvent('connection.rdp', 'rdp_graphics_negotiation', 'state', sessionId, 0,
+      rdpGraphicsTransitionCode(graphics), 0, graphics.surfaceCommands, graphics.wireBytes, facts,
+      this.diagnosticSessionNetworks.get(sessionId));
+  }
+
+  private mergeRdpRenderDiagnostics(sessionId: number, facts: DiagnosticRuntimeFacts): void {
+    try {
+      const stats: RdpRenderStats = this.getRdpRenderStats(sessionId);
+      const counter = (value: number): number =>
+        Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      facts.protocol.receivedFrames = Math.max(facts.protocol.receivedFrames,
+        counter(stats.pumpSubmitted));
+      // RDP's generic ingress counter is fed by the render callback with
+      // dirty-rect BGRA bytes, i.e. local presentation volume. Export it as
+      // callbackBytes only; receivedBytes is the observed RDPGFX wire payload
+      // and no network bitrate is derived from local copies.
+      facts.rdpGraphics = rdpGraphicsFactsFromRenderStats(stats);
+      facts.protocol.callbackBytes = Math.max(facts.protocol.callbackBytes,
+        facts.protocol.receivedBytes);
+      facts.protocol.receivedBytes = facts.rdpGraphics.wireBytes;
+      facts.protocol.bitrateKbps = 0;
+      facts.protocol.presentedFrames = counter(stats.pumpRendered);
+      facts.protocol.presentationRejected = counter(stats.presentationRejected) +
+        counter(stats.surfaceDetachedRejections) + counter(stats.generationRejections);
+      facts.protocol.presentationWindowSamples = counter(stats.presentationWindowSamples);
+      facts.protocol.renderP50Us = counter(stats.drawP50Us);
+      facts.protocol.renderP95Us = counter(stats.drawP95Us);
+      facts.protocol.renderMaxUs = counter(stats.drawMaxUs);
+      facts.protocol.droppedFrames = counter(stats.skippedPaintCount) +
+        counter(stats.pumpReplaced) + counter(stats.pumpRejected);
+      facts.protocol.inputEventsSent = counter(stats.inputTextUnits);
+      facts.protocol.inputEventsDropped = counter(stats.inputDroppedMouseMoves) +
+        counter(stats.inputNonDisposableOverflow) + counter(stats.inputGeometryFenceDrops) +
+        counter(stats.inputPostFailures);
+      if (facts.width === 0) { facts.width = counter(stats.desktopWidth); }
+      if (facts.height === 0) { facts.height = counter(stats.desktopHeight); }
+      facts.queueDepth = counter(stats.inputQueueDepth);
+      facts.errors += counter(stats.desktopResizeFailures) + counter(stats.displayFailureCount);
+    } catch (_err) {
+      // RDP diagnostics are optional on sessions that have not created a native renderer.
     }
   }
 
@@ -372,6 +525,7 @@ export class ExtensionLoader {
       if (moduleId !== undefined) {
         this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId);
       }
+      this.diagnosticRdpGraphicsSignatures.delete(sessionId);
       this.diagnosticSessionModules.delete(sessionId);
       this.diagnosticSessionNetworks.delete(sessionId);
       this.diagnosticConnectionStates.delete(sessionId);
@@ -402,10 +556,18 @@ export class ExtensionLoader {
       }
       const previous: DiagnosticConnectionObservation | undefined =
         this.diagnosticConnectionStates.get(sessionId);
-      if (previous !== undefined && previous.captureId === captureId &&
-        previous.state === state) { return; }
-      this.diagnosticConnectionStates.set(sessionId, { captureId, state });
-      this.recordDiagnosticConnection(moduleId, 'state', 'state', sessionId, 0, state);
+      const repeated: boolean = previous !== undefined && previous.captureId === captureId &&
+        previous.state === state;
+      const observation: DiagnosticConnectionObservation = repeated && previous !== undefined ?
+        previous : { captureId, state };
+      this.diagnosticConnectionStates.set(sessionId, observation);
+      if (!repeated) {
+        this.recordDiagnosticConnection(moduleId, 'state', 'state', sessionId, 0, state);
+      }
+      if (moduleId === 'connection.vnc' && state === 4 && observation.vncFailureRecorded !== true) {
+        observation.vncFailureRecorded = recordVncUpdateFailure(sessionId,
+          rdpnapi.getConnectionLastMessage(sessionId) as string);
+      }
     } catch (_err) {
       // A failed diagnostic update must not replace the native state result.
     }
@@ -437,13 +599,15 @@ export class ExtensionLoader {
       try {
         target.diagnosticConnectionStates.set(sessionId, {
           captureId: observation.captureId,
-          state: observation.state
+          state: observation.state,
+          vncFailureRecorded: observation.vncFailureRecorded
         });
       } catch (_err) {}
     }
     if (moduleId !== undefined) {
       try { this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId); } catch (_err) {}
     }
+    try { this.diagnosticRdpGraphicsSignatures.delete(sessionId); } catch (_err) {}
     try { this.diagnosticSessionModules.delete(sessionId); } catch (_err) {}
     try { this.diagnosticSessionNetworks.delete(sessionId); } catch (_err) {}
     try { this.diagnosticConnectionStates.delete(sessionId); } catch (_err) {}
@@ -463,6 +627,7 @@ export class ExtensionLoader {
       submitted)) { return; }
     this.diagnosticRuntimeSamplingLoop.clear();
     this.diagnosticRuntimeSnapshots.clear();
+    try { this.diagnosticRdpGraphicsSignatures.clear(); } catch (_err) {}
     try { this.diagnosticSessionModules.clear(); } catch (_err) {}
     try { this.diagnosticSessionNetworks.clear(); } catch (_err) {}
     try { this.diagnosticConnectionStates.clear(); } catch (_err) {}
@@ -536,17 +701,49 @@ export class ExtensionLoader {
     return ExtensionLoader.instance;
   }
 
+  /** How many picture sessions this device may have open at once (PC 4, tablet 2, phone 1). */
+  static pictureSessionLimit(): number {
+    let deviceType: string = '';
+    try { deviceType = deviceInfo.deviceType; } catch (_err) { deviceType = ''; }
+    return remotePictureSessionLimit(deviceType);
+  }
+
+  /** Live RDP, RustDesk and VNC sessions in this process, every window included. */
+  livePictureSessionCount(): number {
+    try {
+      const count: number = rdpnapi.getLivePictureSessionCount() as number;
+      return Number.isFinite(count) && count > 0 ? count : 0;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getLivePictureSessionCount: ' + JSON.stringify(err));
+      return 0;
+    }
+  }
+
   // ====== 协议连接 ======
 
   connect(config: SessionConfig): number {
-    if (!RemoteSessionTransitionGate.getInstance()
-      .newSessionAllowed()) {
-      return -90;
-    }
     const diagnosticModule: DiagnosticConnectionModule | null =
       diagnosticConnectionModule(config.protocol);
     const diagnosticNetwork: DiagnosticNetworkFacts =
       diagnosticNetworkFactsForConfig(config);
+    if (!RemoteSessionTransitionGate.getInstance()
+      .newSessionAllowed()) {
+      // The transition gate rejects before native admission, so there is no
+      // normal request-start event to close. Preserve the rejection in the
+      // selected protocol module with the stable gate code.
+      this.recordDiagnosticConnection(
+        diagnosticModule, 'request', 'skipped', 0, 0, -90, diagnosticNetwork);
+      this.recordDiagnosticRoutes(config, 'skipped', 0, 0, -90);
+      return -90;
+    }
+    if (isRemotePictureProtocolName(config.protocol) &&
+      !remotePictureSessionAllowed(this.livePictureSessionCount(), ExtensionLoader.pictureSessionLimit())) {
+      // Several picture sessions may be open at once, up to the device's limit (every window counts).
+      this.recordDiagnosticConnection(diagnosticModule, 'request', 'skipped', 0, 0,
+        REMOTE_PICTURE_SESSION_LIMIT_CODE, diagnosticNetwork);
+      this.recordDiagnosticRoutes(config, 'skipped', 0, 0, REMOTE_PICTURE_SESSION_LIMIT_CODE);
+      return REMOTE_PICTURE_SESSION_LIMIT_CODE;
+    }
     this.recordDiagnosticConnection(
       diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
     this.recordDiagnosticRoutes(config, 'started');
@@ -574,17 +771,20 @@ export class ExtensionLoader {
   }
 
   connectSshAsync(config: SessionConfig, foreground: boolean = true): SshNativeConnectPromise {
+    const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      diagnosticNetworkFactsForConfig(config);
     if (!RemoteSessionTransitionGate.getInstance()
       .newSessionAllowed()) {
+      this.recordDiagnosticConnection(
+        diagnosticModule, 'request', 'skipped', 0, 0, -90, diagnosticNetwork);
+      this.recordDiagnosticRoutes(config, 'skipped', 0, 0, -90);
       const blocked: SshNativeConnectPromise =
         Promise.resolve(-90) as SshNativeConnectPromise;
       blocked.sessionId = -1;
       blocked.generation = 0;
       return blocked;
     }
-    const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
-    const diagnosticNetwork: DiagnosticNetworkFacts =
-      diagnosticNetworkFactsForConfig(config);
     this.recordDiagnosticConnection(
       diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
     this.recordDiagnosticRoutes(config, 'started');
@@ -703,12 +903,17 @@ export class ExtensionLoader {
   }
 
   /** Find a live detached SSH session for the host and make it the facade target. */
-  adoptDetachedSshSession(hostId: string): number {
+  adoptDetachedSshSession(hostId: string, expectedSessionId: number = 0,
+    expectedGeneration: number = 0): number {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0) { return -1; }
     for (let index = this.detachedSshSessions.length - 1; index >= 0; index--) {
       const candidate: DetachedSshSession = this.detachedSshSessions[index];
       if (candidate.hostId !== normalizedHostId) { continue; }
+      if (expectedSessionId > 0 && (candidate.sessionId !== expectedSessionId ||
+        this.getSshTerminalDiagnostics(candidate.sessionId).sessionGeneration !== expectedGeneration)) {
+        continue;
+      }
       let state: number = 0;
       try { state = rdpnapi.getConnectionState(candidate.sessionId) as number; } catch (_err) { state = 0; }
       if (state !== 2 && state !== 3) {
@@ -765,7 +970,9 @@ export class ExtensionLoader {
   disconnectSshSessionWithReceipt(sessionId: number,
     identity: NativeDisconnectIdentity | null = null): NativeDisconnectSubmission {
     if (sessionId <= 0) {
-      return this.completedDisconnectSubmission();
+      const completed: NativeDisconnectSubmission = this.completedDisconnectSubmission();
+      this.recordDiagnosticDisconnectSubmission('connection.ssh_sftp', sessionId, 0, completed);
+      return completed;
     }
     const expected: NativeDisconnectIdentity | null = identity ??
       this.captureExplicitDisconnectIdentity(sessionId);
@@ -828,7 +1035,10 @@ export class ExtensionLoader {
     const hasNativeOwner: boolean = this.currentSessionId > 0 || this.rendererHandle > 0 ||
       this.decoderHandle > 0 || this.audioPlayerHandle > 0;
     if (!hasNativeOwner) {
-      return this.completedDisconnectSubmission();
+      const completed: NativeDisconnectSubmission = this.completedDisconnectSubmission();
+      this.recordDiagnosticDisconnectSubmission(
+        diagnosticModule, diagnosticSessionId, 0, completed);
+      return completed;
     }
     const expected: RemoteSessionExactDisconnectIdentity | null = identity ??
       this.captureDisconnectIdentity();
@@ -983,6 +1193,194 @@ export class ExtensionLoader {
       return { rdpDriveMounted: false, rustdeskTransferState: 0, transferId: 0,
         transferredBytes: 0, totalBytes: 0, diagnosticCode: 'status_unavailable' };
     }
+  }
+
+  publishSessionRdpClipboardContent(sessionId: number, generation: number, content: SessionRdpClipboardContent): ClipboardPublicationResult {
+    try { return rdpnapi.publishSessionRdpClipboardContent(sessionId, generation, content) as ClipboardPublicationResult; }
+    catch (_error) { return { publicationId: 0, state: 3 }; }
+  }
+  getSessionRdpClipboardFormats(sessionId: number, generation: number): SessionRdpClipboardFormats {
+    try { return rdpnapi.getSessionRdpClipboardFormats(sessionId, generation) as SessionRdpClipboardFormats; }
+    catch (_error) { return { sequence: 0, formats: [] }; }
+  }
+  requestSessionRdpClipboardFormat(sessionId: number, generation: number, sequence: number, format: number): number {
+    try { return rdpnapi.requestSessionRdpClipboardFormat(sessionId, generation, sequence, format) as number; }
+    catch (_error) { return 0; }
+  }
+  getSessionRdpClipboardFormatResult(sessionId: number, generation: number, requestId: number): SessionRdpClipboardFormatResult {
+    try { return rdpnapi.getSessionRdpClipboardFormatResult(sessionId, generation, requestId) as SessionRdpClipboardFormatResult; }
+    catch (_error) { return { requestId, sequence: 0, format: 0, state: 'unavailable', diagnosticCode: 'clipboard_owner_unavailable', content: {} }; }
+  }
+  releaseSessionRdpClipboardFormat(sessionId: number, generation: number, requestId: number): boolean {
+    try { return rdpnapi.releaseSessionRdpClipboardFormat(sessionId, generation, requestId) === true; }
+    catch (_error) { return false; }
+  }
+
+  getSessionRdpClipboardFiles(sessionId: number, generation: number): SessionRdpClipboardFiles {
+    try { return rdpnapi.getSessionRdpClipboardFiles(sessionId, generation) as SessionRdpClipboardFiles; }
+    catch (_err) { return { sequence: 0, state: 'unavailable', streamSupported: false, lockSupported: false,
+      totalKnown: false, totalBytes: 0, diagnosticCode: 'unavailable', entries: [] }; }
+  }
+  requestSessionRdpClipboardFiles(sessionId: number, generation: number, sequence: number): boolean {
+    try { return rdpnapi.requestSessionRdpClipboardFiles(sessionId, generation, sequence) === true; }
+    catch (_err) { return false; }
+  }
+  startSessionRdpClipboardReceive(sessionId: number, generation: number, sequence: number,
+    indices: number[], directoryFd: number): number {
+    try { return rdpnapi.startSessionRdpClipboardReceive(sessionId, generation, sequence, indices, directoryFd); }
+    catch (_err) { return -1; }
+  }
+  getSessionRdpClipboardReceive(sessionId: number, generation: number, id: number): SessionRdpClipboardReceive {
+    try { return rdpnapi.getSessionRdpClipboardReceive(sessionId, generation, id) as SessionRdpClipboardReceive; }
+    catch (_err) { return { taskId: id, sequence: 0, phase: 'unavailable', transferredBytes: 0,
+      totalBytes: 0, totalKnown: false, diagnosticCode: 'unavailable', artifacts: [] }; }
+  }
+  cancelSessionRdpClipboardReceive(sessionId: number, generation: number, id: number): boolean {
+    try { return rdpnapi.cancelSessionRdpClipboardReceive(sessionId, generation, id) === true; }
+    catch (_err) { return false; }
+  }
+  releaseSessionRdpClipboardReceive(sessionId: number, generation: number, id: number): boolean {
+    try { return rdpnapi.releaseSessionRdpClipboardReceive(sessionId, generation, id) === true; }
+    catch (_err) { return false; }
+  }
+  publishSessionClipboardFiles(sessionId: number, generation: number, paths: string[]): ClipboardPublicationResult {
+    try { return rdpnapi.publishSessionClipboardFiles(sessionId, generation, paths) as ClipboardPublicationResult; }
+    catch (_err) { return { publicationId: 0, state: 0 }; }
+  }
+
+  getSessionRdpFileOfferProgress(sessionId: number, generation: number): SessionRdpFileOfferProgress {
+    try { return rdpnapi.getSessionRdpFileOfferProgress(sessionId, generation) as SessionRdpFileOfferProgress; }
+    catch (_err) { return { generation: 0, requestedBytes: 0, requests: 0, lastRequestAgoMs: -1 }; }
+  }
+  getSessionRdpDrive(sessionId: number, generation: number): SessionRdpDrive {
+    try { return rdpnapi.getSessionRdpDrive(sessionId, generation) as SessionRdpDrive; }
+    catch (_err) { return { phase: 'unavailable', generation: 0, evidenceComplete: false, diagnosticCode: 'unavailable', entries: [] }; }
+  }
+  disableSessionRdpDrive(sessionId: number, generation: number): boolean {
+    try { return rdpnapi.disableSessionRdpDrive(sessionId, generation) === true; }
+    catch (_err) { return false; }
+  }
+
+  openExclusiveTransferDirectory(parentFd: number, leaf: string): number {
+    try { return rdpnapi.openExclusiveTransferDirectory(parentFd, leaf); } catch (_error) { return -1; }
+  }
+  openExclusiveTransferFile(rootFd: number, relativePath: string): number {
+    try { return rdpnapi.openExclusiveTransferFile(rootFd, relativePath); } catch (_error) { return -1; }
+  }
+  ensureTransferExportDirectory(rootFd: number, relativePath: string): boolean {
+    try { return rdpnapi.ensureTransferExportDirectory(rootFd, relativePath) === true; } catch (_error) { return false; }
+  }
+
+  configureSessionRustDeskFileClipboard(sid: number, generation: number, enabled: boolean): boolean {
+    try { return rdpnapi.configureSessionRustDeskFileClipboard(sid, generation, enabled) === true; } catch (_error) { return false; }
+  }
+  getSessionRustDeskFileClipboard(sid: number, generation: number): RustDeskClipboardSnapshot {
+    try { return rdpnapi.getSessionRustDeskFileClipboard(sid, generation) as RustDeskClipboardSnapshot; }
+    catch (_error) { return { revision: 0, state: 0, capable: false, enabled: false, entryCount: 0, diagnosticCode: 0 }; }
+  }
+  getSessionRustDeskClipboardEntries(sid: number, generation: number, revision: number): RustDeskClipboardEntry[] {
+    try { return rdpnapi.getSessionRustDeskClipboardEntries(sid, generation, revision) as RustDeskClipboardEntry[]; }
+    catch (_error) { return []; }
+  }
+  publishSessionRustDeskClipboardFiles(sid: number, generation: number, sources: RustDeskClipboardSource[]): number {
+    try { return rdpnapi.publishSessionRustDeskClipboardFiles(sid, generation, sources); } catch (_error) { return -1; }
+  }
+  getSessionRustDeskClipboardPublication(sid: number, generation: number, id: number): RustDeskClipboardPublication {
+    try { return rdpnapi.getSessionRustDeskClipboardPublication(sid, generation, id) as RustDeskClipboardPublication; }
+    catch (_error) { return { publicationId: 0, state: 0, diagnosticCode: 0, requestedBytes: 0, drained: false }; }
+  }
+  revokeSessionRustDeskClipboardPublication(sid: number, generation: number, id: number): boolean {
+    try { return rdpnapi.revokeSessionRustDeskClipboardPublication(sid, generation, id) === true; } catch (_error) { return false; }
+  }
+  receiveSessionRustDeskClipboardFile(sid: number, generation: number, revision: number, index: number, fd: number): number {
+    try { return rdpnapi.receiveSessionRustDeskClipboardFile(sid, generation, revision, index, fd); } catch (_error) { return -1; }
+  }
+
+  createSessionRemoteDirectory(sessionId: number, generation: number, path: string): number {
+    try { return rdpnapi.createSessionRemoteDirectory(sessionId, generation, path); }
+    catch (_err) { return -1; }
+  }
+  getSessionTransferAuthentication(sessionId: number, generation: number, id: number): SessionTransferAuthentication {
+    try { return rdpnapi.getSessionTransferAuthentication(sessionId, generation, id) as SessionTransferAuthentication; }
+    catch (_err) { return { transferId: 0, challengeId: 0, kind: 0, state: 0, expiresInMs: 0, attemptsRemaining: 0, diagnosticCode: 0 }; }
+  }
+  submitSessionTransferAuthentication(sessionId: number, generation: number, id: number,
+    challengeId: number, kind: number, secret: string): boolean {
+    try { return rdpnapi.submitSessionTransferAuthentication(sessionId, generation, id, challengeId, kind, secret) === true; }
+    catch (_err) { return false; }
+  }
+  getSessionTransferResult(sessionId: number, generation: number, id: number): SessionTransferResult {
+    try { return rdpnapi.getSessionTransferResult(sessionId, generation, id) as SessionTransferResult; }
+    catch (_err) { return { operationKind: 0, sourceMetadataAvailable: false, sourceSize: 0, sourceModifiedTime: 0, remoteOperationAcknowledged: false }; }
+  }
+
+  requestSessionRemoteDirectory(sessionId: number, generation: number, path: string): number {
+    try { return rdpnapi.requestSessionRemoteDirectory(sessionId, generation, path); }
+    catch (_err) { return -1; }
+  }
+  requestSessionRemoteListing(sessionId: number, generation: number, path: string, includeHidden: boolean): number {
+    try { return rdpnapi.requestSessionRemoteListing(sessionId, generation, path, includeHidden); }
+    catch (_err) { return -1; }
+  }
+  requestSessionRemoteTree(sessionId: number, generation: number, path: string, includeHidden: boolean): number {
+    try { return rdpnapi.requestSessionRemoteTree(sessionId, generation, path, includeHidden); }
+    catch (_err) { return -1; }
+  }
+  removeSessionRemotePath(sessionId: number, generation: number, path: string, directory: boolean): number {
+    try { return rdpnapi.removeSessionRemotePath(sessionId, generation, path, directory); }
+    catch (_err) { return -1; }
+  }
+  renameSessionRemotePath(sessionId: number, generation: number, path: string, newName: string): number {
+    try { return rdpnapi.renameSessionRemotePath(sessionId, generation, path, newName); }
+    catch (_err) { return -1; }
+  }
+  getSessionRemoteDirectory(sessionId: number, generation: number, transferId: number): SessionRemoteDirectory {
+    try { return rdpnapi.getSessionRemoteDirectory(sessionId, generation, transferId) as SessionRemoteDirectory; }
+    catch (_err) { return { path: '', entries: [] }; }
+  }
+  downloadSessionFileToFd(sessionId: number, generation: number, path: string, fd: number,
+    size: number, modifiedTime: number): number {
+    try { return rdpnapi.downloadSessionFileToFd(sessionId, generation, path, fd, size, modifiedTime); }
+    catch (_err) { return -1; }
+  }
+
+  getSessionTransferPermissions(sessionId: number, generation: number): SessionTransferPermissions {
+    try { return rdpnapi.getSessionTransferPermissions(sessionId, generation) as SessionTransferPermissions; }
+    catch (_err) { return { available: false, knownMask: 0, enabledMask: 0 }; }
+  }
+
+  sendSessionFileFromFd(sessionId: number, generation: number, remotePath: string,
+    fd: number, conflictPolicy: number = 0): number {
+    try { return rdpnapi.sendSessionFileFromFd(sessionId, generation, remotePath, fd, conflictPolicy); }
+    catch (_err) { return -1; }
+  }
+
+  getSessionFileTransfer(sessionId: number, generation: number, transferId: number): SessionTransferStatus {
+    try { return rdpnapi.getSessionFileTransfer(sessionId, generation, transferId) as SessionTransferStatus; }
+    catch (_err) {
+      return { rdpDriveMounted: false, rustdeskTransferState: 0, transferId,
+        transferredBytes: 0, totalBytes: 0, diagnosticCode: 'transfer_status_unavailable' };
+    }
+  }
+
+  cancelSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean {
+    try { return rdpnapi.cancelSessionFileTransfer(sessionId, generation, transferId) === true; }
+    catch (_err) { return false; }
+  }
+
+  releaseSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean {
+    try { return rdpnapi.releaseSessionFileTransfer(sessionId, generation, transferId) === true; }
+    catch (_err) { return false; }
+  }
+
+  publishSessionClipboard(sessionId: number, generation: number, data: ArrayBuffer): ClipboardPublicationResult {
+    try { return rdpnapi.publishSessionClipboard(sessionId, generation, data) as ClipboardPublicationResult; }
+    catch (_err) { return { publicationId: 0, state: 0 }; }
+  }
+
+  getSessionClipboardPublicationState(sessionId: number, generation: number, publicationId: number): number {
+    try { return rdpnapi.getSessionClipboardPublicationState(sessionId, generation, publicationId); }
+    catch (_err) { return 0; }
   }
 
   getSessionId(): number { return this.currentSessionId; }
@@ -1201,7 +1599,7 @@ export class ExtensionLoader {
         rdpnapi.probeRdpCertificate(host, port, serverName) as RdpCertificateInfo;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
         result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
-        0, 0, 0, undefined, network);
+        0, rdpPreflightLegacyTlsCount(result.riskFlags), 0, undefined, network);
       return result;
     } catch (err) {
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
@@ -1238,7 +1636,7 @@ export class ExtensionLoader {
         await rdpnapi.probeRdpCertificateAsync(host, port, serverName) as RdpCertificateInfo;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
         result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
-        0, 0, 0, undefined, network);
+        0, rdpPreflightLegacyTlsCount(result.riskFlags), 0, undefined, network);
       return result;
     } catch (err) {
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
@@ -1286,7 +1684,7 @@ export class ExtensionLoader {
         await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
         result.ok ? 'succeeded' : 'failed', 0, result.generation, result.ok ? 0 : -1,
-        0, 0, 0, undefined, network);
+        0, rdpPreflightLegacyTlsCount(result.targetRiskFlags), 0, undefined, network);
       if (gatewayRoute) {
         recordDiagnosticEvent('network.routing', 'routing_rdp_gateway',
           result.ok ? 'succeeded' : 'failed', 0, result.generation,
@@ -1672,20 +2070,37 @@ export class ExtensionLoader {
   requestRdpDisplayLayout(sessionId: number,
     request: RdpDisplayLayoutRequest): RdpDisplayLayoutResult {
     try {
-      return rdpnapi.requestRdpDisplayLayout(sessionId, request) as RdpDisplayLayoutResult;
+      const result: RdpDisplayLayoutResult =
+        rdpnapi.requestRdpDisplayLayout(sessionId, request) as RdpDisplayLayoutResult;
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout',
+        result.accepted ? 'succeeded' : 'failed', sessionId, 0,
+        result.accepted ? 0 : -1, 0, request.width, request.height,
+        undefined, this.diagnosticSessionNetworks.get(sessionId));
+      return result;
     } catch (err) {
       hilog.error(DOMAIN, TAG,
         '[ExtensionLoader] requestRdpDisplayLayout: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout', 'failed',
+        sessionId, 0, -2, 0, request.width, request.height,
+        undefined, this.diagnosticSessionNetworks.get(sessionId));
       return { accepted: false, code: 'bridge_error', message: '动态分辨率请求失败' };
     }
   }
 
   cancelRdpDisplayLayout(sessionId: number): boolean {
     try {
-      return rdpnapi.cancelRdpDisplayLayout(sessionId) as boolean;
+      const cancelled: boolean = rdpnapi.cancelRdpDisplayLayout(sessionId) as boolean;
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout',
+        cancelled ? 'cancelled' : 'skipped', sessionId, 0,
+        cancelled ? 0 : -1, 0, 0, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return cancelled;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] cancelRdpDisplayLayout: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout', 'failed',
+        sessionId, 0, -2, 0, 0, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return false;
     }
   }
@@ -1752,9 +2167,18 @@ export class ExtensionLoader {
 
   // ====== 渲染管线 ======
 
-  initRenderer(xcId: string, w: number, h: number): number {
+  /**
+   * The session this facade's native media belongs to, for the session-scoped native calls: several picture sessions
+   * may be live (分屏、PC 多窗口), so a page never lets native pick "the" live session. Before connect it is -1, which
+   * native treats as "not live yet" (a renderer stays pending; a decoder or audio player fails closed).
+   */
+  nativeOwnerSessionArg(): number {
+    return this.currentSessionId > 0 ? this.currentSessionId : -1;
+  }
+
+  initRenderer(xcId: string, w: number, h: number, ownerSessionId: number = this.nativeOwnerSessionArg()): number {
     try {
-      this.rendererHandle = rdpnapi.initRenderer(xcId, w, h) as number;
+      this.rendererHandle = rdpnapi.initRenderer(xcId, w, h, ownerSessionId) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initRenderer: ' + JSON.stringify(err));
       this.rendererHandle = -1;
@@ -1789,10 +2213,11 @@ export class ExtensionLoader {
   }
 
   initDecoder(w: number, h: number, c: number, rendererHandle: number = -1,
-    desktopSurfaceCompatibility: boolean = false): number {
+    desktopSurfaceCompatibility: boolean = false,
+    ownerSessionId: number = this.nativeOwnerSessionArg()): number {
     try {
       this.decoderHandle = rdpnapi.initDecoder(
-        w, h, c, rendererHandle, desktopSurfaceCompatibility) as number;
+        w, h, c, rendererHandle, desktopSurfaceCompatibility, ownerSessionId) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initDecoder: ' + JSON.stringify(err));
       this.decoderHandle = -1;
@@ -1846,6 +2271,29 @@ export class ExtensionLoader {
 
   // ====== 渲染管线操作 ======
 
+  /** A computer name or "<name>.local" resolved on the local network; empty when nothing answered. */
+  async resolveLocalHostName(name: string, timeoutMs: number = 1500): Promise<string[]> {
+    try {
+      const result = await rdpnapi.resolveLocalHostName(name, timeoutMs);
+      hilog.info(DOMAIN, TAG, '[ExtensionLoader] local name resolution method=' +
+        (result.method || 'none') + ' count=' + (result.addresses ?? []).length.toString());
+      return result.addresses ?? [];
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] resolveLocalHostName: ' + JSON.stringify(err));
+      return [];
+    }
+  }
+
+  /** Start the background orientation self-test for H.264 / H.265 on this device's decode path. */
+  ensureVideoOrientationSelfTest(desktop: boolean): void {
+    try {
+      rdpnapi.ensureVideoOrientationSelfTest(0, desktop);
+      rdpnapi.ensureVideoOrientationSelfTest(1, desktop);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] ensureVideoOrientationSelfTest: ' + JSON.stringify(err));
+    }
+  }
+
   bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean {
     try {
       const bound: boolean = rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;
@@ -1879,7 +2327,7 @@ export class ExtensionLoader {
    */
   rebindActiveVideoPipeline(): boolean {
     try {
-      const rebound: boolean = rdpnapi.rebindActiveVideoPipeline() as boolean;
+      const rebound: boolean = rdpnapi.rebindActiveVideoPipeline(this.nativeOwnerSessionArg()) as boolean;
       const synchronized: boolean = replayRdpRendererGeometryAfterPipelineBinding(
         rebound, this.currentSessionId,
         (sessionId: number): boolean => this.synchronizeRdpRendererGeometry(sessionId));
@@ -1958,6 +2406,36 @@ export class ExtensionLoader {
     }
   }
 
+  /** Live RustDesk privacy mode; the peer's answer shows up as privacyState in getSessionDiagnostics. */
+  toggleRustDeskPrivacyMode(sessionId: number, on: boolean): boolean {
+    try {
+      return rdpnapi.toggleRustDeskPrivacyMode(sessionId, on) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] toggleRustDeskPrivacyMode unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all of them). */
+  toggleRustDeskVirtualDisplay(sessionId: number, display: number, on: boolean): boolean {
+    try {
+      return rdpnapi.toggleRustDeskVirtualDisplay(sessionId, display, on) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] toggleRustDeskVirtualDisplay unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Live RustDesk codec preference (0 auto … 5 H265) and remote audio. */
+  setRustDeskStreamOptions(sessionId: number, codec: number, audioEnabled: boolean): boolean {
+    try {
+      return rdpnapi.setRustDeskStreamOptions(sessionId, codec, audioEnabled) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] setRustDeskStreamOptions unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities {
     try {
       return rdpnapi.getRustDeskDisplayCapabilities(sessionId) as RustDeskDisplayCapabilities;
@@ -1985,6 +2463,35 @@ export class ExtensionLoader {
         resolutions: [],
         displays: []
       };
+    }
+  }
+
+  getVncDisplayCapabilities(sessionId: number): VncDisplayCapabilities {
+    try {
+      return rdpnapi.getVncDisplayCapabilities(sessionId) as VncDisplayCapabilities;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] getVncDisplayCapabilities unavailable: ' + JSON.stringify(err));
+      return {
+        supported: false,
+        mode: 'unsupported',
+        monitorCount: 0,
+        currentMonitor: -1,
+        pendingMonitor: -1,
+        switchGeneration: 0,
+        inputBlocked: false,
+        lastResult: 'native_api_unavailable'
+      };
+    }
+  }
+
+  switchVncDisplay(sessionId: number, monitor: number): boolean {
+    try {
+      return rdpnapi.switchVncDisplay(sessionId, monitor) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] switchVncDisplay unavailable: ' + JSON.stringify(err));
+      return false;
     }
   }
 
@@ -2050,20 +2557,37 @@ export class ExtensionLoader {
 
   beginRustDeskDisplaySwitch(sessionId: number, display: number): RustDeskDisplaySwitchRequest {
     try {
-      return rdpnapi.beginRustDeskDisplaySwitch(sessionId, display) as RustDeskDisplaySwitchRequest;
+      const result: RustDeskDisplaySwitchRequest =
+        rdpnapi.beginRustDeskDisplaySwitch(sessionId, display) as RustDeskDisplaySwitchRequest;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch',
+        result.accepted ? 'started' : 'failed', sessionId, result.generation,
+        result.accepted ? display : -1, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return result;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] beginRustDeskDisplaySwitch unavailable: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch', 'failed',
+        sessionId, 0, -2, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return { accepted: false, generation: 0 };
     }
   }
 
   switchRustDeskDisplay(sessionId: number, display: number): boolean {
     try {
-      return rdpnapi.switchRustDeskDisplay(sessionId, display) as boolean;
+      const switched: boolean = rdpnapi.switchRustDeskDisplay(sessionId, display) as boolean;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch',
+        switched ? 'succeeded' : 'failed', sessionId, 0,
+        switched ? display : -1, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return switched;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] switchRustDeskDisplay unavailable: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch', 'failed',
+        sessionId, 0, -2, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return false;
     }
   }
@@ -2071,10 +2595,19 @@ export class ExtensionLoader {
   changeRustDeskDisplayResolution(sessionId: number, display: number, width: number,
     height: number): boolean {
     try {
-      return rdpnapi.changeRustDeskDisplayResolution(sessionId, display, width, height) as boolean;
+      const changed: boolean = rdpnapi.changeRustDeskDisplayResolution(
+        sessionId, display, width, height) as boolean;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch',
+        changed ? 'succeeded' : 'failed', sessionId, 0,
+        changed ? display : -1, 0, width, height, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return changed;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] changeRustDeskDisplayResolution unavailable: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch', 'failed',
+        sessionId, 0, -2, 0, width, height, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return false;
     }
   }
@@ -2086,6 +2619,13 @@ export class ExtensionLoader {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] sendRustDeskTouchScale unavailable: ' + JSON.stringify(err));
       return false;
     }
+  }
+
+  rustDeskPhoneControl(identity: RustDeskPhoneOwner, operation: number, x: number = 0, y: number = 0): number {
+    try {
+      return rdpnapi.rustDeskPhoneControl(identity.sessionId, identity.generation,
+        identity.ownerToken, operation, x, y, identity.streamEpoch) as number;
+    } catch (_err) { return 0; }
   }
 
   sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean {
@@ -2199,7 +2739,8 @@ export class ExtensionLoader {
 
   initAudioPlayer(sr?: number, ch?: number): number {
     try {
-      this.audioPlayerHandle = rdpnapi.initAudioPlayer(sr ?? 48000, ch ?? 2) as number;
+      this.audioPlayerHandle = rdpnapi.initAudioPlayer(
+        sr ?? 48000, ch ?? 2, this.nativeOwnerSessionArg()) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initAudioPlayer: ' + JSON.stringify(err));
       this.audioPlayerHandle = -1;
@@ -2237,12 +2778,55 @@ export class ExtensionLoader {
       if (handle > 0) {
         rdpnapi.setAudioMute(handle, mute);
       } else {
-        rdpnapi.setActiveAudioMute(mute);
+        rdpnapi.setActiveAudioMute(mute, this.nativeOwnerSessionArg());
       }
       hilog.info(DOMAIN, TAG, '[ExtensionLoader] setAudioMute: handle=' +
         handle.toString() + ' mute=' + (mute ? 'true' : 'false'));
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] setAudioMute: ' + JSON.stringify(err));
+    }
+  }
+
+  /** Only the focused window's picture session plays sound while several are live; 0 lets every session play. */
+  setAudioFocusSession(sessionId: number): void {
+    try {
+      rdpnapi.setAudioFocusSession(sessionId > 0 ? sessionId : 0);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] setAudioFocusSession: ' + JSON.stringify(err));
+    }
+  }
+
+  /**
+   * Whether the page holding `pageToken` uses the process XComponent surface (no other live page holds it). The
+   * holder is native, so every session window of the process sees the same one. Fails open to the process surface,
+   * which is what a single session always used.
+   */
+  claimProcessSurface(pageToken: number): boolean {
+    try {
+      return rdpnapi.claimProcessSurface(pageToken) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] claimProcessSurface: ' + JSON.stringify(err));
+      return true;
+    }
+  }
+
+  releaseProcessSurface(pageToken: number): void {
+    try {
+      rdpnapi.releaseProcessSurface(pageToken);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] releaseProcessSurface: ' + JSON.stringify(err));
+    }
+  }
+
+  /** A concurrent picture session's page lost its own surface: stop its renderer without touching the process one. */
+  markRendererSurfaceDestroyed(rendererHandle: number): void {
+    if (rendererHandle <= 0) {
+      return;
+    }
+    try {
+      rdpnapi.markRendererSurfaceDestroyed(rendererHandle);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] markRendererSurfaceDestroyed: ' + JSON.stringify(err));
     }
   }
 
@@ -2463,11 +3047,20 @@ export class ExtensionLoader {
     }
   }
 
-  sendClipboard(sessionId: number, data: ArrayBuffer): void {
+  sendClipboard(sessionId: number, data: ArrayBuffer): boolean {
     try {
-      rdpnapi.sendClipboard(sessionId, data);
+      return rdpnapi.sendClipboard(sessionId, data) === true;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendClipboard: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  getSessionClipboardSnapshot(sessionId: number): SessionClipboardSnapshot {
+    try {
+      return rdpnapi.getSessionClipboardSnapshot(sessionId) as SessionClipboardSnapshot;
+    } catch (_err) {
+      return { sequence: 0, kind: 'none', text: '', ready: false };
     }
   }
 
@@ -2478,6 +3071,36 @@ export class ExtensionLoader {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] setSessionClipboardFiles: ' + JSON.stringify(err));
       return false;
     }
+  }
+
+  // Initial enabled settings may claim an idle authority. Only an explicit
+  // user choice passes replaceExisting=true; resume must retain its old token.
+  claimSessionClipboardAuthority(sessionId: number, nativeGeneration: number,
+    replaceExisting: boolean = false): number {
+    try {
+      const token = rdpnapi.claimSessionClipboardAuthority(sessionId, nativeGeneration, replaceExisting);
+      return Number.isSafeInteger(token) && token > 0 ? token : 0;
+    } catch (_error) { return 0; }
+  }
+
+  ownsSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean {
+    try {
+      return rdpnapi.ownsSessionClipboardAuthority(sessionId, nativeGeneration, token) === true;
+    } catch (_error) { return false; }
+  }
+
+  revokeSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean {
+    try {
+      return rdpnapi.revokeSessionClipboardAuthority(sessionId, nativeGeneration, token) === true;
+    } catch (_error) { return false; }
+  }
+
+  /** Executes only a prepared synchronous publication under the native owner lock. */
+  withSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number,
+    commit: () => boolean): boolean {
+    try {
+      return rdpnapi.withSessionClipboardAuthority(sessionId, nativeGeneration, token, commit) === true;
+    } catch (_error) { return false; }
   }
 
   setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean {
@@ -3198,19 +3821,29 @@ export class ExtensionLoader {
    * 重新初始化 renderer 并绑定 surface。
    */
   reattachRenderForForeground(surfaceId: string, width: number,
-    height: number, sessionId: number = this.currentSessionId): ExtensionResult<number> {
+    height: number, sessionId: number = this.currentSessionId,
+    bindProcessSurface: boolean = true): ExtensionResult<number> {
     try {
       if (!shouldBindSurfaceBeforeForegroundRenderer(surfaceId, width, height)) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
           '前台恢复 Surface 无效', 'surfaceId=' + surfaceId + ' size=' + width.toString() + 'x' + height.toString());
       }
-      const surfaceBound = rdpnapi.setXComponentSurfaceId(surfaceId, width, height) as boolean;
-      if (!surfaceBound) {
+      // A concurrent picture session (its page does not own the process surface) renders to its own surface only,
+      // so it needs a real SurfaceId: a component id would draw to the other page's process surface.
+      if (!bindProcessSurface && !/^[0-9]+$/.test(surfaceId.trim())) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
-          'setXComponentSurfaceId 失败', 'surfaceId=' + surfaceId);
+          '独立画面需要 SurfaceId', 'surfaceId=' + surfaceId);
       }
-      hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: surface rebound id=' + surfaceId);
-      const rendererHandle: number = rdpnapi.initRenderer(surfaceId, width, height) as number;
+      if (bindProcessSurface) {
+        const surfaceBound = rdpnapi.setXComponentSurfaceId(surfaceId, width, height) as boolean;
+        if (!surfaceBound) {
+          return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
+            'setXComponentSurfaceId 失败', 'surfaceId=' + surfaceId);
+        }
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: surface rebound id=' + surfaceId);
+      }
+      const rendererHandle: number = rdpnapi.initRenderer(surfaceId, width, height,
+        sessionId > 0 ? sessionId : -1) as number;
       if (rendererHandle <= 0) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
           'initRenderer 失败', 'surfaceId=' + surfaceId);
@@ -3241,7 +3874,7 @@ export class ExtensionLoader {
    */
   requestFrameRefresh(): ExtensionResult<void> {
     try {
-      rdpnapi.requestFrameRefresh();
+      rdpnapi.requestFrameRefresh(this.nativeOwnerSessionArg());
       return okVoid();
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] requestFrameRefresh: ' + JSON.stringify(err));
@@ -3321,7 +3954,7 @@ export class ExtensionLoader {
    */
   isAudioActive(): boolean {
     try {
-      return rdpnapi.isAudioPlaybackActive() as boolean;
+      return rdpnapi.isAudioPlaybackActive(this.nativeOwnerSessionArg()) as boolean;
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] isAudioActive fallback: ' + JSON.stringify(err));
       return false;

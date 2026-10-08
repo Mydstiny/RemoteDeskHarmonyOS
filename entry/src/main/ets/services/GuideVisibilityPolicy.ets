@@ -10,6 +10,13 @@ export const SSH_CONTEXTUAL_GUIDE_STORAGE_KEY: string =
 export const MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY: string =
   'moonlightSessionContextualGuideShownV1';
 
+/**
+ * The one-time notice that touch scrolling moved to three fingers (2026-10): shown once on this device, at the first
+ * RDP, RustDesk or VNC session in a touch mode after the update (merged into the first-run touchpad guide instead
+ * when that one is due).
+ */
+export const REMOTE_TOUCH_GESTURE_NOTICE_STORAGE_KEY: string = 'remoteTouchThreeFingerScrollNoticeV1';
+
 export type RemoteTouchpadGuideProtocol = 'rdp' | 'rustdesk' | 'vnc';
 
 export function remoteTouchpadGuideStorageKey(
@@ -23,6 +30,7 @@ export function remoteTouchpadGuideStorageKey(
 export function isAutomaticGuideMarkerKey(key: string): boolean {
   return key === SSH_CONTEXTUAL_GUIDE_STORAGE_KEY ||
     key === MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY ||
+    key === REMOTE_TOUCH_GESTURE_NOTICE_STORAGE_KEY ||
     key === remoteTouchpadGuideStorageKey('rdp') ||
     key === remoteTouchpadGuideStorageKey('rustdesk') ||
     key === remoteTouchpadGuideStorageKey('vnc');

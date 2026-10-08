@@ -8,6 +8,10 @@ export interface SessionCapabilityState {
   rustDeskVerifiedPeer: boolean;
   rustDeskInboundClipboard: boolean;
   rustDeskTransferConfirmed: boolean;
+  rustDeskFileSessionAvailable?: boolean;
+  rustDeskClipboardPermissionAllowed?: boolean;
+  rustDeskFilePermissionAllowed?: boolean;
+  rustDeskDownloadAvailable?: boolean;
   rustDeskDisplaySupported?: boolean;
   vncClipboardEnabled: boolean;
   vncClipboardReady: boolean;
@@ -125,7 +129,10 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
       fileUpload: !state.rdpClipboardEnabled
         ? clipboardDisabled
         : state.rdpClipboardReady ? available() : unavailable('RDP 文件剪贴板通道尚未就绪'),
-      fileDownload: drive,
+      // Remote clipboard file receive is independent of RDPDR's shared drive.
+      // Expose the receive action as soon as cliprdr is ready; the shared-drive
+      // path remains available as a second source when it has been mounted.
+      fileDownload: state.rdpClipboardEnabled && state.rdpClipboardReady ? available() : drive,
       multiDisplay: unavailable('当前 RDP 渲染仅支持单显示器')
     };
   }
@@ -143,13 +150,16 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
   }
 
   if (state.protocol === 'rustdesk') {
-    const peer = state.rustDeskVerifiedPeer ? available() : unavailable('RustDesk 远端尚未完成可信会话验证');
-    const inbound = state.rustDeskVerifiedPeer && state.rustDeskInboundClipboard
+    const peer = state.rustDeskVerifiedPeer && state.rustDeskClipboardPermissionAllowed !== false
+      ? available() : unavailable('RustDesk 剪贴板不可用或远端已禁用');
+    const inbound = state.rustDeskVerifiedPeer && state.rustDeskInboundClipboard && state.rustDeskClipboardPermissionAllowed !== false
       ? available()
       : unavailable('RustDesk 入站纯文本剪贴板尚未验证');
-    const transfer = state.rustDeskVerifiedPeer && state.rustDeskTransferConfirmed
+    const transfer = state.rustDeskVerifiedPeer &&
+      (state.rustDeskFileSessionAvailable === true || state.rustDeskTransferConfirmed) &&
+      state.rustDeskFilePermissionAllowed !== false
       ? available()
-      : unavailable('RustDesk 文件传输尚未获得远端确认');
+      : unavailable('RustDesk 文件通道不可用或远端已禁用');
     const display = state.rustDeskDisplaySupported === true
       ? available() : unavailable('当前 RustDesk 会话尚未提供显示器能力');
     return {
@@ -157,7 +167,8 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
       clipboardSend: peer,
       clipboardReceive: inbound,
       fileUpload: transfer,
-      fileDownload: unavailable('当前 RustDesk 会话未验证文件下载能力'),
+      fileDownload: state.rustDeskDownloadAvailable === true ? transfer :
+        unavailable('当前 RustDesk 会话未开放文件下载'),
       multiDisplay: display
     };
   }

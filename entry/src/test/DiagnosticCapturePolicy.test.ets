@@ -19,6 +19,8 @@ import {
   diagnosticNetworkFactsForEndpoints,
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
+  emptyDiagnosticProtocolFacts,
+  emptyDiagnosticResourceFacts,
   normalizeDiagnosticModules
 } from '../main/ets/services/DiagnosticCapturePolicy';
 
@@ -27,8 +29,8 @@ export default function diagnosticCapturePolicyTest(): void {
     it('accepts_only_the_six_fixed_one_to_thirty_minute_options', 0, (): void => {
       expect(diagnosticDurationOptions().join(',')).assertEqual('1,3,5,10,15,30');
       expect(DIAGNOSTIC_DEFAULT_DURATION_MINUTES).assertEqual(10);
-      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(3);
-      expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(3);
+      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(10);
+      expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(5);
       expect(diagnosticDurationIsAllowed(1)).assertTrue();
       expect(diagnosticDurationIsAllowed(30)).assertTrue();
       expect(diagnosticDurationIsAllowed(0)).assertFalse();
@@ -45,7 +47,7 @@ export default function diagnosticCapturePolicyTest(): void {
       expect(selected[0]).assertEqual('core.app');
       expect(selected[1]).assertEqual('connection.rdp');
       expect(selected[2]).assertEqual('connection.vnc');
-      expect(diagnosticAllModules().length).assertEqual(10);
+      expect(diagnosticAllModules().length).assertEqual(12);
       expect(diagnosticModuleSpecs()[0].alwaysEnabled).assertTrue();
       expect(diagnosticModuleIsKnown('security.ssh_key')).assertTrue();
       expect(diagnosticModuleIsKnown('security.totp')).assertFalse();
@@ -54,10 +56,15 @@ export default function diagnosticCapturePolicyTest(): void {
     it('rejects_unknown_or_cross_module_event_codes', 0, (): void => {
       expect(diagnosticEventIsAllowed('connection.rdp', 'rdp_state_changed')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.rdp', 'rdp_runtime_snapshot')).assertTrue();
+      expect(diagnosticEventIsAllowed('connection.rdp', 'rdp_display_layout')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.rustdesk', 'rustdesk_runtime_snapshot')).assertTrue();
+      expect(diagnosticEventIsAllowed('connection.rustdesk', 'rustdesk_preflight')).assertTrue();
+      expect(diagnosticEventIsAllowed('connection.rustdesk', 'rustdesk_display_switch')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.ssh_sftp', 'ssh_runtime_snapshot')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.vnc', 'vnc_runtime_snapshot')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.moonlight', 'moonlight_runtime_snapshot')).assertTrue();
+      expect(diagnosticEventIsAllowed('core.app', 'app_lifecycle')).assertTrue();
+      expect(diagnosticEventIsAllowed('core.app', 'window_orientation_state')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.vnc', 'rdp_state_changed')).assertFalse();
       expect(diagnosticEventIsAllowed('connection.rdp', 'raw_error_message')).assertFalse();
       expect(diagnosticEventIsAllowed('security.ssh_key', 'ssh_key_import')).assertTrue();
@@ -77,7 +84,8 @@ export default function diagnosticCapturePolicyTest(): void {
         rendererTransformValid: true, rendererTransformVersion: 2,
         rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
         decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
-        frames: 10, dropped: 1, errors: 0, queueDepth: 2, latencyMs: 31
+        frames: 10, dropped: 1, errors: 0, queueDepth: 2, latencyMs: 31,
+        protocol: emptyDiagnosticProtocolFacts(), resources: emptyDiagnosticResourceFacts()
       };
       expect(diagnosticRuntimeFactsAreValid(facts)).assertTrue();
       facts.presentation = 'validated_producer';

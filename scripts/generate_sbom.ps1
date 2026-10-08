@@ -21,6 +21,7 @@ $managedKcpRelationshipKeys = @(
 $preservedPackages = @()
 $preservedFiles = @()
 $preservedRelationships = @()
+$preservedLicenseInfos = @()
 if (Test-Path $output -PathType Leaf) {
   $existing = Get-Content -Raw $output | ConvertFrom-Json
   $preservedPackages = @($existing.packages | Where-Object {
@@ -28,6 +29,9 @@ if (Test-Path $output -PathType Leaf) {
     $_.SPDXID -ne 'SPDXRef-Package-RemoteDeskHarmonyOS'
   })
   $preservedFiles = @($existing.files)
+  if ($existing.PSObject.Properties.Name -contains 'hasExtractedLicensingInfos') {
+    $preservedLicenseInfos = @($existing.hasExtractedLicensingInfos)
+  }
   $preservedRelationships = @($existing.relationships | Where-Object {
     $key = "$($_.spdxElementId)|$($_.relationshipType)|$($_.relatedSpdxElement)"
     $managedKcpRelationshipKeys -notcontains $key
@@ -38,7 +42,7 @@ $packages = [System.Collections.Generic.List[object]]::new()
 $packages.Add([ordered]@{
   name = 'RemoteDeskHarmonyOS'
   SPDXID = 'SPDXRef-Package-RemoteDeskHarmonyOS'
-  versionInfo = '1.1.5.1'
+  versionInfo = '1.2.0'
   downloadLocation = 'https://github.com/Mydstiny/RemoteDeskHarmonyOS'
   filesAnalyzed = $false
   licenseConcluded = 'AGPL-3.0-or-later'
@@ -112,6 +116,7 @@ $document = [ordered]@{
   packages = $packages
   files = $preservedFiles
   relationships = $relationships
+  hasExtractedLicensingInfos = $preservedLicenseInfos
 }
 $json = $document | ConvertTo-Json -Depth 12
 [IO.File]::WriteAllText($output, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))

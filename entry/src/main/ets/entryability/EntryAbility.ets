@@ -1,3 +1,12 @@
+import { ProContinuationService, PRO_CONTINUATION_PARAM, PRO_CONTINUATION_SECRET_PARAM,
+  PRO_CONTINUATION_LIBRARY_PARAM } from '../services/pro/ProContinuationService';
+import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { aiShareInboxAccept } from '../services/diagnosticAi/AiShareInbox';
+import { ConnectionJournal } from '../services/ConnectionJournal';
+import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
+import { ProPasskeyReceiver } from '../services/pro/passkey/ProPasskeyReceiver';
 /**
  * EntryAbility.ets — 应用入口 UIAbility
  *
@@ -11,10 +20,11 @@ import {
   ConfigurationConstant,
   UIAbility,
   Want,
+  wantConstant,
   Configuration
 } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
+import { UIContext, window } from '@kit.ArkUI';
 import { buffer } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { KeyVaultService } from '../services/KeyVaultService';
@@ -35,6 +45,10 @@ import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
 import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
+import { FOCUS_SESSION_WINDOW_PARAM } from '../services/SessionWindowFocusParam';
+import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
+import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
+import { AppFaultHistoryService } from '../services/AppFaultHistoryService';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
 import {
@@ -70,6 +84,7 @@ export default class EntryAbility extends UIAbility {
   private avoidAreaCallback: ((data: window.AvoidAreaOptions) => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private foregroundCloudResumePromise: Promise<void> | null = null;
+  private diagnosticLifecycleGeneration: number = 0;
 
   /**
    * Foreground recovery is Ability-owned so a pending account/cloud barrier
@@ -212,9 +227,23 @@ export default class EntryAbility extends UIAbility {
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // Crashes/freezes of earlier runs arrive at start-up; keep their kind and time for diagnostics.
+    AppFaultHistoryService.init(this.context);
+    // 连接记录 for the AI chat's reports, per signed-in account.
+    ConnectionJournal.init(this.context, (): string => {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      return scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+    });
+    ProAppRuntime.getInstance();
+    ProFeatureVisibility.getInstance().load(this.context as common.UIAbilityContext);
+    ProContinuationService.getInstance().initializeMission(this.context);
+    if (!this.acceptProContinuationWant(want, launchParam)) { return; }
+    this.acceptProConnectionShareWant(want, launchParam);
+    this.acceptAiShareWant(want, launchParam);
     try {
       const appClone: AppCloneContext = AppCloneContext.getInstance();
       appClone.init(this.context);
+      void ProAppRuntime.getInstance().initialize(this.context).catch((): void => {});
       // 读取系统颜色模式 (必须在 setColorMode 前 + AppStorage 初始化在前)
       const sysColorMode: number = this.context.config.colorMode ?? 0;
       const sysDark: boolean = sysColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
@@ -330,6 +359,101 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, TAG, 'Ability onCreate');
   }
 
+  private acceptProContinuationWant(want: Want, launch: AbilityConstant.LaunchParam): boolean {
+    // Public Wants and deep links cannot impersonate a platform continuation.
+    if (launch.launchReason !== AbilityConstant.LaunchReason.CONTINUATION) { return true; }
+    const value: Object | undefined = want.parameters?.[PRO_CONTINUATION_PARAM];
+    const stack: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY];
+    const sourceExit: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY];
+    if (stack !== false || sourceExit !== false || typeof value !== 'string' ||
+        !ProContinuationService.getInstance().ingest(value, want.parameters?.[PRO_CONTINUATION_SECRET_PARAM] ?? null)) {
+      // A rejected cold migration must not instantiate a foreign Router stack.
+      // An already open target retains its existing UI and free connections.
+      if (this.windowStage === null) { void this.context.terminateSelf().catch((): void => {}); }
+      return false;
+    }
+    if (this.windowStage === null) {
+      try {
+        // The official API requires this call synchronously inside onCreate / onNewWant.
+        this.context.restoreWindowStage(new LocalStorage());
+      } catch (_error) {
+        ProContinuationService.getInstance().cancelIncoming();
+        void this.context.terminateSelf().catch((): void => {});
+        return false;
+      }
+    } else {
+      try {
+        this.windowStage?.getMainWindowSync().getUIContext().getPromptAction().showToast({
+          message: '收到同账号接续请求，正在自动连接', duration: 2000
+        });
+      } catch (_error) { /* The incoming card remains available in the host library. */ }
+    }
+    return true;
+  }
+
+  onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    this.focusSessionWindow(want);
+    this.acceptProContinuationWant(want, launch);
+    this.acceptProConnectionShareWant(want, launch);
+    this.acceptAiShareWant(want, launch);
+    const libraryId: Object | undefined = want.parameters?.[PRO_CONTINUATION_LIBRARY_PARAM];
+    if (typeof libraryId === 'string' && libraryId !== '' &&
+        ProContinuationService.getInstance().incomingId() === libraryId) {
+      try {
+        this.windowStage?.getMainWindowSync().getUIContext().getPromptAction().showToast({
+          message: '收到同账号接续请求，请在主机列表确认', duration: 3000
+        });
+      } catch (_error) {}
+    }
+  }
+
+  /** A tap on a session window's notification (file transfer, background session) brings that window forward. */
+  private focusSessionWindow(want: Want): void {
+    const raw: Object | undefined = want.parameters?.[FOCUS_SESSION_WINDOW_PARAM];
+    if (typeof raw !== 'string' || raw.length === 0 || this.windowStage === null) { return; }
+    const target: number = RemoteSessionWindowCoordinator.getInstance().nativeWindowIdFor(raw);
+    if (target <= 0) { return; }
+    // The main window must hold focus before it can pass it on; let the tap bring it forward first.
+    const stage: window.WindowStage = this.windowStage;
+    setTimeout((): void => {
+      try {
+        const source: number = stage.getMainWindowSync().getWindowProperties().id;
+        window.shiftAppWindowFocus(source, target).catch((): void => {});
+      } catch (_error) { /* The main window stays in front. */ }
+    }, 300);
+  }
+
+  private acceptProConnectionShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    if (launch.launchReason === AbilityConstant.LaunchReason.CONTINUATION ||
+        want.action !== 'ohos.want.action.viewData' || typeof want.uri !== 'string' ||
+        !ProConnectionShareReceiver.getInstance().ingest(want.uri)) { return; }
+    if (this.windowStage !== null) {
+      try {
+        this.windowStage.getMainWindowSync().getUIContext().getPromptAction().showToast({
+          message: '收到连接分享，请在主机列表核对并添加', duration: 3000
+        });
+      } catch (_error) {}
+    }
+  }
+
+  /** 分享 → RemoteDesktop: documents and text for the AI chat. A share that cannot be read never disturbs launching. */
+  private acceptAiShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    if (launch.launchReason === AbilityConstant.LaunchReason.CONTINUATION) { return; }
+    try { aiShareInboxAccept(want); } catch (_error) { /* nothing shared to read */ }
+  }
+
+  async onContinue(parameters: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
+    try {
+      const id: number = this.windowStage?.getMainWindowSync().getWindowProperties().id ?? 0;
+      return await ProContinuationService.getInstance().onContinue(id, parameters);
+    } catch (_error) { return AbilityConstant.OnContinueResult.REJECT; }
+  }
+
+  onWindowStageRestore(stage: window.WindowStage): void {
+    // A warm target keeps its existing session/UI; the host library offers explicit acceptance.
+    if (this.windowStage === null) { void this.onWindowStageCreate(stage); }
+  }
+
   private migrateTerminalFontUnit(): void {
     const version: number = AppStorage.get<number>('terminalFontUnitVersion') ?? 0;
     if (version >= 2) { return; }
@@ -361,6 +485,10 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    ProContinuationService.getInstance().cancelSource();
+    ProContinuationService.getInstance().cancelIncoming();
+    ProConnectionShareSender.getInstance().stop();
+    ProConnectionShareReceiver.getInstance().cancel();
     // 最终销毁 — 必须完全断连所有远程会话 + 移除灵动岛
     this.requestShutdown('ability-destroy');
     hilog.info(DOMAIN, TAG, 'Ability onDestroy');
@@ -375,6 +503,8 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG, '预初始化 ArkUI environment 失败: %{public}s', JSON.stringify(err));
     }
     await this.loadStartupContent(windowStage);
+    // Stale transfer copies of an earlier run are cleared once the app has settled.
+    scheduleTransferArtifactMaintenance(this.context.filesDir, 20000);
   }
 
   private async loadStartupContent(windowStage: window.WindowStage): Promise<void> {
@@ -406,10 +536,15 @@ export default class EntryAbility extends UIAbility {
       }
     } catch (_e) { /* ignore */ }
     this.avoidAreaCallback = null;
+    this.windowStage = null;
     hilog.info(DOMAIN, TAG, 'Ability onWindowStageDestroy');
   }
 
   onForeground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'foreground',
+      ++this.diagnosticLifecycleGeneration, 1);
+    void ProAppRuntime.getInstance().refreshOnline();
+    ProAppRuntime.getInstance().runtime.refresh();
     // 前台恢复 — 清除后台标志, 停止后台保活任务
     // 注意: 实况窗由 RemoteDesktop.restoreFromBackground() 控制, 不在此处提前关闭
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
@@ -448,10 +583,17 @@ export default class EntryAbility extends UIAbility {
         'SSH background task stop skipped: independent SSH window remains owned');
     }
     this.resumeCloudAfterForeground();
+    // 手机通行密钥: paired devices' requests are confirmed on whatever page is open while the app is in front.
+    ProPasskeyReceiver.getInstance().foreground(this.context, (): UIContext | null => {
+      try { return this.windowStage === null ? null : this.windowStage.getMainWindowSync().getUIContext(); }
+      catch (_error) { return null; }
+    });
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
   }
 
   onWillBackground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'background',
+      ++this.diagnosticLifecycleGeneration, 2);
     // API 20+ 在 onBackground 前回调；先通知 RemoteDesktop，避免页面
     // aboutToDisappear 先一步把后台保活连接误判为显式退出。
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, true);
@@ -459,6 +601,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onBackground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'background',
+      ++this.diagnosticLifecycleGeneration, 3);
     // 切后台 — 标记后台标志, 不再无条件断连
     // RemoteDesktop.aboutToDisappear() 读取此标志决定是保活还是完全断连
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, true);
@@ -467,6 +611,7 @@ export default class EntryAbility extends UIAbility {
     try {
       DataCrypto.getInstance().lock();
     } catch (_e) { /* ignore */ }
+    ProPasskeyReceiver.getInstance().background();
 
     // 注意: 不在这里调用 disconnectRemoteSessions.
     // 后台保活决策由 RemoteDesktop 的 aboutToDisappear 配合 BackgroundTaskService 处理.
@@ -668,6 +813,9 @@ export default class EntryAbility extends UIAbility {
 
       this.avoidAreaCallback = (data: window.AvoidAreaOptions): void => {
         if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
+          // The AI hides the status bar while its panel covers the top: the page keeps its inset, so nothing under
+          // the panel moves (and nothing jumps when the bar comes back).
+          if (data.area.topRect.height === 0 && AppStorage.get<boolean>('ai.statusBarHidden') === true) { return; }
           AppStorage.setOrCreate<number>('topRectHeight', data.area.topRect.height);
         } else if (data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
           AppStorage.setOrCreate<number>('bottomRectHeight', data.area.bottomRect.height);

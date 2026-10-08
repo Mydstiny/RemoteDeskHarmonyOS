@@ -3,6 +3,7 @@
 #include "rustdesk/rustdesk_peer_presentation_policy.h"
 
 #include <limits>
+#include "render/decoder_attempt_diagnostics.h"
 
 RDP_TEST_CASE(native_image_policy_detaches_before_releasing_current_context) {
     RDP_ASSERT(Render::ShouldDetachNativeImageOnRenderThreadStop(true, true));
@@ -75,7 +76,7 @@ RDP_TEST_CASE(native_image_policy_selects_producer_transform_only_for_desktop_su
     RDP_ASSERT(Render::NativeImageModeForDesktopSurface(false) ==
         Render::NativeImagePresentationMode::Identity);
     RDP_ASSERT(Render::NativeImageModeForDesktopSurface(true) ==
-        Render::NativeImagePresentationMode::ProducerTransform);
+        Render::NativeImagePresentationMode::TopLeftProducerTransform);
 }
 
 RDP_TEST_CASE(native_image_policy_applies_valid_producer_transform_and_keeps_desktop_output_immediate) {
@@ -306,15 +307,15 @@ RDP_TEST_CASE(native_image_policy_classifies_producer_transform_without_applying
 RDP_TEST_CASE(rustdesk_peer_presentation_policy_is_platform_invariant) {
     using Render::NativeImagePresentationMode;
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Windows") == NativeImagePresentationMode::VerticalFlipProducerTransform);
+        "Windows") == NativeImagePresentationMode::TopLeftProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Windows 11") == NativeImagePresentationMode::VerticalFlipProducerTransform);
+        "Windows 11") == NativeImagePresentationMode::TopLeftProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "macOS") == NativeImagePresentationMode::VerticalFlipProducerTransform);
+        "macOS") == NativeImagePresentationMode::TopLeftProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Linux") == NativeImagePresentationMode::VerticalFlipProducerTransform);
+        "Linux") == NativeImagePresentationMode::TopLeftProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "") == NativeImagePresentationMode::VerticalFlipProducerTransform);
+        "") == NativeImagePresentationMode::TopLeftProducerTransform);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("Windows 11") ==
         RustDeskPresentation::PeerPlatformCategory::Windows);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("Darwin") ==
@@ -325,4 +326,67 @@ RDP_TEST_CASE(rustdesk_peer_presentation_policy_is_platform_invariant) {
         RustDeskPresentation::PeerPlatformCategory::Other);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("") ==
         RustDeskPresentation::PeerPlatformCategory::Unknown);
+}
+
+RDP_TEST_CASE(native_image_top_left_basis_preserves_asymmetric_crop_and_manual_flips) {
+    // Official V2 for crop top=.1 height=.5: F * C. Right multiplication by
+    // the input basis must keep the top .1 crop, not mirror it to the bottom.
+    auto raw = Render::IdentityNativeImageTransform();
+    raw[5] = -.5f;
+    raw[13] = .6f;
+    const auto applied = Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::TopLeftProducerTransform, 0,
+        raw.data(), Render::IdentityNativeImageTransform());
+    RDP_ASSERT(Render::NativeImageTransformNearlyEqual(applied[5], .5f));
+    RDP_ASSERT(Render::NativeImageTransformNearlyEqual(applied[13], .1f));
+    // Evaluate distinct labelled top/bottom corners through the actual shader
+    // order applied * manual(q); visual correction does not touch input axes.
+    for (bool flip : {false, true}) {
+        const float top = flip ? 1.f : 0.f;
+        const float bottom = flip ? 0.f : 1.f;
+        RDP_ASSERT(Render::NativeImageTransformNearlyEqual(
+            applied[5] * top + applied[13], flip ? .6f : .1f));
+        RDP_ASSERT(Render::NativeImageTransformNearlyEqual(
+            applied[5] * bottom + applied[13], flip ? .1f : .6f));
+    }
+}
+
+RDP_TEST_CASE(native_image_top_left_basis_rejects_bad_reads_without_reapplying_basis) {
+    auto raw = Render::IdentityNativeImageTransform();
+    raw[5] = -1;
+    raw[13] = 1;
+    const auto identity = Render::IdentityNativeImageTransform();
+    const auto applied = Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::TopLeftProducerTransform, 0, raw.data(), identity);
+    RDP_ASSERT(applied == identity);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::TopLeftProducerTransform, -1, raw.data(), applied) == applied);
+    for (int index : {0, 3, 15}) {
+        auto bad = raw;
+        bad[index] = index == 3 ? .5f : 0.f;
+        RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+            Render::NativeImagePresentationMode::TopLeftProducerTransform, 0, bad.data(), applied) == applied);
+    }
+    raw[0] = std::numeric_limits<float>::quiet_NaN();
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::TopLeftProducerTransform, 0, raw.data(), applied) == applied);
+}
+
+RDP_TEST_CASE(decoder_attempt_failures_survive_producer_lifetime_and_isolate_generations) {
+    Render::DecoderAttemptDiagnostics journal;
+    const Render::DecoderSessionIdentity first {71, 2, 301};
+    const Render::DecoderSessionIdentity replacement {71, 3, 302};
+    const auto serial = journal.begin(first, 1, 1920, 1080, 5);
+    journal.update(first, serial, [](Render::DecoderAttemptDiagnostic& value) {
+        value.stage = static_cast<int>(Render::DecoderAttemptStage::Configure);
+        value.result = -1;
+        value.platformCode = 401;
+    });
+    RDP_ASSERT(journal.snapshot(first).back().platformCode == 401);
+    journal.update(replacement, serial, [](Render::DecoderAttemptDiagnostic& value) { value.platformCode = 0; });
+    RDP_ASSERT(journal.snapshot(first).back().platformCode == 401);
+    RDP_ASSERT(journal.snapshot(replacement).empty());
+    for (int i = 0; i < 10; ++i) journal.begin(first, 0, 1920, 1080, i + 6);
+    RDP_ASSERT(journal.snapshot(first).size() == 4);
+    RDP_ASSERT(journal.snapshot(first).back().decoderGeneration == 15);
 }

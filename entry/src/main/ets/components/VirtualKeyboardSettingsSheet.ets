@@ -1,5 +1,8 @@
 import { common } from '@kit.AbilityKit';
-import { promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { LengthMetrics, promptAction } from '@kit.ArkUI';
 import {
   RemoteCustomShortcut,
   RemoteCustomShortcutKeyGroup,
@@ -13,8 +16,17 @@ import {
   remoteCustomShortcutKeyAvailableOnPlatform,
   remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
-  upsertRemoteCustomShortcut
+  moveRemoteCustomShortcut,
+  upsertRemoteCustomShortcutSteps,
+  remoteCustomShortcutSteps,
+  remoteCustomShortcutStepsLabel,
+  remoteCustomShortcutDisplayName,
+  REMOTE_CUSTOM_SHORTCUT_GROUPS,
+  REMOTE_CUSTOM_SHORTCUT_MAX_STEPS,
+  REMOTE_CUSTOM_SHORTCUT_NAME_MAX
 } from '../services/RemoteCustomShortcutPolicy';
+import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
 import {
   normalizeRemoteShortcutPlatform,
   RemoteKeyboardPreferences,
@@ -52,16 +64,23 @@ export struct VirtualKeyboardSettingsSheet {
   @State private simpleKeyboardEnabled: boolean = false;
   @State private functionKeysVisible: boolean = true;
   @State private closeAfterShortcut: boolean = false;
+  @State private autoOpenOnRemoteClick: boolean = false;
   @State private systemSnapshot: RemoteSystemInputMethodSnapshot = {
     available: false, currentLabel: '', currentSubtype: '', methods: [], error: ''
   };
   @State private systemLoading: boolean = false;
   @State private customShortcuts: Array<RemoteCustomShortcut> = [];
-  @State private editorVisible: boolean = false;
+  @State @Watch('reportEditorDirty') private editorVisible: boolean = false;
   @State private editingId: string = '';
-  @State private modifierCodes: Array<number> = [];
+  @State @Watch('reportEditorDirty') private modifierCodes: Array<number> = [];
   @State private actionGroup: RemoteCustomShortcutKeyGroup = 'letters';
-  @State private actionKeyCode: number = 2017;
+  @State @Watch('reportEditorDirty') private actionKeyCode: number = 2017;
+  // Completed steps of the sequence being edited; the modifier/key pickers edit step `activeStep`.
+  @State @Watch('reportEditorDirty') private draftSteps: Array<Array<number>> = [];
+  @State @Watch('reportEditorDirty') private activeStep: number = 0;
+  @State @Watch('reportEditorDirty') private draftName: string = '';
+  @State private recording: boolean = false;
+  private recordModifiers: Array<number> = [];
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
   @State private harmonyShortcutBlocking: HarmonyShortcutBlockingPreferences =
@@ -75,8 +94,14 @@ export struct VirtualKeyboardSettingsSheet {
     RemoteKeyboardSettingsService.getInstance();
   onClose: () => void = (): void => {};
   onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header and descriptions of at least 12vp. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
+  /** A new combo, or changes to the one being edited, that are not saved yet (closing the sheet asks first). */
+  onCustomEditorDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  private editorStart: string = '';
 
   private dark(): boolean { return this.theme === 'dark'; }
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   private bg(): string { return this.dark() ? '#1C1C1F' : '#F4F6F9'; }
   private card(): string { return this.dark() ? 'rgba(255,255,255,0.075)' : '#FFFFFF'; }
   private cardStroke(): string {
@@ -96,6 +121,7 @@ export struct VirtualKeyboardSettingsSheet {
     this.simpleKeyboardEnabled = values.simpleKeyboardEnabled;
     this.functionKeysVisible = values.functionKeysVisible;
     this.closeAfterShortcut = values.closePanelAfterShortcut;
+    this.autoOpenOnRemoteClick = values.autoOpenOnRemoteClick;
     this.customShortcuts = this.service.loadCustomShortcuts(context);
     this.harmonyShortcutBlocking = this.service.loadHarmonyShortcutBlocking(context);
     this.selectedHarmonyShortcutDevice = harmonyShortcutDeviceClass(
@@ -140,7 +166,8 @@ export struct VirtualKeyboardSettingsSheet {
       shortcutPlatform: this.platform(),
       simpleKeyboardEnabled: this.simpleKeyboardEnabled,
       functionKeysVisible: this.functionKeysVisible,
-      closePanelAfterShortcut: this.closeAfterShortcut
+      closePanelAfterShortcut: this.closeAfterShortcut,
+      autoOpenOnRemoteClick: this.autoOpenOnRemoteClick
     };
     if (!this.service.savePreferences(values, getContext(this) as common.Context)) {
       promptAction.showToast({ message: '键盘设置保存失败', duration: 2000 });
@@ -264,13 +291,31 @@ export struct VirtualKeyboardSettingsSheet {
     return result;
   }
 
+  /** All steps with the step under edit replaced by the live picker state. */
+  private allDraftSteps(): Array<Array<number>> {
+    const steps: Array<Array<number>> = this.draftSteps.map((step: Array<number>): Array<number> => step.slice(0));
+    if (this.activeStep >= steps.length) { steps.push(this.draftKeyCodes()); } else { steps[this.activeStep] = this.draftKeyCodes(); }
+    return steps;
+  }
+
   private visibleCustomShortcuts(): Array<RemoteCustomShortcut> {
     return this.customShortcuts.filter((shortcut: RemoteCustomShortcut): boolean =>
       remoteCustomShortcutAvailableOnPlatform(shortcut, this.platform()));
   }
 
   private draftLabel(): string {
-    return remoteCustomShortcutLabelForPlatform(this.draftKeyCodes(), this.platform());
+    return remoteCustomShortcutStepsLabel(this.allDraftSteps(), this.platform());
+  }
+
+  private stepLabel(index: number): string {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    return index < steps.length ? remoteCustomShortcutLabelForPlatform(steps[index], this.platform()) : '';
+  }
+
+  private stepIndexes(): Array<number> {
+    const result: Array<number> = [];
+    for (let index: number = 0; index < this.allDraftSteps().length; index++) { result.push(index); }
+    return result;
   }
 
   private groupLabel(group: RemoteCustomShortcutKeyGroup): string {
@@ -279,6 +324,8 @@ export struct VirtualKeyboardSettingsSheet {
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
     if (group === 'directions') { return '方向'; }
+    if (group === 'system') { return '系统键'; }
+    if (group === 'numpad') { return '小键盘'; }
     return '导航';
   }
 
@@ -309,55 +356,151 @@ export struct VirtualKeyboardSettingsSheet {
     return result;
   }
 
+  private loadPicker(step: Array<number>): void {
+    this.modifierCodes = step.slice(0, Math.max(0, step.length - 1));
+    this.actionKeyCode = step.length === 0 ? 2017 : step[step.length - 1];
+    this.actionGroup = remoteCustomShortcutKeyGroupForKeyCode(this.actionKeyCode);
+  }
+
+  private editorSnapshot(): string {
+    return JSON.stringify([this.draftName, this.allDraftSteps()]);
+  }
+
+  private reportEditorDirty(): void {
+    this.onCustomEditorDirtyChange(this.editorVisible && this.editorSnapshot() !== this.editorStart);
+  }
+
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
+    this.editorStart = '';
     this.editorVisible = true;
     this.onCustomEditorVisibleChange(true);
     this.editingId = shortcut === null ? '' : shortcut.id;
-    this.modifierCodes = shortcut === null ? [] :
-      shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
-    this.actionKeyCode = shortcut === null || shortcut.keyCodes.length === 0 ?
-      2017 : shortcut.keyCodes[shortcut.keyCodes.length - 1];
-    this.actionGroup = remoteCustomShortcutKeyGroupForKeyCode(this.actionKeyCode);
+    this.draftName = shortcut === null ? '' : (shortcut.name ?? '');
+    const steps: Array<Array<number>> = shortcut === null ? [[2072, 2017]] : remoteCustomShortcutSteps(shortcut);
+    this.draftSteps = steps;
+    this.activeStep = 0;
+    this.recording = false;
+    this.loadPicker(steps[0]);
+    // Opening the editor changes nothing yet; only edits after this point count as unsaved.
+    this.editorStart = this.editorSnapshot();
+    this.reportEditorDirty();
+  }
+
+  /** Switch the picker to another step, keeping the edits of the current one. */
+  private selectStep(index: number): void {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    this.draftSteps = steps;
+    this.activeStep = Math.max(0, Math.min(index, steps.length - 1));
+    this.loadPicker(steps[this.activeStep]);
+  }
+
+  private addStep(): void {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    if (steps.length >= REMOTE_CUSTOM_SHORTCUT_MAX_STEPS) { return; }
+    steps.push([2072, 2017]);
+    this.draftSteps = steps;
+    this.activeStep = steps.length - 1;
+    this.loadPicker(steps[this.activeStep]);
+  }
+
+  private removeStep(index: number): void {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    if (steps.length <= 1) { return; }
+    steps.splice(index, 1);
+    this.draftSteps = steps;
+    this.activeStep = Math.min(this.activeStep, steps.length - 1);
+    this.loadPicker(steps[this.activeStep]);
   }
 
   private closeEditor(): void {
     this.editorVisible = false;
     this.onCustomEditorVisibleChange(false);
     this.editingId = '';
+    this.draftName = '';
+    this.draftSteps = [];
+    this.activeStep = 0;
+    this.recording = false;
     this.modifierCodes = [];
     this.actionGroup = 'letters';
     this.actionKeyCode = 2017;
+  }
+
+  private persist(next: Array<RemoteCustomShortcut>): boolean {
+    if (!this.service.saveCustomShortcuts(next, getContext(this) as common.Context)) {
+      promptAction.showToast({ message: '自定义组合键保存失败', duration: 2000 });
+      return false;
+    }
+    this.customShortcuts = next;
+    return true;
   }
 
   private saveCustomShortcut(): void {
     const id: string = this.editingId.length > 0 ? this.editingId :
       'shortcut-settings-' + Date.now().toString() + '-' + (++this.customSequence).toString();
     const update: RemoteCustomShortcutUpdate =
-      upsertRemoteCustomShortcut(this.customShortcuts, id, this.draftKeyCodes());
+      upsertRemoteCustomShortcutSteps(this.customShortcuts, id, this.draftName, this.allDraftSteps());
     if (!update.accepted) {
       promptAction.showToast({ message: update.reason, duration: 1800 });
       return;
     }
-    if (!this.service.saveCustomShortcuts(update.shortcuts, getContext(this) as common.Context)) {
-      promptAction.showToast({ message: '自定义组合键保存失败', duration: 2000 });
-      return;
-    }
-    this.customShortcuts = update.shortcuts;
-    this.closeEditor();
+    if (this.persist(update.shortcuts)) { this.closeEditor(); }
   }
 
-  private deleteCustomShortcut(id: string): void {
-    const next: Array<RemoteCustomShortcut> = removeRemoteCustomShortcut(this.customShortcuts, id);
-    if (this.service.saveCustomShortcuts(next, getContext(this) as common.Context)) {
-      this.customShortcuts = next;
+  private canAddShortcut(): boolean { return this.customShortcuts.length < 32; }
+
+  private moveCustomShortcut(id: string, delta: number): void {
+    this.persist(moveRemoteCustomShortcut(this.customShortcuts, id, delta));
+  }
+
+  /** Opens a copy in the editor as a new entry; an unchanged sequence would be rejected as a duplicate. */
+  private duplicateCustomShortcut(shortcut: RemoteCustomShortcut): void {
+    this.beginEditor(shortcut);
+    this.editingId = '';
+    const base: string = (shortcut.name ?? '').length > 0 ? (shortcut.name ?? '') : '副本';
+    this.draftName = base.slice(0, REMOTE_CUSTOM_SHORTCUT_NAME_MAX - 2) + ' 2';
+  }
+
+  private deleteCustomShortcut(shortcut: RemoteCustomShortcut): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除组合键',
+      message: '删除「' + remoteCustomShortcutDisplayName(shortcut, this.platform()) + '」？此操作不可撤销。',
+      buttons: [{ text: '取消', color: this.text2() }, { text: '删除', color: this.danger() }]
+    }).then((result): void => {
+      if (result.index === 1) { this.persist(removeRemoteCustomShortcut(this.customShortcuts, shortcut.id)); }
+    }).catch((): void => {});
+  }
+
+  /** Physical keyboard recording: modifiers are collected, the first other key completes the step. */
+  private recordKey(event: KeyEvent): boolean {
+    if (!this.recording) { return false; }
+    const code: number = event.keyCode === 2073 ? 2072 : event.keyCode === 2046 ? 2045 :
+      event.keyCode === 2048 ? 2047 : event.keyCode === 2077 ? 2076 : event.keyCode;
+    const modifier: boolean = code === 2072 || code === 2045 || code === 2047 || code === 2076;
+    if (event.type === KeyType.Down) {
+      if (modifier) {
+        if (this.recordModifiers.indexOf(code) < 0) { this.recordModifiers.push(code); }
+        return true;
+      }
+      const group: RemoteCustomShortcutKeyGroup = remoteCustomShortcutKeyGroupForKeyCode(code);
+      const known: boolean = remoteCustomShortcutKeyOptions(group, this.platform())
+        .some((option: RemoteCustomShortcutKeyOption): boolean => option.keyCode === code);
+      if (known) {
+        this.modifierCodes = this.recordModifiers.slice(0);
+        this.actionKeyCode = code;
+        this.actionGroup = group;
+        this.recording = false;
+      }
+      return true;
     }
+    if (modifier) { this.recordModifiers = this.recordModifiers.filter((item: number): boolean => item !== code); }
+    return true;
   }
 
   @Builder
   private sectionTitle(title: string, subtitle: string) {
     Column({ space: 3 }) {
       Text(title).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.text()).width('100%')
-      Text(subtitle).fontSize(10).fontColor(this.text2()).width('100%')
+      Text(subtitle).fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).width('100%')
     }.width('100%').alignItems(HorizontalAlign.Start)
       .margin({ top: this.contentLayout().sectionTopMargin, bottom: 10 })
   }
@@ -368,7 +511,7 @@ export struct VirtualKeyboardSettingsSheet {
     Row() {
       Column({ space: 3 }) {
         Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.text())
-        Text(subtitle).fontSize(10).fontColor(this.text2()).maxLines(2)
+        Text(subtitle).fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: enabled })
         .selectedColor(this.accentColor).onChange(onChange)
@@ -433,7 +576,7 @@ export struct VirtualKeyboardSettingsSheet {
         Row({ space: 6 }) {
           Text(method.label).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
           if (method.current) {
-            Text('当前').fontSize(8).fontColor('#FFFFFF')
+            Text('当前').fontSize(8).fontColor(appUiOnAccentText(this.accentColor))
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
               .borderRadius(5).backgroundColor(this.accentColor)
           }
@@ -442,7 +585,7 @@ export struct VirtualKeyboardSettingsSheet {
           }
         }
         Text(method.subtypeSummary.length > 0 ? method.subtypeSummary : method.bundleName)
-          .fontSize(9).fontColor(this.text2()).maxLines(2)
+          .fontSize(this.modern() ? 12 : 9).fontColor(this.text2()).maxLines(2)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.text2()])
     }
@@ -456,7 +599,7 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private modifierChoice(label: string, keyCode: number) {
     Button(label).height(34).layoutWeight(1).fontSize(10).borderRadius(8)
-      .fontColor(this.modifierActive(keyCode) ? '#FFFFFF' : this.text2())
+      .fontColor(this.modifierActive(keyCode) ? appUiOnAccentText(this.accentColor) : this.text2())
       .backgroundColor(this.modifierActive(keyCode) ? this.accentColor : this.card())
       .onClick((): void => { this.toggleModifier(keyCode); })
   }
@@ -465,7 +608,7 @@ export struct VirtualKeyboardSettingsSheet {
   private groupChoice(group: RemoteCustomShortcutKeyGroup) {
     Text(this.groupLabel(group)).height(30).layoutWeight(1).fontSize(9)
       .textAlign(TextAlign.Center).borderRadius(8)
-      .fontColor(this.actionGroup === group ? '#FFFFFF' : this.text2())
+      .fontColor(this.actionGroup === group ? appUiOnAccentText(this.accentColor) : this.text2())
       .backgroundColor(this.actionGroup === group ? this.accentColor : this.card())
       .onClick((): void => {
         this.actionGroup = group;
@@ -480,7 +623,7 @@ export struct VirtualKeyboardSettingsSheet {
     Text(option.label).height(this.customEditorLayout().itemHeight).width('100%')
       .fontSize(9).textAlign(TextAlign.Center)
       .borderRadius(7)
-      .fontColor(this.actionKeyCode === option.keyCode ? '#FFFFFF' : this.text2())
+      .fontColor(this.actionKeyCode === option.keyCode ? appUiOnAccentText(this.accentColor) : this.text2())
       .backgroundColor(this.actionKeyCode === option.keyCode ? this.accentColor : this.card())
       .onClick((): void => { this.actionKeyCode = option.keyCode; })
   }
@@ -498,14 +641,38 @@ export struct VirtualKeyboardSettingsSheet {
   }
 
   @Builder
+  private stepChip(index: number) {
+    Row({ space: 4 }) {
+      Text((index + 1).toString()).fontSize(9).fontWeight(FontWeight.Bold)
+        .fontColor(index === this.activeStep ? this.accentColor : '#FFFFFF')
+        .width(16).height(16).textAlign(TextAlign.Center).borderRadius(8)
+        .backgroundColor(index === this.activeStep ? '#FFFFFF' : this.text2())
+      Text(this.stepLabel(index)).fontSize(10).maxLines(1)
+        .fontColor(index === this.activeStep ? '#FFFFFF' : this.text())
+      if (this.allDraftSteps().length > 1) {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(10)
+          .fontColor([index === this.activeStep ? '#FFFFFF' : this.text2()])
+          .onClick((): void => { this.removeStep(index); })
+      }
+    }.height(30).padding({ left: 6, right: 8 }).borderRadius(15)
+      .backgroundColor(index === this.activeStep ? this.accentColor : this.card())
+      .border({ width: 0.5, color: this.cardStroke() })
+      .onClick((): void => { this.selectStep(index); })
+  }
+
+  @Builder
   private customEditor() {
-    Column({ space: 8 }) {
+    Column({ space: 10 }) {
       Row() {
         Text(this.editingId.length > 0 ? '编辑组合键' : '新建组合键')
-          .fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.text()).layoutWeight(1)
-        Button('取消').height(32).fontSize(10).backgroundColor(Color.Transparent)
+          .fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.text()).layoutWeight(1)
+        Button('取消').height(32).fontSize(11).backgroundColor(Color.Transparent)
           .fontColor(this.text2()).onClick((): void => { this.closeEditor(); })
       }.width('100%')
+      TextInput({ text: this.draftName, placeholder: '名称（可选，例如「全部保存」）' })
+        .height(38).fontSize(12).maxLength(REMOTE_CUSTOM_SHORTCUT_NAME_MAX)
+        .backgroundColor(this.card()).borderRadius(10)
+        .onChange((value: string): void => { this.draftName = value; })
       if (this.contentLayout().stackPrimaryActions) {
         Column({ space: 6 }) {
           Row() { this.editorPlatformChoice('windows', 'Windows · Ctrl') }.width('100%')
@@ -517,6 +684,18 @@ export struct VirtualKeyboardSettingsSheet {
           this.editorPlatformChoice('macos', 'macOS · Cmd')
         }.width('100%')
       }
+      Text('按键序列 · 依次发送，最多 ' + REMOTE_CUSTOM_SHORTCUT_MAX_STEPS.toString() + ' 步')
+        .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).width('100%')
+      Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(6), cross: LengthMetrics.vp(6) } }) {
+        ForEach(this.stepIndexes(), (index: number): void => { this.stepChip(index) },
+          (index: number): string => index.toString() + ':' + this.stepLabel(index) + ':' + this.activeStep.toString())
+        if (this.allDraftSteps().length < REMOTE_CUSTOM_SHORTCUT_MAX_STEPS) {
+          Text(this.modern() ? '添加下一步' : '＋ 下一步').fontSize(this.modern() ? 12 : 10).fontColor(this.accentColor).height(30)
+            .padding({ left: 10, right: 10 }).borderRadius(15)
+            .border({ width: 1, color: this.accentColor, style: BorderStyle.Dashed })
+            .onClick((): void => { this.addStep(); })
+        }
+      }.width('100%')
       Row({ space: 5 }) {
         if (this.platform() === 'macos') {
           this.modifierChoice('Cmd', 2076)
@@ -531,31 +710,49 @@ export struct VirtualKeyboardSettingsSheet {
         }
       }.width('100%')
       Row({ space: 4 }) {
-        this.groupChoice('letters')
-        this.groupChoice('digits')
-        this.groupChoice('symbols')
-        this.groupChoice('functions')
-        this.groupChoice('directions')
-        this.groupChoice('navigation')
+        ForEach(REMOTE_CUSTOM_SHORTCUT_GROUPS.slice(0, 4), (group: RemoteCustomShortcutKeyGroup): void => {
+          this.groupChoice(group)
+        }, (group: RemoteCustomShortcutKeyGroup): string => group)
+      }.width('100%')
+      Row({ space: 4 }) {
+        ForEach(REMOTE_CUSTOM_SHORTCUT_GROUPS.slice(4), (group: RemoteCustomShortcutKeyGroup): void => {
+          this.groupChoice(group)
+        }, (group: RemoteCustomShortcutKeyGroup): string => group)
       }.width('100%')
       Column({ space: this.customEditorLayout().itemGap }) {
         ForEach(this.customActionRows(),
           (row: Array<RemoteCustomShortcutKeyOption>): void => { this.customActionRow(row) },
           (row: Array<RemoteCustomShortcutKeyOption>): string => row[0].keyCode.toString())
       }.width('100%')
-      Row() {
-        Text(this.draftLabel().length > 0 ? this.draftLabel() : '请选择修饰键和主键')
-          .fontSize(11).fontColor(this.draftLabel().length > 0 ? this.text() : this.danger())
-          .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Button('保存').height(34).fontSize(11).borderRadius(9)
-          .backgroundColor(this.draftLabel().length > 0 ? this.accentColor : this.card())
-          .fontColor(this.draftLabel().length > 0 ? '#FFFFFF' : this.text2())
-          .enabled(this.draftLabel().length > 0)
-          .onClick((): void => { this.saveCustomShortcut(); })
-      }.width('100%')
+      Button(this.recording ? '请在实体键盘上按下组合…（点此取消）' : '用实体键盘录制本步')
+        .width('100%').height(36).fontSize(11).borderRadius(10)
+        .backgroundColor(this.recording ? this.accentSoft() : this.card())
+        .fontColor(this.recording ? this.accentColor : this.text())
+        .onClick((): void => { this.recordModifiers = []; this.recording = !this.recording; })
+        .onKeyEvent((event: KeyEvent): void => { if (this.recordKey(event)) { event.stopPropagation(); } })
+      Column({ space: 4 }) {
+        Text(this.draftName.trim().length > 0 ? this.draftName.trim() : '预览').fontSize(this.modern() ? 12 : 10).fontColor(this.text2())
+          .width('100%')
+        Text(this.draftLabel().length > 0 ? this.draftLabel() :
+          '当前步骤不完整：字母、数字和符号需要至少一个修饰键')
+          .fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.draftLabel().length > 0 ? this.text() : this.danger()).width('100%')
+      }.width('100%').padding(10).borderRadius(10).backgroundColor(this.accentSoft())
+      Button('保存').width('100%').height(40).fontSize(13).borderRadius(12)
+        .backgroundColor(this.draftLabel().length > 0 ? this.accentColor : this.card())
+        .fontColor(this.draftLabel().length > 0 ? appUiOnAccentText(this.accentColor) : this.text2())
+        .enabled(this.draftLabel().length > 0)
+        .onClick((): void => { this.saveCustomShortcut(); })
     }.width('100%').padding(this.customEditorLayout().cardPadding)
-      .borderRadius(14).backgroundColor(this.card())
+      .borderRadius(16).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
+  }
+
+  @Builder
+  private listIcon(symbol: Resource, label: string, color: ResourceColor, enabled: boolean, action: () => void) {
+    Button() { SymbolGlyph(symbol).fontSize(15).fontColor([color]) }
+      .width(32).height(32).padding(0).backgroundColor(Color.Transparent)
+      .enabled(enabled).opacity(enabled ? 1 : 0.3).accessibilityText(label).onClick(action)
   }
 
   @Builder
@@ -563,9 +760,9 @@ export struct VirtualKeyboardSettingsSheet {
     Column({ space: 6 }) {
       Row() {
         Text(this.customShortcuts.length.toString() + ' / 32')
-          .fontSize(10).fontColor(this.text2()).layoutWeight(1)
-        Button('＋ 新建').height(34).fontSize(11).borderRadius(9)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+          .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).layoutWeight(1)
+        Button(this.modern() ? '新建组合键' : '＋ 新建').height(this.modern() ? 44 : 34).fontSize(this.modern() ? 13 : 11).borderRadius(9)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.beginEditor(); })
       }.width('100%')
       if (this.visibleCustomShortcuts().length === 0) {
@@ -574,17 +771,33 @@ export struct VirtualKeyboardSettingsSheet {
           .width('100%').height(58).fontSize(11).textAlign(TextAlign.Center)
           .fontColor(this.text2()).backgroundColor(this.card()).borderRadius(12)
       } else {
-        ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut): void => {
-          Row() {
-            Text(remoteCustomShortcutLabelForPlatform(shortcut.keyCodes, this.platform()))
-              .fontSize(12).fontColor(this.text()).layoutWeight(1)
-            Button('编辑').height(32).fontSize(10).backgroundColor(Color.Transparent)
-              .fontColor(this.accentColor).onClick((): void => { this.beginEditor(shortcut); })
-            Button('删除').height(32).fontSize(10).backgroundColor(Color.Transparent)
-              .fontColor(this.danger()).onClick((): void => { this.deleteCustomShortcut(shortcut.id); })
-          }.width('100%').padding({ left: 14, right: 6, top: 6, bottom: 6 })
+        ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut, index: number): void => {
+          Row({ space: 2 }) {
+            Column({ space: 2 }) {
+              Text(remoteCustomShortcutDisplayName(shortcut, this.platform()))
+                .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.text()).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              if ((shortcut.name ?? '').length > 0 || remoteCustomShortcutSteps(shortcut).length > 1) {
+                Text(remoteCustomShortcutStepsLabel(remoteCustomShortcutSteps(shortcut), this.platform()))
+                  .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            this.listIcon($r('sys.symbol.chevron_up'), '上移', this.text2(), index > 0,
+              (): void => { this.moveCustomShortcut(shortcut.id, -1); })
+            this.listIcon($r('sys.symbol.chevron_down'), '下移', this.text2(),
+              index < this.visibleCustomShortcuts().length - 1,
+              (): void => { this.moveCustomShortcut(shortcut.id, 1); })
+            this.listIcon($r('sys.symbol.rectangle_on_rectangle'), '复制', this.text2(),
+              this.canAddShortcut(), (): void => { this.duplicateCustomShortcut(shortcut); })
+            this.listIcon($r('sys.symbol.square_and_pencil'), '编辑', this.accentColor, true,
+              (): void => { this.beginEditor(shortcut); })
+            this.listIcon($r('sys.symbol.ohos_trash'), '删除', this.danger(), true,
+              (): void => { this.deleteCustomShortcut(shortcut); })
+          }.width('100%').padding({ left: 14, right: 4, top: 8, bottom: 8 }).borderRadius(12)
             .backgroundColor(this.card()).border({ width: 0.5, color: this.cardStroke() })
-        }, (shortcut: RemoteCustomShortcut): string => shortcut.id)
+        }, (shortcut: RemoteCustomShortcut, index: number): string =>
+          shortcut.id + ':' + index.toString() + ':' + (shortcut.name ?? '') + ':' + shortcut.label)
       }
     }.width('100%')
   }
@@ -603,25 +816,25 @@ export struct VirtualKeyboardSettingsSheet {
         Text(eyebrow).fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.text())
         if (section === 'behavior') {
           Text(this.simpleKeyboardEnabled ? '精简键盘已开启' : '完整键盘已开启')
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'shortcuts') {
           Text(this.platform() === 'macos' ? 'macOS · Cmd / Option' : 'Windows · Ctrl / Alt / Win')
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'functions') {
           Text((this.functionKeysVisible ? '完整功能键' : '精简功能键') + ' · ' +
             (this.closeAfterShortcut ? '发送后关闭' : '连续发送'))
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'custom') {
           Text(this.customShortcuts.length.toString() + ' 个已保存 · 上限 32 个')
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'harmonyShortcuts') {
           Text(this.harmonyShortcutDeviceLabel(this.selectedHarmonyShortcutDevice) + ' · ' +
             this.harmonyShortcutDeviceSubtitle(this.selectedHarmonyShortcutDevice))
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else {
           Text(this.systemLoading ? '正在读取系统输入法状态' :
             (this.systemSnapshot.available ? '当前：' + this.systemSnapshot.currentLabel : '由系统统一管理'))
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
     }.width('100%').padding(this.contentLayout().heroPadding)
@@ -632,15 +845,15 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private refreshInputMethodsButton() {
     Button(this.systemLoading ? '正在刷新…' : '刷新状态')
-      .width('100%').height(42).fontSize(11).borderRadius(12)
+      .width('100%').height(this.modern() ? 44 : 42).fontSize(this.modern() ? 13 : 11).borderRadius(12)
       .backgroundColor(this.card()).fontColor(this.text())
       .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
   }
 
   @Builder
   private openSystemInputMethodSettingsButton() {
-    Button('系统输入法设置').width('100%').height(42).fontSize(11)
-      .borderRadius(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+    Button('系统输入法设置').width('100%').height(this.modern() ? 44 : 42).fontSize(this.modern() ? 13 : 11)
+      .borderRadius(12).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
       .onClick((): void => { this.openSystemSettings(); })
   }
 
@@ -683,6 +896,13 @@ export struct VirtualKeyboardSettingsSheet {
       '使用 HarmonyOS API 23 减少软键盘中的非必要扩展区域',
       this.simpleKeyboardEnabled, (enabled: boolean): void => {
         this.simpleKeyboardEnabled = enabled;
+        this.savePreferences();
+      })
+    this.sectionTitle('远端输入框', '在连接中点击远端输入框时自动唤起软键盘。')
+    this.switchRow('点击远端输入框自动弹起键盘',
+      '横屏使用悬浮键盘，竖屏使用正常键盘；仅在虚拟键盘模式下生效',
+      this.autoOpenOnRemoteClick, (enabled: boolean): void => {
+        this.autoOpenOnRemoteClick = enabled;
         this.savePreferences();
       })
     this.sectionTitle('文本发送规则', '这些兼容规则用于避免预编辑文字和远端按键重复。')
@@ -747,7 +967,7 @@ export struct VirtualKeyboardSettingsSheet {
   private customShortcutContent() {
     this.pageHero('custom', '可复用组合键')
     this.sectionTitle('自定义组合键',
-      '支持修饰键与字母、数字、符号、F 键、方向键及导航键。')
+      '可命名、排序，支持最多 4 步的按键序列；系统键、功能键、导航键和小键盘可单独使用。')
     this.infoRow('当前标签平台', this.platform() === 'macos' ? 'macOS' : 'Windows')
     Column().height(8)
     if (this.editorVisible) { this.customEditor() } else { this.customShortcutList() }
@@ -765,7 +985,7 @@ export struct VirtualKeyboardSettingsSheet {
         Text(this.harmonyShortcutProtocolLabel(protocol))
           .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
         Text(this.harmonyShortcutProtocolStatus(deviceClass, protocol))
-          .fontSize(9).fontColor(this.text2())
+          .fontSize(this.modern() ? 12 : 9).fontColor(this.text2())
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({
         type: ToggleType.Switch,
@@ -829,7 +1049,7 @@ export struct VirtualKeyboardSettingsSheet {
     this.harmonyShortcutDeviceCard()
     Text('屏蔽仅在远程会话位于前台时生效。RustDesk 支持音量键，其他协议支持音量和媒体键；' +
       'SSH 没有通用媒体按键通道，因此不显示。')
-      .fontSize(9).fontColor(this.text2()).lineHeight(14).width('100%')
+      .fontSize(this.modern() ? 12 : 9).fontColor(this.text2()).lineHeight(this.modern() ? 18 : 14).width('100%')
       .padding({ left: 4, right: 4, top: 2 })
   }
 
@@ -842,7 +1062,12 @@ export struct VirtualKeyboardSettingsSheet {
     } else if (this.requestedSection === 'functions') {
       this.functionPanelContent()
     } else if (this.requestedSection === 'custom') {
-      this.customShortcutContent()
+      if (ProEntries.visible(PRO_PERSONALIZATION_FEATURE)) {
+        this.customShortcutContent()
+      } else {
+        Text('自定义组合键是 Pro 个性化方案的一部分；已保存的组合键会保留，开通 Pro 后恢复。')
+          .fontSize(13).fontColor(this.text2()).lineHeight(20).width('100%').padding(16)
+      }
     } else if (this.requestedSection === 'harmonyShortcuts') {
       this.harmonyShortcutBlockingContent()
     } else {
@@ -854,6 +1079,15 @@ export struct VirtualKeyboardSettingsSheet {
   build() {
     Column() {
       Row() {
+        if (this.modern()) {
+          AppSheetHeader({ title: this.pageTitle(), subtitle: this.pageSubtitle(), horizontalPadding: 0,
+            whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+            .width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+            .padding({
+              left: this.contentLayout().headerHorizontalPadding,
+              right: this.contentLayout().headerHorizontalPadding
+            })
+        } else {
         Row() {
           Column({ space: 3 }) {
             Text('键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
@@ -861,7 +1095,7 @@ export struct VirtualKeyboardSettingsSheet {
             Text(this.pageTitle()).fontSize(this.contentLayout().titleFontSize)
               .fontWeight(FontWeight.Bold).fontColor(this.text()).maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(this.pageSubtitle()).fontSize(10).fontColor(this.text2()).maxLines(2)
+            Text(this.pageSubtitle()).fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Button() {
             SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
@@ -875,6 +1109,7 @@ export struct VirtualKeyboardSettingsSheet {
             top: this.contentLayout().headerTopPadding,
             bottom: this.contentLayout().headerBottomPadding
           })
+        }
       }.width('100%').justifyContent(FlexAlign.Center)
 
       Scroll() {

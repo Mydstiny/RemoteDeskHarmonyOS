@@ -93,8 +93,8 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
     it('merges_independent_dirty_markers_and_clears_only_a_covered_revision',
       0, (): void => {
         const merged: Record<string, number> = mergeMutationRevisionMaps(
-          { remotehosts: 10, sshkeys: 7 },
-          { remotehosts: 12, totpentries: 9 });
+          { 'remotehosts': 10, 'sshkeys': 7 },
+          { 'remotehosts': 12, 'totpentries': 9 });
         expect(merged['remotehosts']).assertEqual(12);
         expect(merged['sshkeys']).assertEqual(7);
         expect(merged['totpentries']).assertEqual(9);
@@ -188,13 +188,13 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudSyncTargetTableCompleted(null, 'remotehosts')).assertFalse();
       expect(cloudSyncTargetTableCompleted({}, 'remotehosts')).assertFalse();
       expect(cloudSyncTargetTableCompleted({
-        remotehosts: {
+        'remotehosts': {
           upload: { successful: 1, failed: 0, remained: 0 },
           download: { successful: 2, failed: 0, remained: 0 }
         }
       }, 'remotehosts')).assertTrue();
       expect(cloudSyncTargetTableCompleted({
-        remotehosts: {
+        'remotehosts': {
           upload: { successful: 0, failed: 0, remained: 1 },
           download: { successful: 0, failed: 0, remained: 0 }
         }
@@ -280,6 +280,10 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(shouldBlockAutomaticRetry('version_conflict')).assertTrue();
       expect(shouldBlockAutomaticRetry('network')).assertFalse();
       expect(shouldBlockAutomaticRetry('no_selection')).assertFalse();
+      // A forgotten-password reset pauses uploads; it is not a sync conflict.
+      expect(shouldBlockAutomaticRetry('crypto_reset_pending')).assertFalse();
+      expect(cloudSyncFailureMessage('crypto_reset_pending').indexOf('以本机为准覆盖云端') >= 0)
+        .assertTrue();
       expect(cloudSyncFailureMessage('version_conflict')).assertContain('版本冲突');
       expect(cloudSyncFailureMessage('no_selection')).assertContain('未启动云端传输');
     });
@@ -533,7 +537,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
               tables: string[], failedTables: string[]
             ): Promise<boolean> => {
               tables.forEach((table: string): void =>
-                completedTables.push(table));
+                { completedTables.push(table); });
               expect(failedTables.join(','))
                 .assertEqual('moonlightrecordv1');
               return true;
@@ -542,7 +546,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
           },
           (tables: string[]): void => {
             tables.forEach((table: string): void =>
-              appliedTables.push(table));
+              { appliedTables.push(table); });
           }
         );
         expect(result.ok).assertFalse();

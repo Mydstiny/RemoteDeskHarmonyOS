@@ -128,6 +128,7 @@ import {
   CloudUserSettingValue
 } from './CloudSyncSettingsPolicy';
 import {
+  LocalBackupDocument,
   localBackupColumnsForTable,
   localBackupExtensionOwnerTable,
   localBackupLocalExtensionColumns,
@@ -135,9 +136,26 @@ import {
   localBackupLocalTableNames,
   portableBackupScopeLeaseAllowed,
   PortableBackupRestorePlan,
+  PortableRestoreCryptoPlan,
+  adaptLocalBackupDocumentForRestore,
+  planForTargetCryptoContract,
+  portableRestoreCryptoDecision,
   validateCloudDownloadRollbackSnapshot,
   validateLocalBackupSnapshot
 } from './LocalBackupPolicy';
+import {
+  cryptoResetExtensionPayload,
+  cryptoResetJournalTables,
+  cryptoResetRelayAccountsJson,
+  cryptoResetSecretColumns,
+  cryptoResetSecretTables,
+  cryptoResetUploadBlockTables
+} from './CryptoResetDataPolicy';
+import {
+  BackupCryptoContract,
+  BackupCryptoRestoreDecision,
+  backupCryptoContract
+} from './BackupCryptoContractPolicy';
 import {
   DataMutationCode,
   DataMutationResult,
@@ -192,9 +210,11 @@ import {
   decodeRemoteHostDisplayPayload,
   RemoteHostDisplayPayload
 } from './CloudTableAdapter';
+import { remoteHostDisplayConfigWithForwardFields } from './RemoteHostFieldRegistry';
 import {
   extractLegacyRemoteHostDeviceTrust,
   mergeRemoteHostDeviceTrust,
+  mergeRestoredRemoteHostDeviceTrust,
   projectRemoteHostDeviceTrust,
   remoteHostDeviceTrustIsMeaningful
 } from './RemoteHostDeviceTrustPolicy';
@@ -203,6 +223,7 @@ import {
   RemoteHostLegacyPersonalization,
   remoteHostLocalPersonalizationValues
 } from './HostLocalPersonalizationPolicy';
+import { hasExplicitRustDeskPhoneChoice, restoreLocalRustDeskPhoneChoice } from './RustDeskExplicitPhonePolicy';
 import {
   decodeRustDeskPeerTwoFactorLegacyBackupRows,
   decodeRustDeskPeerTwoFactorLegacyDisplayConfig,
@@ -546,6 +567,8 @@ const VNC_CLOUD_TABLE_RENAME_KEY: string =
 const VNC_LEGACY_MIGRATION_KEY: string = 'vnc_legacy_vncrecords_migrated_v1';
 const TABLE_MUTATION_RECORD_ID: string = '__table__';
 const VNC_RESET_EPOCH_KEY: string = 'vnc_reset_epoch';
+/** Per-table upload block written by a forgotten-password reset. */
+const CRYPTO_RESET_UPLOAD_BLOCK_PREFIX: string = 'crypto_reset_upload_block|';
 
 function vncPrivateOwnerKey(record: VncRecord): string {
   if (record.deletedAt > 0 ||
@@ -801,6 +824,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private cloudDownloadCheckpointOperation:
     CloudDownloadTransactionOperation | null = null;
   private localRestoreActive: boolean = false;
+  /** Crypto decision of the last successful full-backup restore (UI feedback). */
+  private lastPortableCryptoDecision: string = '';
   private localRestorePending: boolean = false;
   // Device-local starts unbound. AccountSessionCoordinator supplies identity
   // from the current Account Kit authorization; this store verifies that it
@@ -947,14 +972,22 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       await this.initPromise;
       return;
     }
-    recordDiagnosticEvent('data.local_store', 'local_store_init', 'started');
+    const initStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_store_init', 'started',
+      0, this.currentScopeToken.generation);
     this.initPromise = this.openScopeStore(context, this.currentScopeToken);
     try {
       await this.initPromise;
       recordDiagnosticEvent('data.local_store', 'local_store_init',
         this.initialized && this.store !== null ? 'succeeded' : 'failed',
         0, this.currentScopeToken.generation,
-        this.initialized && this.store !== null ? 0 : -1);
+        this.initialized && this.store !== null ? 0 : -1,
+        Math.max(0, Date.now() - initStartedAt));
+    } catch (error) {
+      recordDiagnosticEvent('data.local_store', 'local_store_init', 'failed',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - initStartedAt));
+      throw new Error(safeError(error));
     } finally {
       this.initPromise = null;
     }
@@ -969,9 +1002,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     platformProof: PlatformCloudIdentityProof =
       unavailablePlatformCloudIdentityProof(),
     preserveAccountCompatibilityStore: boolean = false): Promise<boolean> {
+    const rebindStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'started',
+      0, token.generation);
     this.lastScopeRebindFailure = 'none';
     if (this.initialized &&
       accountScopeRebindSucceeded(token, this.currentScopeToken)) {
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'succeeded',
+        0, token.generation, 1, Math.max(0, Date.now() - rebindStartedAt));
       return true;
     }
     if (this.initPromise !== null) { await this.initPromise; }
@@ -979,10 +1017,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       this.lastScopeRebindFailure = 'transient';
       hilog.error(0x0001, 'CloudSync',
         '拒绝切换物理数据域：mutation gate 尚未关闭');
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'failed',
+        0, token.generation, -1, Math.max(0, Date.now() - rebindStartedAt));
       return false;
     }
     if (!(await this.closeCurrentStore())) {
       this.lastScopeRebindFailure = 'transient';
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'failed',
+        0, token.generation, -2, Math.max(0, Date.now() - rebindStartedAt));
       return false;
     }
     this.initPromise = this.openScopeStore(
@@ -990,11 +1032,19 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       preserveAccountCompatibilityStore);
     try {
       await this.initPromise;
+    } catch (error) {
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'failed',
+        0, token.generation, -3, Math.max(0, Date.now() - rebindStartedAt));
+      throw new Error(safeError(error));
     } finally {
       this.initPromise = null;
     }
-    return this.initialized && this.store !== null &&
+    const rebound: boolean = this.initialized && this.store !== null &&
       accountScopeRebindSucceeded(token, this.currentScopeToken);
+    recordDiagnosticEvent('data.local_store', 'local_store_rebind',
+      rebound ? 'succeeded' : 'failed', 0, token.generation,
+      rebound ? 0 : -4, Math.max(0, Date.now() - rebindStartedAt));
+    return rebound;
   }
 
   currentScope(): AccountScopeToken {
@@ -2715,7 +2765,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         !this.forwardCompatibleSchemaLocalOnly &&
           this.persistCloudSyncDurableState(state),
       selectionReenableBlocked: (table: string): boolean =>
-        this.selectionReenableBlocked(table)
+        this.selectionReenableBlocked(table),
+      cryptoResetUploadBlocked: (table: string): boolean =>
+        this.cryptoResetUploadBlocked(table)
     };
   }
 
@@ -4564,8 +4616,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
    * Any section failure aborts the artifact; an empty fallback is forbidden.
    */
   createPortableBackupSnapshot(): PortableBackupSnapshot {
+    const backupStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_backup_export', 'started',
+      0, this.currentScopeToken.generation);
     if (!this.store || !portableBackupScopeLeaseAllowed(
       this.currentScopeToken, this.currentLease)) {
+      recordDiagnosticEvent('data.local_store', 'local_backup_export', 'failed',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - backupStartedAt));
       throw new Error('portable backup requires an active local scope lease');
     }
     try {
@@ -4585,9 +4643,20 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         localTables: this.exportAllLocalTableRows()
       };
       this.commitTrackedTransaction();
+      let rowCount: number = 0;
+      const tableNames: string[] = Object.keys(snapshot.tables);
+      for (let index: number = 0; index < tableNames.length; index++) {
+        rowCount += snapshot.tables[tableNames[index]].length;
+      }
+      recordDiagnosticEvent('data.local_store', 'local_backup_export', 'succeeded',
+        0, this.currentScopeToken.generation, snapshot.rdbSchemaVersion,
+        Math.max(0, Date.now() - backupStartedAt), rowCount);
       return snapshot;
     } catch (err) {
       try { this.rollbackTrackedTransaction(); } catch (_rollbackError) {}
+      recordDiagnosticEvent('data.local_store', 'local_backup_export', 'failed',
+        0, this.currentScopeToken.generation, -2,
+        Math.max(0, Date.now() - backupStartedAt));
       throw new Error(
         'portable backup snapshot failed — ' + safeError(err));
     }
@@ -4911,7 +4980,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           'portable extension skipped (invalid owner/reference): ' + id);
         continue;
       }
-      const incoming: Record<string, string> =
+      const incomingPayload: Record<string, string> =
         JSON.parse(source['payload'] || '{}') as
           Record<string, string>;
       const predicates =
@@ -4931,6 +5000,11 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       } finally {
         existingRows.close();
       }
+      // Restored SSH/RDP trust arrives as candidates; it never replaces a
+      // trust decision this device already made.
+      const incoming: Record<string, string> = table === 'remotehosts'
+        ? mergeRestoredRemoteHostDeviceTrust(merged, incomingPayload)
+        : incomingPayload;
       const incomingKeys: string[] = Object.keys(incoming);
       for (let k = 0; k < incomingKeys.length; k++) {
         merged[incomingKeys[k]] = incoming[incomingKeys[k]];
@@ -4971,14 +5045,48 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     return changed;
   }
 
+  /** This device's crypto contract (salt and verifier) for restore decisions. */
+  private currentCryptoContract(): BackupCryptoContract {
+    return backupCryptoContract(
+      this.readCryptoParamForCurrentStore('crypto_salt'),
+      this.readCryptoParamForCurrentStore('crypto_verifier'));
+  }
+
+  /**
+   * What a restore of this full backup would do with its crypto data
+   * (preview). It looks at the same adapted plan the restore applies, so
+   * rows the plan quarantines cannot change the answer.
+   */
+  portableBackupCryptoRestoreDecision(
+    document: LocalBackupDocument
+  ): BackupCryptoRestoreDecision {
+    const plan: PortableBackupRestorePlan | null = adaptLocalBackupDocumentForRestore(
+      document, this.currentOwnerScopeId(), document.version < 3);
+    if (plan !== null) {
+      return planForTargetCryptoContract(plan, this.currentCryptoContract()).decision;
+    }
+    return portableRestoreCryptoDecision({
+      tables: document.tables,
+      extensions: document.extensions || [],
+      localTables: document.localTables || {}
+    }, this.currentCryptoContract());
+  }
+
+  /** Decision applied by the last successful portable restore ('' before any). */
+  lastPortableRestoreCryptoDecision(): string {
+    return this.lastPortableCryptoDecision;
+  }
+
   /**
    * Apply a validated portable plan as a field-level merge. Missing sections
    * and missing columns are no-ops, so an old/redacted backup cannot clear a
-   * newer table or overwrite an existing password with NULL.
+   * newer table or overwrite an existing password with NULL. A device's own
+   * master-password contract is never replaced (see BackupCryptoContractPolicy).
    */
   async mergePortableBackup(
-    plan: PortableBackupRestorePlan
+    sourcePlan: PortableBackupRestorePlan
   ): Promise<boolean> {
+    let plan: PortableBackupRestorePlan = sourcePlan;
     const fullBackup: boolean =
       plan.sensitivityMode === 'full';
     if (!this.store ||
@@ -4993,8 +5101,18 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     let transactionCommitted: boolean = false;
     let changed: number = 0;
     let moonlightRestoreChanged: boolean = false;
+    let cryptoDecision: BackupCryptoRestoreDecision = 'keep_target';
     try {
       this.store.beginTransaction();
+      // Decided inside the transaction from the committed target contract.
+      if (fullBackup) {
+        const resolved: PortableRestoreCryptoPlan =
+          planForTargetCryptoContract(plan, this.currentCryptoContract());
+        plan = resolved.plan;
+        cryptoDecision = resolved.decision;
+        hilog.info(0x0001, 'CloudSync',
+          'portable restore crypto decision=' + cryptoDecision);
+      }
       let cloudQuarantineChanged: number = 0;
       for (let i = 0; i < plan.presentTables.length; i++) {
         const table: string = plan.presentTables[i];
@@ -5095,6 +5213,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       }
       this.commitTrackedTransaction();
       transactionCommitted = true;
+      this.lastPortableCryptoDecision = fullBackup ? cryptoDecision : '';
       // The durable RDB commit is the operation truth. Runtime selection,
       // notification, and logging are post-commit conveniences and must never
       // turn a successful restore into a reported rollback/failure.
@@ -5151,8 +5270,22 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   async replaceAllTableRows(snapshot: Record<string, Array<Record<string, string>>>,
     extensions: Array<Record<string, string>> = [],
     localTables?: Record<string, Array<Record<string, string>>>): Promise<boolean> {
-    return await this.replaceAllTableRowsInternal(snapshot, extensions, null, null,
-      localTables, true, true);
+    const restoreStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_backup_restore', 'started',
+      0, this.currentScopeToken.generation);
+    try {
+      const restored: boolean = await this.replaceAllTableRowsInternal(
+        snapshot, extensions, null, null, localTables, true, true);
+      recordDiagnosticEvent('data.local_store', 'local_backup_restore',
+        restored ? 'succeeded' : 'failed', 0, this.currentScopeToken.generation,
+        restored ? 0 : -1, Math.max(0, Date.now() - restoreStartedAt));
+      return restored;
+    } catch (error) {
+      recordDiagnosticEvent('data.local_store', 'local_backup_restore', 'failed',
+        0, this.currentScopeToken.generation, -2,
+        Math.max(0, Date.now() - restoreStartedAt));
+      throw new Error(safeError(error));
+    }
   }
 
   /** Manual cloud-download rollback restores every local state owner exactly. */
@@ -5765,6 +5898,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           resolve(false);
           return;
         }
+      }
+      if (direction === 'nativeFirst' && this.cryptoResetUploadBlocked(table)) {
+        this.lastSyncFailureKind = 'crypto_reset_pending';
+        this.lastError = label + ' ' + table +
+          ': upload blocked after a forgotten-password reset';
+        hilog.warn(0x0001, 'CloudSync', this.lastError);
+        resolve(false);
+        return;
       }
       if (direction === 'nativeFirst' &&
           !this.nativeFirstTableIsSafe(table)) {
@@ -6389,7 +6530,15 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
 
   /** Atomic schema migration. RdbStore.version is the only schema truth. */
   private async createTables(): Promise<void> {
-    if (!this.store) { return; }
+    const schemaStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_store_schema', 'started',
+      0, this.currentScopeToken.generation);
+    if (!this.store) {
+      recordDiagnosticEvent('data.local_store', 'local_store_schema', 'skipped',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - schemaStartedAt));
+      return;
+    }
     const currentVersion: number = this.store.version;
     let moonlightCloudTableReady: boolean = false;
     let moonlightLocalTableReady: boolean = false;
@@ -6409,6 +6558,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         '检测到更高版本数据结构 version=' +
         currentVersion.toString() +
         '；保留数据并以本地兼容模式打开');
+      recordDiagnosticEvent('data.local_store', 'local_store_schema', 'succeeded',
+        0, this.currentScopeToken.generation, currentVersion,
+        Math.max(0, Date.now() - schemaStartedAt));
       return;
     }
     // 平台约束（已真机验证）: OpenHarmony RDB 服务在 beginTransaction() 内执行
@@ -6887,10 +7039,17 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         'Moonlight v5 schema incomplete; preserved owner-store version=' +
         currentVersion.toString());
     }
+    recordDiagnosticEvent('data.local_store', 'local_store_schema', 'succeeded',
+      0, this.currentScopeToken.generation,
+      this.store === null ? -1 : this.store.version,
+      Math.max(0, Date.now() - schemaStartedAt));
     } catch (err) {
       const detail: string = DataCrypto.errDetail(err);
       hilog.error(0x0001, 'CloudSync',
         'createTables failed at step[' + this.schemaStep + ']: ' + detail);
+      recordDiagnosticEvent('data.local_store', 'local_store_schema', 'failed',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - schemaStartedAt));
       throw new Error('schema migration failed at step[' + this.schemaStep + ']: ' + detail);
     }
   }
@@ -8619,6 +8778,50 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         safeError(err));
       return true;
     }
+  }
+
+  /**
+   * Whether uploads of `table` are blocked by a forgotten-password reset. An
+   * unreadable marker counts as blocked for the tables a reset can block.
+   */
+  cryptoResetUploadBlocked(table: string): boolean {
+    if (cryptoResetUploadBlockTables(VNC_CLOUD_TABLE).indexOf(table) < 0) { return false; }
+    const marker: CloudMetadataReadResult =
+      this.readLocalMetadataState(CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + table);
+    return marker.state !== 'absent';
+  }
+
+  /** Tables whose uploads a reset currently blocks (for the sync sheet). */
+  cryptoResetUploadBlockedTables(): string[] {
+    return cryptoResetUploadBlockTables(VNC_CLOUD_TABLE).filter(
+      (table: string): boolean => this.cryptoResetUploadBlocked(table));
+  }
+
+  /**
+   * Explicit "make this device authoritative" after a reset. Later uploads
+   * may replace the cloud copy (and other devices' data) with this device's.
+   */
+  releaseCryptoResetUploadBlock(): boolean {
+    if (!this.store) { return false; }
+    const tables: string[] = cryptoResetUploadBlockTables(VNC_CLOUD_TABLE);
+    // All markers go together: a half-released set would let a sensitive
+    // table upload while its cryptoparams stays paused.
+    try {
+      this.store.beginTransaction();
+      for (let i = 0; i < tables.length; i++) {
+        const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
+        predicates.equalTo('key', CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + tables[i]);
+        this.store.deleteSync(predicates);
+      }
+      this.commitTrackedTransaction();
+    } catch (err) {
+      try { this.rollbackTrackedTransaction(); } catch (_rollbackError) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[resetCryptoV3] upload block release failed: ' + safeError(err));
+      return false;
+    }
+    hilog.warn(0x0001, 'CloudSync', '[resetCryptoV3] upload block released by the user');
+    return true;
   }
 
   hasRestoredNotUploaded(): boolean {
@@ -10665,41 +10868,156 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     return count;
   }
 
-  private sensitiveBusinessTables(): string[] {
-    return [
-      'remotehosts', 'rdpcredentials', 'sshkeys', 'totpentries',
-      'rustdeskrelays', VNC_CLOUD_TABLE
-    ];
-  }
-
-  /** Caller owns the active transaction and the account physical store. */
-  private clearAllTablesInActiveTransaction(tables: string[]): void {
+  /**
+   * Caller owns the active transaction and the account physical store.
+   * Forgotten-password reset (user decision 2026-10-04): clear only the
+   * encrypted secrets, which no key can open any more. Rows, non-secret
+   * columns, device-local LAN hosts, key/credential/relay links and device
+   * trust stay; VNC secret records are removed and the remaining VNC records
+   * move to the new reset generation so they stay visible.
+   */
+  private clearEncryptedSecretsInActiveTransaction(
+    currentEpoch: number, nextEpoch: number
+  ): void {
     if (!this.store) {
       throw new Error('sensitive data store unavailable');
     }
-    // These local-only tables contain data for exactly one physical account
-    // store. They must be cleared before fresh delete intents are recorded.
-    this.store.deleteSync(
-      new relationalStore.RdbPredicates('localextensions'));
-    this.store.deleteSync(
-      new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
-    const localVncPredicates =
-      new relationalStore.RdbPredicates(VNC_LOCAL_TABLE);
-    this.addCurrentOwnerPredicate(localVncPredicates);
-    this.store.deleteSync(localVncPredicates);
+    const now: number = Date.now();
+    const tables: string[] = cryptoResetSecretTables();
+    for (let i = 0; i < tables.length; i++) {
+      const table: string = tables[i];
+      const bucket: relationalStore.ValuesBucket = {};
+      const columns: string[] = cryptoResetSecretColumns(table);
+      for (let c = 0; c < columns.length; c++) { bucket[columns[c]] = ''; }
+      const predicates = new relationalStore.RdbPredicates(table);
+      this.addCurrentOwnerPredicate(predicates);
+      this.store.updateSync(bucket, predicates);
+      if (table === 'rustdeskrelays') {
+        this.clearRelayAccountPasswordsInActiveTransaction();
+      }
+    }
+    this.clearLocalExtensionSecretsInActiveTransaction(now);
     if (!this.clearRustDeskRelayControlPlaneProfiles()) {
       throw new Error('relay profile metadata clear failed');
     }
-    for (let i = 0; i < tables.length; i++) {
-      const predicates =
-        new relationalStore.RdbPredicates(tables[i]);
-      this.addCurrentOwnerPredicate(predicates);
-      this.store.deleteSync(predicates);
-      if (!this.recordTableMutation(tables[i], 'clear')) {
-        throw new Error('clear journal failed table=' + tables[i]);
+    const vncTables: string[] = [VNC_CLOUD_TABLE, VNC_LOCAL_TABLE];
+    for (let i = 0; i < vncTables.length; i++) {
+      const secrets = new relationalStore.RdbPredicates(vncTables[i]);
+      this.addCurrentOwnerPredicate(secrets);
+      secrets.equalTo('recordtype', 'secret');
+      this.store.deleteSync(secrets);
+      // Only the visible generation moves forward; rows hidden by an earlier
+      // reset must stay hidden.
+      const kept = new relationalStore.RdbPredicates(vncTables[i]);
+      this.addCurrentOwnerPredicate(kept);
+      kept.equalTo('resetepoch', currentEpoch);
+      const epochBucket: relationalStore.ValuesBucket = { resetepoch: nextEpoch };
+      this.store.updateSync(epochBucket, kept);
+    }
+    // The reset is local: none of its changes becomes a pending upload, so a
+    // re-enabled table's cloud-first download wins (see cryptoResetJournalTables).
+    const journalTables: string[] = cryptoResetJournalTables(VNC_CLOUD_TABLE, VNC_LOCAL_TABLE);
+    for (let i = 0; i < journalTables.length; i++) {
+      const journal = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
+      journal.equalTo('tablename', journalTables[i]);
+      this.store.deleteSync(journal);
+    }
+    // The platform tracks local changes of distributed tables by itself; keep
+    // every upload of these tables blocked until the user explicitly makes
+    // this device authoritative (releaseCryptoResetUploadBlock).
+    const blockedTables: string[] = cryptoResetUploadBlockTables(VNC_CLOUD_TABLE);
+    for (let i = 0; i < blockedTables.length; i++) {
+      if (!this.writeLocalMetadata(CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + blockedTables[i], '1')) {
+        throw new Error('reset upload block write failed table=' + blockedTables[i]);
       }
-      hilog.info(0x0001, 'CloudSync',
-        '[clearAllTables] ' + tables[i] + ' 已清空');
+    }
+    hilog.info(0x0001, 'CloudSync',
+      '[resetCryptoV3] encrypted fields cleared; rows kept, VNC epoch ' +
+      currentEpoch.toString() + ' -> ' + nextEpoch.toString());
+  }
+
+  private clearRelayAccountPasswordsInActiveTransaction(): void {
+    if (!this.store) { throw new Error('relay store unavailable'); }
+    const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    const updates: Array<Record<string, string>> = [];
+    try {
+      const idIndex: number = rows.getColumnIndex('id');
+      const accountsIndex: number = rows.getColumnIndex('accountsjson');
+      while (rows.goToNextRow()) {
+        const raw: string = accountsIndex >= 0 && !rows.isColumnNull(accountsIndex) ?
+          rows.getString(accountsIndex) : '';
+        const cleared: string = cryptoResetRelayAccountsJson(raw);
+        if (cleared !== raw) {
+          const update: Record<string, string> = {};
+          update['id'] = rows.getString(idIndex);
+          update['accountsjson'] = cleared;
+          updates.push(update);
+        }
+      }
+    } finally {
+      rows.close();
+    }
+    for (let i = 0; i < updates.length; i++) {
+      const bucket: relationalStore.ValuesBucket = { accountsjson: updates[i]['accountsjson'] };
+      const target = new relationalStore.RdbPredicates('rustdeskrelays');
+      target.equalTo('id', updates[i]['id']);
+      this.addCurrentOwnerPredicate(target);
+      this.store.updateSync(bucket, target);
+    }
+  }
+
+  private clearLocalExtensionSecretsInActiveTransaction(now: number): void {
+    if (!this.store) { throw new Error('local extension store unavailable'); }
+    const rows: relationalStore.ResultSet =
+      this.store.querySync(new relationalStore.RdbPredicates('localextensions'));
+    const removed: string[] = [];
+    const rewritten: Array<Record<string, string>> = [];
+    try {
+      const idIndex: number = rows.getColumnIndex('id');
+      const tableIndex: number = rows.getColumnIndex('tablename');
+      const payloadIndex: number = rows.getColumnIndex('payload');
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(idIndex);
+        const table: string = rows.getString(tableIndex);
+        let payload: Record<string, string> | null = null;
+        try {
+          const parsed: Object = JSON.parse(rows.getString(payloadIndex)) as Object;
+          payload = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ?
+            parsed as Record<string, string> : null;
+        } catch (_e) {
+          payload = null;
+        }
+        // An unreadable payload cannot be cleared selectively; drop it as
+        // the previous whole-table reset did.
+        const cleared: Record<string, string> | null = payload === null ? null :
+          cryptoResetExtensionPayload(table, payload);
+        if (cleared === null) {
+          removed.push(id);
+        } else if (JSON.stringify(cleared) !== JSON.stringify(payload)) {
+          const update: Record<string, string> = {};
+          update['id'] = id;
+          update['payload'] = JSON.stringify(cleared);
+          rewritten.push(update);
+        }
+      }
+    } finally {
+      rows.close();
+    }
+    for (let i = 0; i < removed.length; i++) {
+      const predicates = new relationalStore.RdbPredicates('localextensions');
+      predicates.equalTo('id', removed[i]);
+      this.store.deleteSync(predicates);
+    }
+    for (let i = 0; i < rewritten.length; i++) {
+      const bucket: relationalStore.ValuesBucket = {
+        payload: rewritten[i]['payload'],
+        updatedat: now
+      };
+      const predicates = new relationalStore.RdbPredicates('localextensions');
+      predicates.equalTo('id', rewritten[i]['id']);
+      this.store.updateSync(bucket, predicates);
     }
   }
 
@@ -11306,9 +11624,11 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   }
 
   /**
-   * Local forgotten-password reset. Account rows, local-only extensions,
-   * deletion intents, reset epoch and KDF material commit together. It is
-   * deliberately not a remote wipe protocol.
+   * Local forgotten-password reset. Cleared secrets, the VNC generation move,
+   * the reset epoch and KDF material commit together (only encrypted secrets
+   * are cleared since 2026-10-04). It is deliberately not a remote wipe
+   * protocol: the tables stay deselected and re-enabling them crosses the
+   * cloud-first barrier.
    */
   async resetCryptoV3(
     lease: AccountSessionLease | null
@@ -11350,10 +11670,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
     this.cryptoLifecycleState = resetPending;
     try {
-      const nextEpoch: number = this.readVncResetEpoch() + 1;
-      const tables: string[] = this.sensitiveBusinessTables();
+      const currentEpoch: number = this.readVncResetEpoch();
+      const nextEpoch: number = currentEpoch + 1;
       this.store.beginTransaction();
-      this.clearAllTablesInActiveTransaction(tables);
+      this.clearEncryptedSecretsInActiveTransaction(currentEpoch, nextEpoch);
       this.clearCryptoSecretsInActiveTransaction();
       if (!rdbInsertSucceeded(this.store.insertSync(
         'cryptoparams',
@@ -11365,10 +11685,6 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           this.cryptoParamBucket('crypto_status', 'disabled'),
           relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
         throw new Error('crypto reset marker write failed');
-      }
-      if (!this.recordTableMutation(
-        'cryptoparams', 'reset_local_v3')) {
-        throw new Error('crypto reset journal failed');
       }
       const committed: CryptoCommittedState = {
         status: 'disabled',
@@ -11399,6 +11715,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       return false;
     }
     DataCrypto.getInstance().lock();
+    // Also acknowledge any legacy compatibility markers of these tables
+    // (best effort; the journal rows were already removed in the transaction).
+    this.discardMutationJournalForTables(
+      cryptoResetJournalTables(VNC_CLOUD_TABLE, VNC_LOCAL_TABLE));
     this.notifyCryptoReset();
     this.notifyDataSnapshotChanged();
     this.pushCryptoTransitionTables(true);
@@ -11581,6 +11901,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           host.sshProxyKeyPassphrase = this.decryptIfReady(
             DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
             'sshproxykeypassphrase', storedProxyPassphrase);
+          restoreLocalRustDeskPhoneChoice(host, values['localrustdeskphonechoice']);
           result.push(host);
         } catch (rowError) {
           hilog.warn(0x0001, 'CloudSync',
@@ -11831,6 +12152,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     values['schemaversion'] = '1';
     values['ownerid'] = this.currentOwnerScopeId();
     values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(host));
+    if (hasExplicitRustDeskPhoneChoice(host)) {
+      values['localrustdeskphonechoice'] = '1';
+    }
     values['password'] = this.encryptIfReady(
       crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'password',
       remoteHostPersistentPasswordAllowed(host) ? host.password : '');
@@ -12802,6 +13126,28 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  /**
+   * Stored displayconfig of an existing host row ('' for a new host), so a
+   * save can keep fields a newer version wrote (F6).
+   */
+  private storedRemoteHostDisplayConfig(hostId: string): string {
+    if (!this.store || hostId === '') { return ''; }
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      predicates.equalTo('id', hostId);
+      this.addCurrentOwnerPredicate(predicates);
+      rows = this.store.querySync(predicates, ['displayconfig']);
+      if (!rows.goToFirstRow()) { return ''; }
+      const index: number = rows.getColumnIndex('displayconfig');
+      return index >= 0 && !rows.isColumnNull(index) ? rows.getString(index) : '';
+    } catch (_e) {
+      return '';
+    } finally {
+      if (rows !== null) { rows.close(); }
+    }
+  }
+
   private hostToBucket(
     h: RemoteHost,
     legacyPersonalization: RemoteHostLegacyPersonalization | null = null
@@ -12848,11 +13194,13 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       cloudExtensionValues['rustdeskprosyncerror'] =
         legacyPersonalization.rustdeskProSyncError;
     }
-    vb['displayconfig'] = encodeRemoteHostDisplayPayload(
-      legacyPersonalization === null ? JSON.stringify(h.displayConfig.toJSON()) :
-        legacyPersonalization.displayConfigJson,
-      projectRemoteHostCloudExtension(cloudExtensionValues)
-    );
+    vb['displayconfig'] = remoteHostDisplayConfigWithForwardFields(
+      this.storedRemoteHostDisplayConfig(h.id),
+      encodeRemoteHostDisplayPayload(
+        legacyPersonalization === null ? JSON.stringify(h.displayConfig.toJSON()) :
+          legacyPersonalization.displayConfigJson,
+        projectRemoteHostCloudExtension(cloudExtensionValues)
+      ));
     vb['locked'] = h.locked ? 1 : 0;
     vb['locktype'] = h.lockType;
     vb['groupid'] = h.groupId;
@@ -13411,6 +13759,27 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  /**
+   * Read one cloud-table host back by id without decrypting secrets, so a
+   * caller can verify that just-written endpoint columns persisted exactly.
+   */
+  readBackHostRaw(id: string): RemoteHost | undefined {
+    if (!this.store || id === '') { return undefined; }
+    let rs: relationalStore.ResultSet | undefined = undefined;
+    try {
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      this.addCurrentOwnerPredicate(predicates);
+      predicates.equalTo('id', id);
+      rs = this.store.querySync(predicates);
+      return rs.goToFirstRow() ? this.rowToHostRaw(rs) : undefined;
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync', 'readBackHostRaw 失败: ' + DataCrypto.errDetail(err));
+      return undefined;
+    } finally {
+      if (rs !== undefined) { rs.close(); }
+    }
+  }
+
   private rowToHostRaw(rs: relationalStore.ResultSet): RemoteHost {
     const h = new RemoteHost();
     h.id = rs.getString(rs.getColumnIndex('id'));
@@ -13650,10 +14019,12 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     vb['proxyhost'] = h.proxyHost; vb['proxyport'] = h.proxyPort;
     vb['proxyusername'] = h.proxyUsername;
     vb['gatewayhost'] = h.gatewayHost; vb['gatewayport'] = h.gatewayPort;
-    vb['displayconfig'] = encodeRemoteHostDisplayPayload(
-      JSON.stringify(h.displayConfig.toJSON()),
-      projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
-    );
+    vb['displayconfig'] = remoteHostDisplayConfigWithForwardFields(
+      this.storedRemoteHostDisplayConfig(h.id),
+      encodeRemoteHostDisplayPayload(
+        JSON.stringify(h.displayConfig.toJSON()),
+        projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
+      ));
     vb['locked'] = h.locked ? 1 : 0; vb['locktype'] = h.lockType;
     vb['groupid'] = h.groupId;
     vb['sortorder'] = h.sortOrder; vb['icon'] = h.icon;

@@ -7,7 +7,12 @@ import {
   CLOUD_SYNC_SHEET_RESTORE_CONFIRM,
   CLOUD_SYNC_SHEET_UNAVAILABLE,
   CLOUD_SYNC_SHEET_UPLOAD_CONFIRM,
-  cloudSyncSheetSpec
+  cloudSyncCryptoParamsDescription,
+  cloudSyncManageTablesHint,
+  cloudSyncSheetSpec,
+  cloudSyncTableDescription,
+  cloudSyncTableProtectionLabel,
+  masterPasswordStatusText
 } from '../main/ets/services/CloudSyncSheetPolicy';
 
 export default function cloudSyncSheetPolicyTest() {
@@ -82,6 +87,38 @@ export default function cloudSyncSheetPolicyTest() {
       expect(spec.message.indexOf('不会自动上传') >= 0)
         .assertTrue();
       expect(spec.primaryDestructive).assertFalse();
+    });
+
+    it('never_calls_secrets_end_to_end_encrypted_without_a_master_password', 0, (): void => {
+      const secretTables: string[] = [
+        'remotehosts', 'rdpcredentials', 'rustdeskrelays', 'sshkeys', 'totpentries'
+      ];
+      for (let i = 0; i < secretTables.length; i++) {
+        expect(cloudSyncTableProtectionLabel(secretTables[i], false)).assertEqual('云空间加密');
+        expect(cloudSyncTableProtectionLabel(secretTables[i], true)).assertEqual('机密端到端加密');
+        expect(cloudSyncTableDescription(secretTables[i], false).indexOf('未做端到端加密') >= 0)
+          .assertTrue();
+        expect(cloudSyncTableDescription(secretTables[i], false).indexOf('自动同步加密参数') < 0)
+          .assertTrue();
+      }
+      expect(cloudSyncTableProtectionLabel('usersettings', false)).assertEqual('');
+      expect(cloudSyncTableDescription('remotehosts', true).indexOf('端到端加密') >= 0).assertTrue();
+      expect(cloudSyncManageTablesHint(false).indexOf('未做端到端加密') >= 0).assertTrue();
+      expect(cloudSyncManageTablesHint(false).indexOf('自动保护') < 0).assertTrue();
+      expect(cloudSyncManageTablesHint(true).indexOf('端到端加密') >= 0).assertTrue();
+      expect(cloudSyncCryptoParamsDescription(false).indexOf('未设置主密码') >= 0).assertTrue();
+      expect(masterPasswordStatusText(false, false).indexOf('设置后') >= 0).assertTrue();
+      expect(masterPasswordStatusText(true, true).indexOf('数据已端到端加密') < 0).assertTrue();
+      expect(masterPasswordStatusText(true, false).indexOf('已锁定') >= 0).assertTrue();
+    });
+
+    it('keeps_unencrypted_vnc_passwords_described_as_device_only', 0, (): void => {
+      // plain_explicit_v1 VNC secrets are forced into vnclocalrecords and
+      // never uploaded, so the table gets no cloud-encryption badge.
+      expect(cloudSyncTableProtectionLabel('vncrecordv2', false)).assertEqual('');
+      expect(cloudSyncTableDescription('vncrecordv2', false).indexOf('只保存在本机') >= 0).assertTrue();
+      expect(cloudSyncTableDescription('vncrecordv2', false).indexOf('未做端到端加密') < 0).assertTrue();
+      expect(cloudSyncTableProtectionLabel('vncrecordv2', true)).assertEqual('机密端到端加密');
     });
   });
 }

@@ -290,7 +290,7 @@ export default function remoteSessionWindowPolicyTest(): void {
         const submittedSessionIds: number[] = [];
         const observedAccepted: boolean[] = [];
         let submitCount: number = 0;
-        let scheduledTask: (() => void) | null = null;
+        const scheduledTasks: Array<() => void> = [];
         const port: RemoteSessionExactDisconnectCallbackPort =
           new RemoteSessionExactDisconnectCallbackPort(
           (identity: RemoteSessionExactDisconnectIdentity):
@@ -313,14 +313,15 @@ export default function remoteSessionWindowPolicyTest(): void {
             observedAccepted.push(submission.accepted);
           },
           (task: () => void, _delayMs: number): void => {
-            scheduledTask = task;
+            scheduledTasks.push(task);
           });
 
         submitRemoteSessionExactDisconnectWithRetry(sessionA, port, 1, 0);
         // Simulate the process facade moving to session B before the delayed
         // retry. Mutating the caller-owned object must not retarget the retry.
         sessionA.sessionId = 42;
-        const retryTask: (() => void) | null = scheduledTask;
+        const retryTask: (() => void) | null = scheduledTasks.length > 0 ?
+          scheduledTasks[scheduledTasks.length - 1] : null;
         expect(retryTask !== null).assertTrue();
         if (retryTask !== null) { retryTask(); }
 

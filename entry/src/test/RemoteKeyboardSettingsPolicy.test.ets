@@ -18,11 +18,14 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
       expect(defaults.shortcutPlatform).assertEqual('windows');
       expect(defaults.functionKeysVisible).assertTrue();
       expect(defaults.closePanelAfterShortcut).assertFalse();
+      expect(defaults.autoOpenOnRemoteClick).assertFalse();
       const normalized = normalizeRemoteKeyboardPreferences('mac', true, false, true);
       expect(normalized.shortcutPlatform).assertEqual('macos');
       expect(normalized.simpleKeyboardEnabled).assertTrue();
       expect(normalized.functionKeysVisible).assertFalse();
       expect(normalized.closePanelAfterShortcut).assertTrue();
+      expect(normalizeRemoteKeyboardPreferences('mac', true, false, true, true)
+        .autoOpenOnRemoteClick).assertTrue();
     });
 
     it('exposes_broad_distinct_windows_and_macos_catalogs', 0, (): void => {

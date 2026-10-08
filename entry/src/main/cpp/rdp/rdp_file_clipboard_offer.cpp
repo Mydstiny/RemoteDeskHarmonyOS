@@ -15,7 +15,18 @@ std::string RdpFileClipboardOffer::buildUriList(const std::vector<std::string>& 
     std::string result;
     for (const auto& path : paths) {
         result.append("file://");
-        result.append(path);
+        constexpr char hex[] = "0123456789ABCDEF";
+        for (const unsigned char byte : path) {
+            if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                (byte >= '0' && byte <= '9') || byte == '/' || byte == '-' ||
+                byte == '_' || byte == '.' || byte == '~') {
+                result.push_back(static_cast<char>(byte));
+            } else {
+                result.push_back('%');
+                result.push_back(hex[byte >> 4]);
+                result.push_back(hex[byte & 15]);
+            }
+        }
         result.append("\r\n");
     }
     return result;

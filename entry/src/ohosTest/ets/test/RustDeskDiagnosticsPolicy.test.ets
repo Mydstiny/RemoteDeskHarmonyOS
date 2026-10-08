@@ -65,12 +65,12 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
     it('keeps_video_sampling_stall_and_unavailable_states_distinct', 0, (): void => {
       expect(formatDiagnosticFrameRate(0, false, false, false)).assertEqual('等待视频流');
       expect(formatDiagnosticFrameRate(0, false, true, false)).assertEqual('采样中');
-      expect(formatDiagnosticFrameRate(0, false, true, true)).assertEqual('已停滞');
-      expect(formatDiagnosticFrameRate(0, true, true, true)).assertEqual('已停滞');
+      expect(formatDiagnosticFrameRate(0, false, true, true)).assertEqual('静止 / 待更新');
+      expect(formatDiagnosticFrameRate(0, true, true, true)).assertEqual('静止 / 待更新');
       expect(formatDiagnosticFrameRate(0, true, true, false)).assertEqual('0.0');
       expect(rustDeskDiagnosticsStreamState(false, -1)).assertEqual('等待视频流');
       expect(rustDeskDiagnosticsStreamState(true, 2999)).assertEqual('正在接收');
-      expect(rustDeskDiagnosticsStreamState(true, 3000)).assertEqual('已停滞');
+      expect(rustDeskDiagnosticsStreamState(true, 3000)).assertEqual('画面静止或停滞');
     });
 
     it('uses_the_public_codec_numbering_for_hud_labels', 0, (): void => {
@@ -125,7 +125,13 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
       const pendingReconnect = rustDeskCodecAlignment(5, 0, true);
       expect(pendingReconnect.preference).assertEqual('H265');
       expect(pendingReconnect.actual).assertEqual('H264');
-      expect(pendingReconnect.state).assertEqual('待重连重新协商');
+      expect(pendingReconnect.state).assertEqual('偏好与实际流不同，协商证据不可用');
+      expect(rustDeskCodecAlignment(5, 0, true, { connectionCodecPreference: 5,
+        sentCodecPreference: 5 }).state).assertEqual('偏好已发送，对端返回其他编码');
+      expect(rustDeskCodecAlignment(5, 0, true, { connectionCodecPreference: 4,
+        sentCodecPreference: 4 }).state).assertEqual('设置已更改，待重连应用');
+      expect(rustDeskCodecAlignment(5, 0, true, { connectionCodecPreference: 5,
+        sentCodecPreference: -1, codecOptionSendFailures: 1 }).state).assertEqual('编码偏好发送失败');
       expect(pendingReconnect.aligned).assertFalse();
     });
   });

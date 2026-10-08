@@ -28,6 +28,12 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(localNames.indexOf('rdpControlMode') >= 0).assertTrue();
       expect(localNames.indexOf('rdpDesktopResolutionId') >= 0).assertTrue();
       expect(localNames.indexOf('rdpRemoteUiScale') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpCustomWidth') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpCustomHeight') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpDesktopScaleMode') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpDesktopScalePercent') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpDeviceScaleMode') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpDeviceScalePercent') >= 0).assertTrue();
       expect(localNames.indexOf('rdpColorDepth') >= 0).assertTrue();
       expect(localNames.indexOf('remoteWheelPreferenceVersion') >= 0).assertTrue();
       expect(localNames.indexOf('rdpReverseWheel') >= 0).assertTrue();
@@ -48,6 +54,8 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsDeviceLocal('rustdeskControlMode')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('rdpControlMode')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('rdpRemoteUiScale')).assertTrue();
+      expect(cloudUserSettingIsDeviceLocal('rdpCustomWidth')).assertTrue();
+      expect(cloudUserSettingIsDeviceLocal('rdpDesktopScalePercent')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('accentColor')).assertFalse();
       expect(cloudUserSettingIsSyncable('rustdeskControlMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('rdpControlMode')).assertFalse();
@@ -76,7 +84,14 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsSyncable('loginMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('totpLocked')).assertFalse();
       expect(cloudUserSettingIsSyncable('remoteDesktopBgFlag')).assertFalse();
+      expect(cloudUserSettingIsSyncable('remoteDisplayProfile.v1:owner%7Chost%7Cpc%7Cdefault%7Cany'))
+        .assertFalse();
       expect(cloudUserSettingIsSyncable('virtualMouseSession')).assertFalse();
+      expect(cloudUserSettingIsSyncable('pro.org.groups.v1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('pro.org.membership.v1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('pro.ws.workspace-1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('pro.ws.')).assertFalse();
+      expect(cloudUserSettingIsSyncable('pro.secret')).assertFalse();
     });
   });
 }

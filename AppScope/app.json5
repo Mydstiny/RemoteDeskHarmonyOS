@@ -2,9 +2,25 @@
   "app": {
     "bundleName": "com.example.remotedesktop",
     "vendor": "example",
-    "versionCode": 1001006,
-    "versionName": "1.1.5.1",
+    "versionCode": 1001008,
+    "versionName": "1.2.0",
     "icon": "$media:layered_image",
+    "alternateIcons": [
+      { "name": "rd_white", "icon": "$media:icon_rd_white" },
+      { "name": "rd_transparent", "icon": "$media:icon_rd_clear" },
+      { "name": "rd_night", "icon": "$media:icon_rd_night" },
+      { "name": "rd_sky", "icon": "$media:icon_rd_sky" },
+      { "name": "rd_aurora", "icon": "$media:icon_rd_aurora" },
+      { "name": "rd_vivid", "icon": "$media:icon_rd_vivid" },
+      { "name": "rd_soft", "icon": "$media:icon_rd_soft" },
+      { "name": "rd_glow", "icon": "$media:icon_rd_glow" },
+      { "name": "rd_glow_mist", "icon": "$media:icon_rd_glow_mist" },
+      { "name": "rd_glow_night", "icon": "$media:icon_rd_glow_night" },
+      { "name": "rd_glow_frost", "icon": "$media:icon_rd_glow_frost" },
+      { "name": "rd_vivid_night", "icon": "$media:icon_rd_vivid_night" },
+      { "name": "rd_vivid_ocean", "icon": "$media:icon_rd_vivid_ocean" },
+      { "name": "rd_vivid_aurora", "icon": "$media:icon_rd_vivid_aurora" }
+    ],
     "label": "$string:app_name",
     "cloudStructuredDataSyncEnabled": true,
     "multiAppMode": {

@@ -50,9 +50,9 @@ export default function cloudLifecycleBarrierPolicyTest():
     it('advances_only_barriers_in_the_successful_pull_inventory',
       0, (): void => {
         const original: Record<string, string> = {
-          usersettings: 'pending_pull',
-          remotehosts: 'pull_complete',
-          moonlightrecordv1: 'pending_pull'
+          'usersettings': 'pending_pull',
+          'remotehosts': 'pull_complete',
+          'moonlightrecordv1': 'pending_pull'
         };
         const advanced: Record<string, string> =
           cloudSelectionBarriersAfterAuthoritativePull(
@@ -349,16 +349,16 @@ export default function cloudLifecycleBarrierPolicyTest():
       0, (): void => {
         const restored = vncSettingsRollbackRows(
           [{
-            id: 'vncsettings_owner-a',
-            payload: 'authoritative-cloud'
+            'id': 'vncsettings_owner-a',
+            'payload': 'authoritative-cloud'
           }],
           [{
-            id: 'vncsettings_owner-a',
-            payload: 'uncommitted-local'
+            'id': 'vncsettings_owner-a',
+            'payload': 'uncommitted-local'
           }],
           [{
-            id: 'vncsettings_owner-a',
-            payload: 'original-local'
+            'id': 'vncsettings_owner-a',
+            'payload': 'original-local'
           }],
           'vncsettings_owner-a');
         expect(restored.cloudRows.length)
@@ -372,23 +372,23 @@ export default function cloudLifecycleBarrierPolicyTest():
         const journal =
           vncSettingsRollbackJournal(
             [{
-              id: 'current-settings',
-              tablename: 'vncrecord',
-              recordid:
+              'id': 'current-settings',
+              'tablename': 'vncrecord',
+              'recordid':
                 'vncsettings_owner-a',
-              operation: 'scope_promote'
+              'operation': 'scope_promote'
             }, {
-              id: 'unrelated',
-              tablename: 'vncrecord',
-              recordid: 'host-1',
-              operation: 'scope_promote'
+              'id': 'unrelated',
+              'tablename': 'vncrecord',
+              'recordid': 'host-1',
+              'operation': 'scope_promote'
             }],
             [{
-              id: 'original-settings',
-              tablename: 'vncrecord_local',
-              recordid:
+              'id': 'original-settings',
+              'tablename': 'vncrecord_local',
+              'recordid':
                 'vncsettings_owner-a',
-              operation: 'upsert'
+              'operation': 'upsert'
             }],
             'vncsettings_owner-a',
             'vncrecord', 'vncrecord_local');

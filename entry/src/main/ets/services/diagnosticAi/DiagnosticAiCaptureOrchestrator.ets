@@ -1,0 +1,85 @@
+import { DiagnosticCaptureActionCode, DiagnosticEventOutcome } from '../DiagnosticCaptureRuntime';
+import { DiagnosticCaptureCoordinator } from '../DiagnosticCaptureCoordinator';
+import { DiagnosticAiCapturePlan, diagnosticAiBundleFromCapture, DiagnosticAiBundle, diagnosticAiPlanValid } from './DiagnosticAiBundlePolicy';
+import { diagnosticEvidenceCoverage } from '../DiagnosticEvidenceCoveragePolicy';
+
+export class DiagnosticAiCaptureOrchestrator {
+  private static instance: DiagnosticAiCaptureOrchestrator;
+  private readonly coordinator: DiagnosticCaptureCoordinator = DiagnosticCaptureCoordinator.getInstance();
+  private owner: string = '';
+  private generation: number = 0;
+
+  static getInstance(): DiagnosticAiCaptureOrchestrator {
+    if (!DiagnosticAiCaptureOrchestrator.instance) { DiagnosticAiCaptureOrchestrator.instance = new DiagnosticAiCaptureOrchestrator(); }
+    return DiagnosticAiCaptureOrchestrator.instance;
+  }
+
+  start(owner: string, plan: DiagnosticAiCapturePlan): DiagnosticCaptureActionCode {
+    if (!diagnosticAiPlanValid(plan) || owner.trim() === '') { return 'invalid_duration'; }
+    if (this.owner !== '' && this.owner !== owner) { return 'busy'; }
+    this.owner = owner;
+    const result = this.coordinator.start(owner, 'ai', plan.durationMinutes, plan.modules, false);
+    if (result !== 'ok') { this.owner = ''; } return result;
+  }
+
+  stop(owner: string): DiagnosticCaptureActionCode {
+    if (owner !== this.owner) { return 'stale_capture'; }
+    const result = this.coordinator.stop(owner, 'ai');
+    // Keep the owner while the frozen capture is converted to an AI bundle.
+    // The caller must release it with discard() after copying the bundle.
+    if (result === 'not_active') { this.owner = ''; }
+    return result;
+  }
+
+  /** The frozen capture as an AI bundle, narrowed to the 日志子模块 in `focus` (all of it when empty). */
+  bundle(owner: string, focus: string[] = []): DiagnosticAiBundle | null {
+    if (owner !== this.owner) { return null; }
+    return diagnosticAiBundleFromCapture(this.coordinator.bundle(owner, 'ai'), focus);
+  }
+
+  /**
+   * Evidence gaps of the owner's frozen capture: what the capture could not
+   * answer (empty when there is no capture or the caller does not own it).
+   */
+  missingEvidence(owner: string): string[] {
+    if (owner !== this.owner) { return []; }
+    const capture = this.coordinator.bundle(owner, 'ai');
+    return capture === null ? [] : diagnosticEvidenceCoverage(capture).missingEvidence.slice();
+  }
+
+  discard(owner: string, captureId: string = ''): DiagnosticCaptureActionCode {
+    if (owner !== this.owner) { return 'stale_capture'; }
+    const result = this.coordinator.discard(owner, 'ai', captureId);
+    if (result === 'ok' || result === 'not_active') { this.owner = ''; }
+    return result;
+  }
+
+  /** Stop and discard an AI capture that the user cancelled or a page abandoned. */
+  cancel(owner: string): DiagnosticCaptureActionCode {
+    if (owner !== this.owner) { return 'stale_capture'; }
+    const stopped: DiagnosticCaptureActionCode = this.stop(owner);
+    if (stopped !== 'ok' && stopped !== 'not_active') { return stopped; }
+    const status = this.coordinator.status();
+    return this.discard(owner, status.captureId);
+  }
+
+  status() { return this.coordinator.status(); }
+
+  /** How the owner's running capture is going: event outcomes after `sequence` (see DiagnosticCaptureRuntime). */
+  outcomesSince(owner: string, sequence: number): DiagnosticEventOutcome[] {
+    if (owner !== this.owner) { return []; }
+    return this.coordinator.runtime().outcomesSince(sequence);
+  }
+
+  /** Stop capture before an account/logout/refund transition can change scope. */
+  invalidateAll(): void {
+    this.generation++;
+    this.coordinator.invalidateAll();
+    this.owner = '';
+    AppStorage.setOrCreate('diagnosticAiOrbEnabled', false);
+    AppStorage.setOrCreate('aiEntryState', 'idle');
+    AppStorage.setOrCreate('aiEntryOpenRequest', 0);
+  }
+
+  currentGeneration(): number { return this.generation; }
+}

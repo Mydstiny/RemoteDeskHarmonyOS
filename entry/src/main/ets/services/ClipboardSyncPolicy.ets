@@ -1,4 +1,6 @@
-export const MAX_CLIPBOARD_TEXT_CHARS: number = 65536;
+/** Wire budget is UTF-8 bytes. Keep the legacy export for callers/tests. */
+export const MAX_CLIPBOARD_TEXT_BYTES: number = 65536;
+export const MAX_CLIPBOARD_TEXT_CHARS: number = MAX_CLIPBOARD_TEXT_BYTES;
 export type ClipboardSource = 'local' | 'remote' | 'remoteEcho';
 export interface ClipboardForwardInput {
   source: ClipboardSource;
@@ -26,6 +28,7 @@ export interface RemoteClipboardDeliveryCheckpoint {
   deliveredHash: number;
 }
 export interface ClipboardBridgeStartGuardInput {
+  continuousAuthorized?: boolean;
   requestedGeneration: number;
   currentGeneration: number;
   requestedSessionId: number;
@@ -38,6 +41,7 @@ export interface ClipboardBridgeStartGuardInput {
   enabled: boolean;
 }
 export interface ClipboardBridgeRestartGuardInput {
+  continuousAuthorized?: boolean;
   connected: boolean;
   sessionId: number;
   bridgePresent: boolean;
@@ -106,9 +110,31 @@ export function shouldForwardClipboard(input: ClipboardForwardInput): boolean {
   return input.source === 'local' ? input.sendEnabled : input.receiveEnabled;
 }
 
-export function validateClipboardText(text: string): ClipboardValidation {
-  if (text.length === 0) { return { ok: false, diagnosticCode: 'clipboard_empty' }; }
-  if (text.length > MAX_CLIPBOARD_TEXT_CHARS) {
+/** Return -1 for malformed UTF-16; never silently replace or truncate input. */
+export function clipboardUtf8Bytes(text: string): number {
+  let bytes: number = 0;
+  for (let i: number = 0; i < text.length; i++) {
+    const value: number = text.charCodeAt(i);
+    if (value >= 0xD800 && value <= 0xDBFF) {
+      if (i + 1 >= text.length) { return -1; }
+      const low: number = text.charCodeAt(++i);
+      if (low < 0xDC00 || low > 0xDFFF) { return -1; }
+      bytes += 4;
+    } else if (value >= 0xDC00 && value <= 0xDFFF) {
+      return -1;
+    } else {
+      bytes += value < 0x80 ? 1 : (value < 0x800 ? 2 : 3);
+    }
+  }
+  return bytes;
+}
+
+export function validateClipboardText(text: string, allowEmpty: boolean = false): ClipboardValidation {
+  if (text.length === 0 && !allowEmpty) { return { ok: false, diagnosticCode: 'clipboard_empty' }; }
+  if (text.indexOf('\u0000') >= 0) { return { ok: false, diagnosticCode: 'clipboard_embedded_nul' }; }
+  const bytes: number = clipboardUtf8Bytes(text);
+  if (bytes < 0) { return { ok: false, diagnosticCode: 'clipboard_invalid_unicode' }; }
+  if (bytes > MAX_CLIPBOARD_TEXT_BYTES) {
     return { ok: false, diagnosticCode: 'clipboard_text_too_large' };
   }
   return { ok: true, diagnosticCode: '' };
@@ -147,16 +173,16 @@ export function shouldStartClipboardBridge(input: ClipboardBridgeStartGuardInput
   return input.requestedGeneration === input.currentGeneration &&
     input.requestedSessionId > 0 && input.requestedSessionId === input.currentSessionId &&
     input.requestedAttemptId === input.currentAttemptId && input.connected &&
-    !input.background && !input.stopping && input.enabled;
+    (!input.background || input.continuousAuthorized === true) && !input.stopping && input.enabled;
 }
 
-/** Clipboard access is closed at the synchronous lifecycle boundary. */
-export function shouldStopClipboardBridgeForBackground(isBackground: boolean): boolean {
-  return isBackground;
+/** A presentation transition cannot revoke an explicitly authorized continuous owner. */
+export function shouldStopClipboardBridgeForBackground(isBackground: boolean, continuousAuthorized: boolean = false): boolean {
+  return isBackground && !continuousAuthorized;
 }
 
 /** Restart after foreground return, including preserve/init failure paths. */
 export function shouldRestartClipboardBridge(input: ClipboardBridgeRestartGuardInput): boolean {
   return input.connected && input.sessionId > 0 && !input.bridgePresent &&
-    !input.background && !input.minimized && input.enabled;
+    ((!input.background && !input.minimized) || input.continuousAuthorized === true) && input.enabled;
 }

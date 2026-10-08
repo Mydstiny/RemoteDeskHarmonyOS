@@ -1,3 +1,4 @@
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import {
   SshSessionLogDocumentV1,
   SshSessionLogSearchHitV1
@@ -11,6 +12,10 @@ import {
 export struct SshSessionLogSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#171D25';
+  // > 0: the sheet sizes to its content and only the body scrolls past this height.
+  @Prop maxBodyHeightVp: number = 0;
+  private fitContent(): boolean { return this.maxBodyHeightVp > 0; }
+  private bodyMaxHeight(): number { return this.fitContent() ? this.maxBodyHeightVp : 100000; }
   @Prop document: SshSessionLogDocumentV1;
   @Prop results: Array<SshSessionLogSearchHitV1>;
   @Prop ready: boolean = false;
@@ -81,9 +86,11 @@ export struct SshSessionLogSheet {
           .onClick((): void => { this.onClose(); })
       }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 10 })
       TextInput({ text: this.query, placeholder: '搜索当前主机的脱敏日志' })
-        .height(42).fontSize(12).fontColor('#F2F4F7')
-        .placeholderColor('rgba(242,244,247,0.40)').backgroundColor('rgba(255,255,255,0.07)')
-        .borderRadius(9).margin({ left: 16, right: 16, bottom: 10 })
+        .height(SEARCH_CAPSULE_HEIGHT).fontSize(SEARCH_CAPSULE_TEXT).fontColor('#F2F4F7').placeholderFont({ size: SEARCH_CAPSULE_TEXT })
+        .padding({ left: 16, right: 16 })
+        .placeholderColor('rgba(242,244,247,0.40)')
+        .borderRadius(SEARCH_CAPSULE_RADIUS).backgroundColor('rgba(255,255,255,0.07)').linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(true))
+        .margin({ left: 16, right: 16, bottom: 10 })
         .enableAutoFill(false)
         .onChange((value: string): void => { this.onSearchChange(value.slice(0, 256)); })
       Scroll() {
@@ -107,7 +114,8 @@ export struct SshSessionLogSheet {
             .width('100%')
           this.ResultList()
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
+      }.layoutWeight(this.fitContent() ? 0 : 1).constraintSize({ maxHeight: this.bodyMaxHeight() })
+        .width('100%').scrollBar(BarState.Auto)
+    }.width('100%').height(this.fitContent() ? 'auto' : '100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

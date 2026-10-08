@@ -1,0 +1,7 @@
+{
+  "layered-image":
+  {
+    "background" : "$media:icon_rd_glow_frost_bg",
+    "foreground" : "$media:icon_rd_glow_frost_fg"
+  }
+}

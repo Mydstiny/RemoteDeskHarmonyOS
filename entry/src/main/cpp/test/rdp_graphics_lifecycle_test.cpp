@@ -109,15 +109,3 @@ RDP_TEST_CASE(rdp_graphics_lifecycle_ignores_duplicate_and_stale_channel_events)
     RDP_ASSERT_EQ(lifecycle.onChannelDisconnected(0x1234),
                   RdpGfxChannelAction::Ignore);
 }
-
-RDP_TEST_CASE(rdp_graphics_fallback_latch_applies_to_one_next_connection) {
-    RdpNextConnectionGfxFallback fallback;
-    RDP_ASSERT(!fallback.pending());
-    RDP_ASSERT(!fallback.consume());
-
-    fallback.mark();
-    RDP_ASSERT(fallback.pending());
-    RDP_ASSERT(fallback.consume());
-    RDP_ASSERT(!fallback.pending());
-    RDP_ASSERT(!fallback.consume());
-}

@@ -1,3 +1,9 @@
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { VideoDiagnosticEvidence, parseVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
+import {
+  DiagnosticRdpGraphicsFacts,
+  parseDiagnosticRdpGraphicsFacts
+} from './RdpGraphicsEvidencePolicy';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
@@ -9,31 +15,44 @@ import {
 } from './ReleaseNotesRegistry';
 import {
   DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
+  DIAGNOSTIC_EVENT_CATALOG_VERSION,
   DIAGNOSTIC_MAX_CAPTURE_BYTES,
   DIAGNOSTIC_MAX_EVENTS,
   DIAGNOSTIC_MAX_EXPORT_BYTES,
   DIAGNOSTIC_MAX_SESSION_REFS,
   DIAGNOSTIC_REDACTION_POLICY_VERSION,
   DiagnosticAddressFamily,
+  DiagnosticCaptureProfile,
   DiagnosticModuleId,
   DiagnosticNetworkFacts,
   DiagnosticOutcome,
   DiagnosticRuntimeBackend,
   DiagnosticRuntimeCodec,
   DiagnosticRuntimeFacts,
+  DiagnosticProtocolFacts,
+  DiagnosticResourceFacts,
   DiagnosticRuntimePath,
   DiagnosticRuntimeState,
   DiagnosticPeerPlatform,
   DiagnosticPresentation,
   DiagnosticProducerTransform,
+  DiagnosticWindowFacts,
+  DiagnosticWindowOrientation,
+  DiagnosticWindowRequestPhase,
+  DiagnosticAppLifecycle,
   diagnosticDurationIsAllowed,
+  diagnosticAllModules,
+  diagnosticEventCatalogSize,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
   diagnosticModuleIsKnown,
   diagnosticNetworkFactsAreValid,
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
+  diagnosticProtocolFactsAreValid,
+  diagnosticResourceFactsAreValid,
   diagnosticSafeInteger,
+  diagnosticWindowFactsAreValid,
   normalizeDiagnosticModules
 } from './DiagnosticCapturePolicy';
 import {
@@ -42,6 +61,10 @@ import {
   DiagnosticCaptureRuntime,
   FrozenDiagnosticCapture
 } from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticEvidenceCoverage,
+  diagnosticEvidenceCoverage
+} from './DiagnosticEvidenceCoveragePolicy';
 
 export type DiagnosticSerializationCode =
   'ok' | 'not_ready' | 'invalid_capture' | 'too_large' | 'invalid_jsonl';
@@ -70,6 +93,11 @@ export interface DiagnosticDocumentPort {
 }
 
 interface DiagnosticManifestLine {
+  deviceCategory: string;
+  deviceModel: string;
+  osVersion: string;
+  sdkApiVersion: number;
+  deviceAbi: string;
   kind: string;
   schemaVersion: number;
   app: string;
@@ -78,6 +106,9 @@ interface DiagnosticManifestLine {
   buildId: string;
   captureId: string;
   durationMinutes: number;
+  profile: DiagnosticCaptureProfile;
+  fullLog: boolean;
+  eventCatalogVersion: number;
   selectedModules: DiagnosticModuleId[];
   startedWallTimeMs: number;
   endedWallTimeMs: number;
@@ -103,6 +134,7 @@ interface DiagnosticEventLine {
   bytes: number;
   runtime: DiagnosticRuntimeFacts;
   network: DiagnosticNetworkFacts;
+  window: DiagnosticWindowFacts;
 }
 
 interface DiagnosticSummaryLine {
@@ -112,7 +144,14 @@ interface DiagnosticSummaryLine {
   droppedEventCount: number;
   approximateCaptureBytes: number;
   serializedBytes: number;
+  profile: DiagnosticCaptureProfile;
+  fullLog: boolean;
+  eventCatalogVersion: number;
+  expectedModuleCount: number;
+  expectedEventCount: number;
   moduleEventCounts: Record<string, number>;
+  /** Schema v9: per-module coverage and explicit evidence gaps, recomputed by the validator. */
+  evidenceCoverage: DiagnosticEvidenceCoverage;
 }
 
 function emptySerialization(code: DiagnosticSerializationCode): DiagnosticSerializationResult {
@@ -155,7 +194,8 @@ function eventLine(event: DiagnosticCaptureEvent): DiagnosticEventLine {
     count: event.count,
     bytes: event.bytes,
     runtime: event.runtime,
-    network: event.network
+    network: event.network,
+    window: event.window
   };
 }
 
@@ -238,7 +278,8 @@ function eventIsValid(event: DiagnosticCaptureEvent, capture: FrozenDiagnosticCa
     event.level !== diagnosticLevelForOutcome(event.outcome) ||
     !sessionRefIsValid(event.sessionRef) ||
     !diagnosticRuntimeFactsAreValid(event.runtime) ||
-    !diagnosticNetworkFactsAreValid(event.network)) {
+    !diagnosticNetworkFactsAreValid(event.network) ||
+    !diagnosticWindowFactsAreValid(event.window)) {
     return false;
   }
   return true;
@@ -259,6 +300,11 @@ export function validateFrozenDiagnosticCapture(capture: FrozenDiagnosticCapture
     capture.approximateBytes > DIAGNOSTIC_MAX_CAPTURE_BYTES) {
     return false;
   }
+  if ((capture.profile !== 'selected' && capture.profile !== 'full') ||
+    capture.fullLog !== (capture.profile === 'full') ||
+    (capture.fullLog && capture.selectedModules.join(',') !== diagnosticAllModules().join(','))) {
+    return false;
+  }
   let computedBytes: number = 0;
   const encoder: util.TextEncoder = new util.TextEncoder();
   for (let i: number = 0; i < capture.events.length; i++) {
@@ -277,6 +323,12 @@ function jsonNumber(source: Record<string, Object>, key: string): number | null 
   const value: Object = source[key];
   if (typeof value !== 'number') { return null; }
   return diagnosticSafeInteger(value as number);
+}
+
+function jsonFiniteNumber(source: Record<string, Object>, key: string): number | null {
+  const value: Object = source[key];
+  if (typeof value !== 'number' || !Number.isFinite(value as number)) { return null; }
+  return value as number;
 }
 
 function jsonString(source: Record<string, Object>, key: string): string | null {
@@ -330,10 +382,189 @@ function jsonNetworkFacts(value: Object): DiagnosticNetworkFacts | null {
   return diagnosticNetworkFactsAreValid(facts) ? facts : null;
 }
 
-function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
+function jsonWindowFacts(value: Object): DiagnosticWindowFacts | null {
   if (typeof value !== 'object' || value === null) { return null; }
   const source: Record<string, Object> = value as Record<string, Object>;
   if (!objectHasExactKeys(source, [
+    'requestedOrientation', 'appliedOrientation', 'requestPhase', 'appLifecycle',
+    'requestGeneration', 'windowGeneration', 'width', 'height', 'displayRotation',
+    'isLandscape', 'orientationApplied', 'rotationSwitchControlled'
+  ])) { return null; }
+  const requestedOrientation: string | null = jsonString(source, 'requestedOrientation');
+  const appliedOrientation: string | null = jsonString(source, 'appliedOrientation');
+  const requestPhase: string | null = jsonString(source, 'requestPhase');
+  const appLifecycle: string | null = jsonString(source, 'appLifecycle');
+  const requestGeneration: number | null = jsonNumber(source, 'requestGeneration');
+  const windowGeneration: number | null = jsonNumber(source, 'windowGeneration');
+  const width: number | null = jsonNumber(source, 'width');
+  const height: number | null = jsonNumber(source, 'height');
+  const displayRotation: number | null = jsonNumber(source, 'displayRotation');
+  const isLandscape: boolean | null = jsonBoolean(source, 'isLandscape');
+  const orientationApplied: boolean | null = jsonBoolean(source, 'orientationApplied');
+  const rotationSwitchControlled: boolean | null =
+    jsonBoolean(source, 'rotationSwitchControlled');
+  if (requestedOrientation === null || appliedOrientation === null ||
+    requestPhase === null || appLifecycle === null || requestGeneration === null ||
+    windowGeneration === null || width === null || height === null ||
+    displayRotation === null || isLandscape === null || orientationApplied === null ||
+    rotationSwitchControlled === null) { return null; }
+  const facts: DiagnosticWindowFacts = {
+    requestedOrientation: requestedOrientation as DiagnosticWindowOrientation,
+    appliedOrientation: appliedOrientation as DiagnosticWindowOrientation,
+    requestPhase: requestPhase as DiagnosticWindowRequestPhase,
+    appLifecycle: appLifecycle as DiagnosticAppLifecycle,
+    requestGeneration: requestGeneration,
+    windowGeneration: windowGeneration,
+    width: width,
+    height: height,
+    displayRotation: displayRotation,
+    isLandscape: isLandscape,
+    orientationApplied: orientationApplied,
+    rotationSwitchControlled: rotationSwitchControlled
+  };
+  return diagnosticWindowFactsAreValid(facts) ? facts : null;
+}
+
+const DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS: string[] = [
+  'supported', 'sessionActive', 'snapshotAvailable', 'videoSeen',
+  'inputPermissionKnown', 'inputAllowed', 'clipboardPermissionKnown',
+  'clipboardAllowed', 'filePermissionKnown', 'fileAllowed', 'coverageComplete'
+];
+const DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS: string[] = [
+  'targetBitrateKbps', 'requestedQuality', 'effectiveQuality', 'sentQuality',
+  'qualityProfile', 'qualityFps', 'qualityRequestedGeneration',
+  'qualityAppliedGeneration', 'qualityUpdateStatus', 'messages', 'receivedFrames',
+  'keyframes', 'receivedBytes', 'audioFrames', 'cadenceGaps', 'maxCadenceGapMs',
+  'testDelayCount', 'receivedFps', 'displayFps', 'decodeFps', 'bitrateKbps',
+  'lastFrameAgeMs', 'lastPresentedFrameAgeMs', 'decodeOk', 'decodeErrors',
+  'decodeP50Us', 'decodeP95Us', 'decodeMaxUs', 'presentedFrames',
+  'presentationRejected', 'lastDirtyX', 'lastDirtyY', 'lastDirtyWidth',
+  'lastDirtyHeight', 'requestedColorDepthCode', 'effectiveColorDepth',
+  'inputEventsSent', 'inputEventsDropped', 'presentationWindowSamples',
+  'presentationWindowMs', 'renderP50Us', 'renderP95Us', 'renderMaxUs',
+  'queueMax', 'droppedFrames', 'inputBytes', 'writeBytes', 'readBytes',
+  'callbackBytes', 'inputQueueBytes', 'inputQueueMaxBytes', 'inputReorder',
+  'ownerStallEvents', 'coverageMask', 'lastInputSequence',
+  'maxInputToWriteAttemptNs', 'maxInputToWriteCompleteNs'
+];
+
+function jsonProtocolFacts(value: Object): DiagnosticProtocolFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source,
+    DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS.concat(DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS))) {
+    return null;
+  }
+  for (let index: number = 0; index < DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS.length; index++) {
+    if (jsonBoolean(source, DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS[index]) === null) { return null; }
+  }
+  for (let index: number = 0; index < DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS.length; index++) {
+    const number: number | null = jsonNumber(source, DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS[index]);
+    if (number === null || number < 0) { return null; }
+  }
+  const facts: DiagnosticProtocolFacts = {
+    supported: jsonBoolean(source, 'supported') === true,
+    sessionActive: jsonBoolean(source, 'sessionActive') === true,
+    snapshotAvailable: jsonBoolean(source, 'snapshotAvailable') === true,
+    videoSeen: jsonBoolean(source, 'videoSeen') === true,
+    inputPermissionKnown: jsonBoolean(source, 'inputPermissionKnown') === true,
+    inputAllowed: jsonBoolean(source, 'inputAllowed') === true,
+    clipboardPermissionKnown: jsonBoolean(source, 'clipboardPermissionKnown') === true,
+    clipboardAllowed: jsonBoolean(source, 'clipboardAllowed') === true,
+    filePermissionKnown: jsonBoolean(source, 'filePermissionKnown') === true,
+    fileAllowed: jsonBoolean(source, 'fileAllowed') === true,
+    targetBitrateKbps: jsonNumber(source, 'targetBitrateKbps') ?? 0,
+    requestedQuality: jsonNumber(source, 'requestedQuality') ?? 0,
+    effectiveQuality: jsonNumber(source, 'effectiveQuality') ?? 0,
+    sentQuality: jsonNumber(source, 'sentQuality') ?? 0,
+    qualityProfile: jsonNumber(source, 'qualityProfile') ?? 0,
+    qualityFps: jsonNumber(source, 'qualityFps') ?? 0,
+    qualityRequestedGeneration: jsonNumber(source, 'qualityRequestedGeneration') ?? 0,
+    qualityAppliedGeneration: jsonNumber(source, 'qualityAppliedGeneration') ?? 0,
+    qualityUpdateStatus: jsonNumber(source, 'qualityUpdateStatus') ?? 0,
+    messages: jsonNumber(source, 'messages') ?? 0,
+    receivedFrames: jsonNumber(source, 'receivedFrames') ?? 0,
+    keyframes: jsonNumber(source, 'keyframes') ?? 0,
+    receivedBytes: jsonNumber(source, 'receivedBytes') ?? 0,
+    audioFrames: jsonNumber(source, 'audioFrames') ?? 0,
+    cadenceGaps: jsonNumber(source, 'cadenceGaps') ?? 0,
+    maxCadenceGapMs: jsonNumber(source, 'maxCadenceGapMs') ?? 0,
+    testDelayCount: jsonNumber(source, 'testDelayCount') ?? 0,
+    receivedFps: jsonNumber(source, 'receivedFps') ?? 0,
+    displayFps: jsonNumber(source, 'displayFps') ?? 0,
+    decodeFps: jsonNumber(source, 'decodeFps') ?? 0,
+    bitrateKbps: jsonNumber(source, 'bitrateKbps') ?? 0,
+    lastFrameAgeMs: jsonNumber(source, 'lastFrameAgeMs') ?? 0,
+    lastPresentedFrameAgeMs: jsonNumber(source, 'lastPresentedFrameAgeMs') ?? 0,
+    decodeOk: jsonNumber(source, 'decodeOk') ?? 0,
+    decodeErrors: jsonNumber(source, 'decodeErrors') ?? 0,
+    decodeP50Us: jsonNumber(source, 'decodeP50Us') ?? 0,
+    decodeP95Us: jsonNumber(source, 'decodeP95Us') ?? 0,
+    decodeMaxUs: jsonNumber(source, 'decodeMaxUs') ?? 0,
+    presentedFrames: jsonNumber(source, 'presentedFrames') ?? 0,
+    presentationRejected: jsonNumber(source, 'presentationRejected') ?? 0,
+    lastDirtyX: jsonNumber(source, 'lastDirtyX') ?? 0,
+    lastDirtyY: jsonNumber(source, 'lastDirtyY') ?? 0,
+    lastDirtyWidth: jsonNumber(source, 'lastDirtyWidth') ?? 0,
+    lastDirtyHeight: jsonNumber(source, 'lastDirtyHeight') ?? 0,
+    requestedColorDepthCode: jsonNumber(source, 'requestedColorDepthCode') ?? 0,
+    effectiveColorDepth: jsonNumber(source, 'effectiveColorDepth') ?? 0,
+    inputEventsSent: jsonNumber(source, 'inputEventsSent') ?? 0,
+    inputEventsDropped: jsonNumber(source, 'inputEventsDropped') ?? 0,
+    presentationWindowSamples: jsonNumber(source, 'presentationWindowSamples') ?? 0,
+    presentationWindowMs: jsonNumber(source, 'presentationWindowMs') ?? 0,
+    renderP50Us: jsonNumber(source, 'renderP50Us') ?? 0,
+    renderP95Us: jsonNumber(source, 'renderP95Us') ?? 0,
+    renderMaxUs: jsonNumber(source, 'renderMaxUs') ?? 0,
+    queueMax: jsonNumber(source, 'queueMax') ?? 0,
+    droppedFrames: jsonNumber(source, 'droppedFrames') ?? 0,
+    inputBytes: jsonNumber(source, 'inputBytes') ?? 0,
+    writeBytes: jsonNumber(source, 'writeBytes') ?? 0,
+    readBytes: jsonNumber(source, 'readBytes') ?? 0,
+    callbackBytes: jsonNumber(source, 'callbackBytes') ?? 0,
+    inputQueueBytes: jsonNumber(source, 'inputQueueBytes') ?? 0,
+    inputQueueMaxBytes: jsonNumber(source, 'inputQueueMaxBytes') ?? 0,
+    inputReorder: jsonNumber(source, 'inputReorder') ?? 0,
+    ownerStallEvents: jsonNumber(source, 'ownerStallEvents') ?? 0,
+    coverageMask: jsonNumber(source, 'coverageMask') ?? 0,
+    coverageComplete: jsonBoolean(source, 'coverageComplete') === true,
+    lastInputSequence: jsonNumber(source, 'lastInputSequence') ?? 0,
+    maxInputToWriteAttemptNs: jsonNumber(source, 'maxInputToWriteAttemptNs') ?? 0,
+    maxInputToWriteCompleteNs: jsonNumber(source, 'maxInputToWriteCompleteNs') ?? 0
+  };
+  return diagnosticProtocolFactsAreValid(facts) ? facts : null;
+}
+
+function jsonResourceFacts(value: Object): DiagnosticResourceFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source, [
+    'supported', 'cpuAvailable', 'cpuPercent', 'memoryAvailable', 'memoryBytes',
+    'gpuAvailable', 'gpuPercent', 'sampledAtMs'
+  ])) { return null; }
+  const supported: boolean | null = jsonBoolean(source, 'supported');
+  const cpuAvailable: boolean | null = jsonBoolean(source, 'cpuAvailable');
+  const memoryAvailable: boolean | null = jsonBoolean(source, 'memoryAvailable');
+  const gpuAvailable: boolean | null = jsonBoolean(source, 'gpuAvailable');
+  const cpuPercent: number | null = jsonFiniteNumber(source, 'cpuPercent');
+  const memoryBytes: number | null = jsonFiniteNumber(source, 'memoryBytes');
+  const gpuPercent: number | null = jsonFiniteNumber(source, 'gpuPercent');
+  const sampledAtMs: number | null = jsonFiniteNumber(source, 'sampledAtMs');
+  if (supported === null || cpuAvailable === null || memoryAvailable === null ||
+    gpuAvailable === null || cpuPercent === null || memoryBytes === null ||
+    gpuPercent === null || sampledAtMs === null) { return null; }
+  const facts: DiagnosticResourceFacts = {
+    supported: supported, cpuAvailable: cpuAvailable, cpuPercent: cpuPercent,
+    memoryAvailable: memoryAvailable, memoryBytes: memoryBytes,
+    gpuAvailable: gpuAvailable, gpuPercent: gpuPercent, sampledAtMs: sampledAtMs
+  };
+  return diagnosticResourceFactsAreValid(facts) ? facts : null;
+}
+
+function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  const fields: string[] = [
     'state', 'backend', 'codec', 'path', 'peerPlatform', 'presentation',
     'producerTransform', 'appliedTransform', 'desktopSurfaceCompatibility',
     'producerTransformSampled', 'producerTransformReadResult',
@@ -343,8 +574,20 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     'rendererTransformValid', 'rendererTransformVersion',
     'rendererRotationQuarterTurns', 'rendererFlipX', 'rendererFlipY',
     'decoderGeneration', 'rendererGeneration', 'width', 'height', 'frames',
-    'dropped', 'errors', 'queueDepth', 'latencyMs'
-  ])) { return null; }
+    'dropped', 'errors', 'queueDepth', 'latencyMs', 'protocol', 'resources'
+  ];
+  if (source['video'] !== undefined) { fields.push('video'); }
+  if (source['rdpGraphics'] !== undefined) { fields.push('rdpGraphics'); }
+  if (!objectHasExactKeys(source, fields)) { return null; }
+  const video: VideoDiagnosticEvidence | null = source['video'] === undefined ? null :
+    parseVideoDiagnosticEvidence(source['video']);
+  if (source['video'] !== undefined && video === null) { return null; }
+  const rdpGraphics: DiagnosticRdpGraphicsFacts | null = source['rdpGraphics'] === undefined ?
+    null : parseDiagnosticRdpGraphicsFacts(source['rdpGraphics']);
+  if (source['rdpGraphics'] !== undefined && rdpGraphics === null) { return null; }
+  const protocol: DiagnosticProtocolFacts | null = jsonProtocolFacts(source['protocol']);
+  const resources: DiagnosticResourceFacts | null = jsonResourceFacts(source['resources']);
+  if (protocol === null || resources === null) { return null; }
   const state: string | null = jsonString(source, 'state');
   const backend: string | null = jsonString(source, 'backend');
   const codec: string | null = jsonString(source, 'codec');
@@ -401,6 +644,8 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     width === null || height === null || frames === null || dropped === null ||
     errors === null || queueDepth === null || latencyMs === null) { return null; }
   const facts: DiagnosticRuntimeFacts = {
+    video: video === null ? undefined : video,
+    rdpGraphics: rdpGraphics === null ? undefined : rdpGraphics,
     state: state as DiagnosticRuntimeState,
     backend: backend as DiagnosticRuntimeBackend,
     codec: codec as DiagnosticRuntimeCodec,
@@ -424,11 +669,46 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     rendererFlipX: rendererFlipX, rendererFlipY: rendererFlipY,
     decoderGeneration: decoderGeneration, rendererGeneration: rendererGeneration,
     width: width, height: height, frames: frames, dropped: dropped,
-    errors: errors, queueDepth: queueDepth, latencyMs: latencyMs
+    errors: errors, queueDepth: queueDepth, latencyMs: latencyMs,
+    protocol: protocol, resources: resources
   };
   return diagnosticRuntimeFactsAreValid(facts) ? facts : null;
 }
 
+function diagnosticDeviceCategory(): string {
+  try {
+    const value: string = deviceInfo.deviceType;
+    if (value === '2in1' || value === 'pc') { return 'pc'; }
+    if (value === 'phone' || value === 'tablet') { return value; }
+    return value.length > 0 ? 'other' : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
+function diagnosticDeviceApi(): number {
+  try {
+    const value: number = deviceInfo.sdkApiVersion;
+    return Number.isSafeInteger(value) && value >= 0 && value <= 999 ? value : 0;
+  } catch (_err) { return 0; }
+}
+function diagnosticDeviceAbi(): string {
+  try {
+    const value: string = deviceInfo.abiList;
+    if (value.indexOf('arm64') >= 0 || value.indexOf('aarch64') >= 0) { return 'arm64'; }
+    if (value.indexOf('x86_64') >= 0) { return 'x86_64'; }
+    return value.length > 0 ? 'other' : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
+function diagnosticDeviceModel(): string {
+  try {
+    const value: string = deviceInfo.productModel;
+    return safeMetadataToken(value, 64) ? value : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
+function diagnosticOsVersion(): string {
+  try {
+    const value: string = deviceInfo.osFullName;
+    return safeMetadataToken(value, 96) ? value : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
 function currentDiagnosticBuildId(): string {
   try {
     const nativeRevision: string = rdpnapi.VERSION.gitShortSha;
@@ -449,30 +729,50 @@ export function validateDiagnosticJsonl(text: string): boolean {
       JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
     if (!objectHasExactKeys(first, [
       'kind', 'schemaVersion', 'app', 'appVersion', 'captureId', 'durationMinutes',
-      'appVersionCode', 'buildId',
+      'appVersionCode', 'buildId', 'deviceCategory', 'sdkApiVersion', 'deviceAbi',
+      'deviceModel', 'osVersion',
+      'profile', 'fullLog', 'eventCatalogVersion',
       'selectedModules', 'startedWallTimeMs', 'endedWallTimeMs', 'stopReason',
       'redactionPolicyVersion'
     ]) || !objectHasExactKeys(last, [
       'kind', 'schemaVersion', 'eventCount', 'droppedEventCount',
-      'approximateCaptureBytes', 'serializedBytes', 'moduleEventCounts'
+      'approximateCaptureBytes', 'serializedBytes', 'profile', 'fullLog',
+      'eventCatalogVersion', 'expectedModuleCount', 'expectedEventCount',
+      'moduleEventCounts', 'evidenceCoverage'
     ])) { return false; }
     if (jsonString(first, 'kind') !== 'manifest' || jsonString(last, 'kind') !== 'summary' ||
       jsonNumber(first, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
       jsonNumber(last, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
       jsonString(first, 'app') !== 'RemoteDesktop') { return false; }
+    const category: string | null = jsonString(first, 'deviceCategory');
+    const deviceModel: string | null = jsonString(first, 'deviceModel');
+    const osVersion: string | null = jsonString(first, 'osVersion');
+    const api: number | null = jsonNumber(first, 'sdkApiVersion');
+    const abi: string | null = jsonString(first, 'deviceAbi');
+    if (category === null || ['pc', 'phone', 'tablet', 'other', 'unknown'].indexOf(category) < 0 ||
+      api === null || !Number.isSafeInteger(api) || api < 0 || api > 999 ||
+      abi === null || ['arm64', 'x86_64', 'other', 'unknown'].indexOf(abi) < 0 ||
+      deviceModel === null || !safeMetadataToken(deviceModel, 64) ||
+      osVersion === null || !safeMetadataToken(osVersion, 96)) { return false; }
     const appVersion: string | null = jsonString(first, 'appVersion');
     const appVersionCode: number | null = jsonNumber(first, 'appVersionCode');
     const buildId: string | null = jsonString(first, 'buildId');
     const captureId: string | null = jsonString(first, 'captureId');
     const stopReason: string | null = jsonString(first, 'stopReason');
+    const profile: string | null = jsonString(first, 'profile');
+    const fullLog: boolean | null = jsonBoolean(first, 'fullLog');
+    const eventCatalogVersion: number | null = jsonNumber(first, 'eventCatalogVersion');
     const selectedValue: Object = first['selectedModules'];
     if (appVersion === null || !safeMetadataToken(appVersion, 64) ||
       appVersionCode === null || appVersionCode <= 0 || buildId === null ||
       !safeMetadataToken(buildId, 96) || captureId === null ||
       !captureIdIsValid(captureId) || (stopReason !== 'manual' && stopReason !== 'deadline') ||
+      (profile !== 'selected' && profile !== 'full') || fullLog === null ||
+      fullLog !== (profile === 'full') || eventCatalogVersion !== DIAGNOSTIC_EVENT_CATALOG_VERSION ||
       !Array.isArray(selectedValue)) { return false; }
     const selectedModules: DiagnosticModuleId[] = selectedValue as DiagnosticModuleId[];
-    if (!selectedModulesAreValid(selectedModules)) { return false; }
+    if (!selectedModulesAreValid(selectedModules) ||
+      (fullLog && selectedModules.join(',') !== diagnosticAllModules().join(','))) { return false; }
     const started: number | null = jsonNumber(first, 'startedWallTimeMs');
     const ended: number | null = jsonNumber(first, 'endedWallTimeMs');
     const duration: number | null = jsonNumber(first, 'durationMinutes');
@@ -486,7 +786,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       if (!objectHasExactKeys(parsed, [
         'kind', 'schemaVersion', 'sequence', 'elapsedMs', 'wallTimeMs', 'moduleId',
         'eventCode', 'level', 'outcome', 'sessionRef', 'generation', 'code',
-        'durationMs', 'count', 'bytes', 'runtime', 'network'
+        'durationMs', 'count', 'bytes', 'runtime', 'network', 'window'
       ]) || jsonString(parsed, 'kind') !== 'event' ||
         jsonNumber(parsed, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION) { return false; }
       const moduleId: string | null = jsonString(parsed, 'moduleId');
@@ -504,10 +804,11 @@ export function validateDiagnosticJsonl(text: string): boolean {
       const bytes: number | null = jsonNumber(parsed, 'bytes');
       const runtime: DiagnosticRuntimeFacts | null = jsonRuntimeFacts(parsed['runtime']);
       const network: DiagnosticNetworkFacts | null = jsonNetworkFacts(parsed['network']);
+      const windowFacts: DiagnosticWindowFacts | null = jsonWindowFacts(parsed['window']);
       if (moduleId === null || eventCode === null || level === null || outcome === null ||
         sessionRef === null || sequence === null || elapsedMs === null || wallTimeMs === null ||
         generation === null || code === null || durationMs === null || count === null || bytes === null ||
-        runtime === null || network === null ||
+        runtime === null || network === null || windowFacts === null ||
         !diagnosticModuleIsKnown(moduleId) || !diagnosticOutcomeIsAllowed(outcome)) { return false; }
       events.push({
         sequence: sequence, elapsedMs: elapsedMs, wallTimeMs: wallTimeMs,
@@ -515,20 +816,31 @@ export function validateDiagnosticJsonl(text: string): boolean {
         level: level as 'info' | 'warn' | 'error', outcome: outcome as DiagnosticOutcome,
         sessionRef: sessionRef, generation: generation, code: code,
         durationMs: durationMs, count: count, bytes: bytes, runtime: runtime,
-        network: network
+        network: network, window: windowFacts
       });
     }
     const dropped: number | null = jsonNumber(last, 'droppedEventCount');
     const approximate: number | null = jsonNumber(last, 'approximateCaptureBytes');
     const declaredBytes: number | null = jsonNumber(last, 'serializedBytes');
     const eventCount: number | null = jsonNumber(last, 'eventCount');
+    const summaryProfile: string | null = jsonString(last, 'profile');
+    const summaryFullLog: boolean | null = jsonBoolean(last, 'fullLog');
+    const summaryCatalogVersion: number | null = jsonNumber(last, 'eventCatalogVersion');
+    const expectedModuleCount: number | null = jsonNumber(last, 'expectedModuleCount');
+    const expectedEventCount: number | null = jsonNumber(last, 'expectedEventCount');
     if (dropped === null || approximate === null || declaredBytes === null || eventCount === null ||
-      eventCount !== events.length || declaredBytes !== new util.TextEncoder().encode(text).length) {
+      eventCount !== events.length || declaredBytes !== new util.TextEncoder().encode(text).length ||
+      summaryProfile !== profile || summaryFullLog !== fullLog ||
+      summaryCatalogVersion !== DIAGNOSTIC_EVENT_CATALOG_VERSION ||
+      expectedModuleCount !== selectedModules.length ||
+      expectedEventCount !== diagnosticEventCatalogSize()) {
       return false;
     }
     const reconstructed: FrozenDiagnosticCapture = {
       captureId: captureId,
       durationMinutes: duration,
+      profile: profile as DiagnosticCaptureProfile,
+      fullLog: fullLog,
       selectedModules: selectedModules,
       startedWallTimeMs: started,
       endedWallTimeMs: ended,
@@ -547,6 +859,12 @@ export function validateDiagnosticJsonl(text: string): boolean {
     for (let i: number = 0; i < countKeys.length; i++) {
       if (jsonNumber(actualCounts, countKeys[i]) !== expectedCounts[countKeys[i]]) { return false; }
     }
+    // Coverage is derived data: it must equal what the exported events imply.
+    const coverageValue: Object = last['evidenceCoverage'];
+    if (typeof coverageValue !== 'object' || coverageValue === null ||
+      JSON.stringify(coverageValue) !== JSON.stringify(diagnosticEvidenceCoverage(reconstructed))) {
+      return false;
+    }
     return true;
   } catch (_err) {
     return false;
@@ -563,6 +881,9 @@ export function serializeDiagnosticCapture(
   const validCapture: FrozenDiagnosticCapture = capture as FrozenDiagnosticCapture;
   try {
     const manifest: DiagnosticManifestLine = {
+      deviceCategory: diagnosticDeviceCategory(), deviceModel: diagnosticDeviceModel(),
+      osVersion: diagnosticOsVersion(), sdkApiVersion: diagnosticDeviceApi(),
+      deviceAbi: diagnosticDeviceAbi(),
       kind: 'manifest',
       schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
       app: 'RemoteDesktop',
@@ -571,6 +892,9 @@ export function serializeDiagnosticCapture(
       buildId: currentDiagnosticBuildId(),
       captureId: validCapture.captureId,
       durationMinutes: validCapture.durationMinutes,
+      profile: validCapture.profile,
+      fullLog: validCapture.fullLog,
+      eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
       selectedModules: validCapture.selectedModules.slice(),
       startedWallTimeMs: validCapture.startedWallTimeMs,
       endedWallTimeMs: validCapture.endedWallTimeMs,
@@ -582,6 +906,7 @@ export function serializeDiagnosticCapture(
       lines.push(JSON.stringify(eventLine(validCapture.events[i])));
     }
     const counts: Record<string, number> = moduleCounts(validCapture);
+    const coverage: DiagnosticEvidenceCoverage = diagnosticEvidenceCoverage(validCapture);
     const summaryWithoutSize: DiagnosticSummaryLine = {
       kind: 'summary',
       schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
@@ -589,7 +914,13 @@ export function serializeDiagnosticCapture(
       droppedEventCount: validCapture.droppedEventCount,
       approximateCaptureBytes: validCapture.approximateBytes,
       serializedBytes: 0,
-      moduleEventCounts: counts
+      profile: validCapture.profile,
+      fullLog: validCapture.fullLog,
+      eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
+      expectedModuleCount: validCapture.selectedModules.length,
+      expectedEventCount: diagnosticEventCatalogSize(),
+      moduleEventCounts: counts,
+      evidenceCoverage: coverage
     };
     lines.push(JSON.stringify(summaryWithoutSize));
     let text: string = '';
@@ -603,7 +934,13 @@ export function serializeDiagnosticCapture(
         droppedEventCount: validCapture.droppedEventCount,
         approximateCaptureBytes: validCapture.approximateBytes,
         serializedBytes: declaredSize,
-        moduleEventCounts: counts
+        profile: validCapture.profile,
+        fullLog: validCapture.fullLog,
+        eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
+        expectedModuleCount: validCapture.selectedModules.length,
+        expectedEventCount: diagnosticEventCatalogSize(),
+        moduleEventCounts: counts,
+        evidenceCoverage: coverage
       };
       lines[lines.length - 1] = JSON.stringify(summary);
       text = lines.join('\n') + '\n';
@@ -619,7 +956,13 @@ export function serializeDiagnosticCapture(
         droppedEventCount: validCapture.droppedEventCount,
         approximateCaptureBytes: validCapture.approximateBytes,
         serializedBytes: bytes.length,
-        moduleEventCounts: counts
+        profile: validCapture.profile,
+        fullLog: validCapture.fullLog,
+        eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
+        expectedModuleCount: validCapture.selectedModules.length,
+        expectedEventCount: diagnosticEventCatalogSize(),
+        moduleEventCounts: counts,
+        evidenceCoverage: coverage
       };
       lines[lines.length - 1] = JSON.stringify(finalSummary);
       text = lines.join('\n') + '\n';

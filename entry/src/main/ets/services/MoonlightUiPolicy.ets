@@ -19,7 +19,7 @@ export type MoonlightLaunchBlocker =
 export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconnecting';
 export type MoonlightToolbarAction =
   'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' |
-  'resetCanvas' | 'diagnostics' | 'more' | 'disconnect';
+  'resetCanvas' | 'portrait' | 'diagnostics' | 'more' | 'disconnect' | 'ai';
 export type MoonlightSettingsSection =
   'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
   'data';
@@ -701,6 +701,18 @@ export function moonlightRemoteInputSurfaceWidth(viewportWidth: number): number 
   return Number.isFinite(viewportWidth) ? Math.max(1, viewportWidth) : 1;
 }
 
+/**
+ * A PC top toolbar's width: every button in one row (its 8vp padding and 1vp border on each side), narrowed to the
+ * window (where it then scrolls) only when the window is narrower. A fixed cap once hid RDP's 断开 past the bar.
+ */
+export function sessionToolbarPcWidth(itemCount: number, itemWidth: number, gap: number,
+  trailingWidth: number, viewportWidth: number): number {
+  const count: number = Math.max(0, Math.round(itemCount));
+  const content: number = count * itemWidth + count * gap + trailingWidth + 18;
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) { return content; }
+  return Math.min(content, Math.max(1, viewportWidth - 24));
+}
+
 export function moonlightToolbarAutoHideDelayMs(layout: MoonlightToolbarLayout,
   pinned: boolean, menuOpen: boolean = false): number {
   if (pinned || menuOpen || layout.autoHideMs <= 0) { return 0; }
@@ -754,7 +766,8 @@ export function moonlightToolbarItems(
   breakpoint: string, audioAvailable: boolean,
   controllerAvailable: boolean, pipAvailable: boolean,
   maxVisibleItems: number = 0, keyboardAvailable: boolean = false,
-  controlModeLabel: string = '触控板'
+  controlModeLabel: string = '触控板', portraitEnabled: boolean = false,
+  portraitActive: boolean = false, aiVisible: boolean = false
 ): MoonlightToolbarItem[] {
   const normalized: string = breakpoint.trim().toLowerCase();
   const keyboard: MoonlightToolbarItem = toolbarItem('keyboard', '键盘');
@@ -764,6 +777,9 @@ export function moonlightToolbarItems(
     toolbarItem('control', controlModeLabel),
     keyboard, toolbarItem('modifiers', '组合键')
   ];
+  if (portraitEnabled) {
+    items.push(toolbarItem('portrait', '竖屏显示'));
+  }
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
     (normalized === 'sm' ? 7 : 8);
   if (limit <= 7) {
@@ -777,6 +793,7 @@ export function moonlightToolbarItems(
     display.enabled = pipAvailable;
     display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
     items.push(display);
+    if (aiVisible) { items.push(toolbarItem('ai', 'AI 助理')); }
     items.push(toolbarItem('diagnostics', '性能'));
     items.push(toolbarItem('more', '更多'));
     items.push(toolbarItem('disconnect', '退出', true));
@@ -787,15 +804,20 @@ export function moonlightToolbarItems(
   controller.disabledReason = '';
   items.push(controller);
   if (normalized !== 'sm') {
-    const audio: MoonlightToolbarItem = toolbarItem('audio', '音频');
-    audio.enabled = false;
-    audio.disabledReason = audioAvailable ? '音量请使用系统媒体音量调节' : '音频能力不可用';
-    items.push(audio);
+    // 音频 is only a note (volume is the system's): the AI takes its place, so the bar keeps its width.
+    if (!aiVisible) {
+      const audio: MoonlightToolbarItem = toolbarItem('audio', '音频');
+      audio.enabled = false;
+      audio.disabledReason = audioAvailable ? '音量请使用系统媒体音量调节' : '音频能力不可用';
+      items.push(audio);
+    }
     const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画中画' : '画面');
     display.enabled = pipAvailable;
     display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
     items.push(display);
   }
+  // The AI (for Pro): before 性能 and 退出, as in the other protocols' rails.
+  if (aiVisible) { items.push(toolbarItem('ai', 'AI 助理')); }
   items.push(toolbarItem('diagnostics', '性能'));
   items.push(toolbarItem('more', '更多'));
   items.push(toolbarItem('disconnect', '退出', true));

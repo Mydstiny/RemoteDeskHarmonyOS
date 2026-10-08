@@ -1,5 +1,6 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import {
   resolveVncSheetLayout,
   VNC_SHEET_DENSITY_ACTION_ONLY,
@@ -15,11 +16,16 @@ export struct VncSheetScaffold {
   @Prop subtitle: string = '';
   @Prop stepText: string = '';
   @Prop leadingBack: boolean = false;
+  /** With leadingBack: a close button at the end as well (an add flow can then be left from any step). */
+  @Prop trailingClose: boolean = false;
   @Prop showFooter: boolean = true;
   @Prop fitContent: boolean = false;
   @Prop bottomSafePadding: number = 18;
   @State measuredHeight: number = 0;
+  /** 设置 → 个性化 → 全新视觉: 44vp header buttons and readable (12vp, text2) descriptions. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   onLeadingAction: () => void = (): void => {};
+  onTrailingClose: () => void = (): void => {};
 
   @Builder
   defaultContent() {
@@ -39,6 +45,13 @@ export struct VncSheetScaffold {
     return resolveVncSheetLayout(this.measuredHeight, 0, this.bottomSafePadding).density;
   }
 
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
+
+  /** Header button size: classic 32/36, 全新视觉 always the 44vp touch target. */
+  private headerButtonSize(): number {
+    return this.modern() ? 44 : (this.compactHeight() ? 32 : 36);
+  }
+
   private compactHeight(): boolean {
     return this.density() !== VNC_SHEET_DENSITY_REGULAR;
   }
@@ -55,8 +68,9 @@ export struct VncSheetScaffold {
           SymbolGlyph($r('sys.symbol.chevron_left'))
             .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
         }
-        .width(this.compactHeight() ? 32 : 36).height(this.compactHeight() ? 32 : 36)
-        .borderRadius(this.compactHeight() ? 16 : 18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize())
+        .borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('返回')
         .onClick((): void => { this.onLeadingAction(); })
       } else {
         SymbolGlyph(protocolIcon('vnc'))
@@ -69,7 +83,8 @@ export struct VncSheetScaffold {
           Text(this.stepText).fontSize(this.compactHeight() ? 11 : 12)
             .fontColor(this.pal().text3).margin({ top: this.compactHeight() ? 2 : 3 })
         } else if (this.subtitle !== '' && !this.compactHeight()) {
-          Text(this.subtitle).fontSize(11).fontColor(this.pal().text3).margin({ top: 4 })
+          Text(this.subtitle).fontSize(this.modern() ? 12 : 11)
+            .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 4 })
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         .margin({ left: this.compactHeight() ? 9 : 12 })
@@ -78,9 +93,19 @@ export struct VncSheetScaffold {
           SymbolGlyph($r('sys.symbol.xmark'))
             .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
         }
-        .width(this.compactHeight() ? 32 : 36).height(this.compactHeight() ? 32 : 36)
-        .borderRadius(this.compactHeight() ? 16 : 18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize())
+        .borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭' + this.title)
         .onClick((): void => { this.onLeadingAction(); })
+      } else if (this.trailingClose) {
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
+        }
+        .width(this.headerButtonSize()).height(this.headerButtonSize())
+        .borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭' + this.title)
+        .onClick((): void => { this.onTrailingClose(); })
       }
     }.width('100%').padding({
       left: 20,
@@ -94,7 +119,8 @@ export struct VncSheetScaffold {
   private body(inlineFooter: boolean) {
     Column() {
       if (this.subtitle !== '' && (this.stepText !== '' || this.compactHeight())) {
-        Text(this.subtitle).fontSize(11).fontColor(this.pal().text3)
+        Text(this.subtitle).fontSize(this.modern() ? 12 : 11)
+          .fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
           .lineHeight(17).width('100%')
           .margin({ bottom: this.compactHeight() ? 8 : 14 })
       }

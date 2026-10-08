@@ -1,3 +1,10 @@
+export const SETTINGS_SHEET_PRO: number = 42;
+// Remote AI settings share HostListPage's leaf bindSheet with the other
+// protocol settings instead of opening a second page route.
+export const SETTINGS_SHEET_AI_HOSTS: number = 43;
+export const SETTINGS_SHEET_AI_DISPLAY: number = 44;
+export const SETTINGS_SHEET_AI_DATA: number = 45;
+export const SETTINGS_SHEET_AI_INSTALL: number = 46;
 export const SETTINGS_SHEET_NONE: number = 0;
 export const SETTINGS_SHEET_ACCOUNT: number = 1;
 export const SETTINGS_SHEET_ACCENT_COLOR: number = 2;
@@ -39,6 +46,16 @@ export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
 export const SETTINGS_SHEET_REMOTE_PINCH_ZOOM: number = 39;
 export const SETTINGS_SHEET_SESSION_CONTROL_BAR: number = 40;
 export const SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING: number = 41;
+export const SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY: number = 50;
+export const SETTINGS_SHEET_APP_ICON: number = 47;
+export const SETTINGS_SHEET_PRO_FEATURE: number = 48;
+export const SETTINGS_SHEET_PRO_BADGE: number = 49;
+export const SETTINGS_SHEET_SSH_SKIN: number = 56;
+/** Pro 远端显示方案: RDP desktop size and Windows scale in one sheet. */
+export const SETTINGS_SHEET_RDP_DISPLAY_PROFILE: number = 57;
+export const SETTINGS_SHEET_DIAGNOSTIC_AI: number = 58;
+/** 设置 → 安全与数据 → 手机通行密钥 (the passkey page; Pro 功能 and the AI 助理 open it too). */
+export const SETTINGS_SHEET_PHONE_PASSKEY: number = 59;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -125,20 +142,52 @@ export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_DIAGNOSTIC_LOG ? 740 : 0;
 }
 
+export function diagnosticAiSettingsLeafSheetHeight(mode: number, section: number = 0, viewportHeight: number = 0): number {
+  if (mode !== SETTINGS_SHEET_DIAGNOSTIC_AI) { return 0; }
+  // Config is the densest surface. The assistant, usage, personalization and
+  // session leaves each use a smaller native sheet and an inner Scroll.
+  const desired: number = section === 1 ? 720 : section === 3 ? 620 : section === 4 ? 680 : section === 5 ? 620 : 840;
+  if (viewportHeight <= 0) { return desired; }
+  return Math.min(desired, Math.max(360, viewportHeight - 48));
+}
+
 export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_SECRET_VISIBILITY ? 760 : 0;
 }
 
+// These four save each change at once, so they no longer reserve room for a 取消/保存 row.
 export function remoteWheelDirectionSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 680 : 0;
+  return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 620 : 0;
 }
 
 export function remotePinchZoomSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM ? 700 : 0;
+  return mode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM ? 640 : 0;
+}
+
+export function remotePortraitDisplaySettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY ? 680 : 0;
 }
 
 export function sessionControlBarSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_SESSION_CONTROL_BAR ? 620 : 0;
+  return mode === SETTINGS_SHEET_SESSION_CONTROL_BAR ? 560 : 0;
+}
+
+/**
+ * Fit a leaf sheet's preferred height into the live window: split screen, a small PC window or a landscape
+ * phone would otherwise push the sheet's header or bottom off screen. The sheets scroll their own content.
+ */
+export function settingsLeafSheetFitHeight(preferredHeight: number, viewportHeight: number): number {
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return preferredHeight; }
+  const verticalInset: number = viewportHeight < 520 ? 12 : 40;
+  return Math.max(1, Math.min(preferredHeight, viewportHeight - verticalInset));
+}
+
+export function aiSettingsLeafSheetHeight(mode: number): number {
+  if (mode === SETTINGS_SHEET_AI_HOSTS) { return 760; }
+  if (mode === SETTINGS_SHEET_AI_DISPLAY) { return 520; }
+  if (mode === SETTINGS_SHEET_AI_DATA) { return 520; }
+  if (mode === SETTINGS_SHEET_AI_INSTALL) { return 560; }
+  return 0;
 }
 
 export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRouteSpec[] {
@@ -201,9 +250,7 @@ export function virtualKeyboardSettingsLeafSheetHeight(mode: number,
   if (spec === null) { return 0; }
   const preferredHeight: number = mode === SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM &&
     customEditorVisible ? 820 : spec.height;
-  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return preferredHeight; }
-  const verticalInset: number = viewportHeight < 520 ? 12 : 40;
-  return Math.max(1, Math.min(preferredHeight, viewportHeight - verticalInset));
+  return settingsLeafSheetFitHeight(preferredHeight, viewportHeight);
 }
 
 export function virtualKeyboardSettingsLeafUsesBottomSheet(mode: number,

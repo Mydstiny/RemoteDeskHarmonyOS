@@ -218,70 +218,99 @@ public:
             return lock_.owns_lock();
         }
 
-        bool activate(const DecoderSessionIdentity& owner) {
+        /** One-step activation (tests): the owner is admitted and ready at once. */
+        bool activate(const DecoderSessionIdentity& owner, bool exclusive = false) {
             if (!lock_.owns_lock() || !owner.valid() || registry_ == nullptr) {
                 return false;
             }
-            registry_->active_ = owner;
-            registry_->ready_ = true;
+            Entry* entry = registry_->findLocked(owner);
+            if (entry == nullptr) {
+                if (!registry_->admitsLocked(owner, exclusive)) {
+                    return false;
+                }
+                registry_->entries_.push_back(Entry {owner, true, exclusive});
+                return true;
+            }
+            entry->ready = true;
             return true;
         }
 
-        bool beginActivate(const DecoderSessionIdentity& owner) {
+        /**
+         * First phase of an activation transaction. Several picture sessions may be admitted at the same time; a
+         * second one no longer displaces or blocks the first. An exclusive owner (Moonlight, a foreground SSH page)
+         * keeps the old rule: it is admitted only while nothing else is, and nothing else is admitted while it is.
+         * A newer generation of a session that is still admitted is refused until the old one is deactivated, as
+         * before. The owner is not accepted by sinks until commit().
+         */
+        bool beginActivate(const DecoderSessionIdentity& owner, bool exclusive = false) {
             if (!lock_.owns_lock() || !owner.valid() || registry_ == nullptr) {
                 return false;
             }
-            if (registry_->active_.valid() &&
-                !SessionOwnerMatches(registry_->active_, owner)) {
-                return false;
+            Entry* entry = registry_->findLocked(owner);
+            if (entry == nullptr) {
+                if (!registry_->admitsLocked(owner, exclusive)) {
+                    return false;
+                }
+                registry_->entries_.push_back(Entry {owner, false, exclusive});
+                return true;
             }
-            registry_->active_ = owner;
-            registry_->ready_ = false;
+            entry->ready = false;
             return true;
         }
 
         bool commit(const DecoderSessionIdentity& owner) {
-            if (!lock_.owns_lock() || registry_ == nullptr ||
-                !SessionOwnerMatches(registry_->active_, owner)) {
+            if (!lock_.owns_lock() || registry_ == nullptr) {
                 return false;
             }
-            registry_->ready_ = true;
+            Entry* entry = registry_->findLocked(owner);
+            if (entry == nullptr) {
+                return false;
+            }
+            entry->ready = true;
             return true;
         }
 
         bool beginDeactivate(const DecoderSessionIdentity& owner) {
-            if (!lock_.owns_lock() || registry_ == nullptr ||
-                !SessionOwnerMatches(registry_->active_, owner)) {
+            if (!lock_.owns_lock() || registry_ == nullptr) {
                 return false;
             }
-            registry_->active_ = DecoderSessionIdentity {};
-            registry_->ready_ = false;
-            return true;
+            return registry_->eraseLocked(owner);
         }
 
         bool accepts(const DecoderSessionIdentity& owner) const {
-            return lock_.owns_lock() && registry_ != nullptr &&
-                registry_->ready_ && SessionOwnerMatches(registry_->active_, owner);
+            if (!lock_.owns_lock() || registry_ == nullptr) {
+                return false;
+            }
+            const Entry* entry = registry_->findLocked(owner);
+            return entry != nullptr && entry->ready;
         }
 
         bool deactivateIfActive(const DecoderSessionIdentity& owner) {
-            if (!lock_.owns_lock() || registry_ == nullptr ||
-                !SessionOwnerMatches(registry_->active_, owner)) {
+            if (!lock_.owns_lock() || registry_ == nullptr) {
                 return false;
             }
-            registry_->active_ = DecoderSessionIdentity {};
-            registry_->ready_ = false;
-            return true;
+            return registry_->eraseLocked(owner);
         }
 
+        /** The single ready owner, or an invalid identity when none or several are live (see snapshot()). */
         DecoderSessionIdentity snapshot() const {
-            return registry_ != nullptr && registry_->ready_ ?
-                registry_->active_ : DecoderSessionIdentity {};
+            return registry_ != nullptr ? registry_->soleOwnerLocked(true) : DecoderSessionIdentity {};
         }
 
-        /** Return the transition owner even while a two-phase activation is pending. */
+        /** As snapshot(), but also while a two-phase activation is pending. */
         DecoderSessionIdentity activeSnapshot() const {
-            return registry_ != nullptr ? registry_->active_ : DecoderSessionIdentity {};
+            return registry_ != nullptr ? registry_->soleOwnerLocked(false) : DecoderSessionIdentity {};
+        }
+
+        /** Every admitted owner (ready or pending), for teardown of all sessions. */
+        std::vector<DecoderSessionIdentity> owners() const {
+            std::vector<DecoderSessionIdentity> result;
+            if (registry_ != nullptr) {
+                for (const Entry& entry : registry_->entries_) {
+                    result.push_back(entry.owner);
+                }
+            }
+            return result;
         }
 
     private:
@@ -304,9 +333,9 @@ public:
             std::unique_lock<std::shared_mutex>(mutex_, std::try_to_lock), *this);
     }
 
-    bool activate(const DecoderSessionIdentity& owner) {
+    bool activate(const DecoderSessionIdentity& owner, bool exclusive = false) {
         auto lock = acquireExclusive();
-        return lock.activate(owner);
+        return lock.activate(owner, exclusive);
     }
 
     bool accepts(const DecoderSessionIdentity& owner) const {
@@ -314,7 +343,8 @@ public:
             return true;
         }
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return ready_ && SessionOwnerMatches(active_, owner);
+        const Entry* entry = findLocked(owner);
+        return entry != nullptr && entry->ready;
     }
 
     Lease acquire(const DecoderSessionIdentity& owner) const {
@@ -325,7 +355,8 @@ public:
             return Lease(this, owner, true);
         }
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (!ready_ || !SessionOwnerMatches(active_, owner)) {
+        const Entry* entry = findLocked(owner);
+        if (entry == nullptr || !entry->ready) {
             return Lease();
         }
         return Lease(std::move(lock), this, owner);
@@ -336,15 +367,131 @@ public:
         return lock.deactivateIfActive(owner);
     }
 
+    /**
+     * The one ready owner while exactly one picture session is live, else an invalid identity. Kept for entry points
+     * that carry no owner of their own (single-session callers); with several live sessions such a call has to name
+     * its owner, and an implicit one safely resolves to nothing instead of to another session.
+     */
     DecoderSessionIdentity snapshot() const {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return ready_ ? active_ : DecoderSessionIdentity {};
+        return soleOwnerLocked(true);
     }
 
+    /** The ready owner whose session id is `sessionId` (0 when none). */
+    DecoderSessionIdentity ownerForSession(uint64_t sessionId) const {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        for (const Entry& entry : entries_) {
+            if (entry.ready && entry.owner.sessionId == sessionId) {
+                return entry.owner;
+            }
+        }
+        return DecoderSessionIdentity {};
+    }
+
+    /** How many owners are ready (live picture sessions sharing the sinks). */
+    size_t readyCount() const {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        size_t count = 0;
+        for (const Entry& entry : entries_) {
+            if (entry.ready) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    /** Upper bound of simultaneously admitted owners (PC 4 picture sessions, plus one in transition each). */
+    static constexpr size_t kMaxOwners = 8;
+
 private:
+    struct Entry {
+        DecoderSessionIdentity owner;
+        bool ready = false;
+        bool exclusive = false;
+    };
+
+    Entry* findLocked(const DecoderSessionIdentity& owner) {
+        if (!owner.valid()) {
+            return nullptr;
+        }
+        for (Entry& entry : entries_) {
+            if (entry.owner == owner) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    const Entry* findLocked(const DecoderSessionIdentity& owner) const {
+        if (!owner.valid()) {
+            return nullptr;
+        }
+        for (const Entry& entry : entries_) {
+            if (entry.owner == owner) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    bool eraseLocked(const DecoderSessionIdentity& owner) {
+        if (!owner.valid()) {
+            return false;
+        }
+        for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+            if (it->owner == owner) {
+                entries_.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool hasRoomLocked() const {
+        return entries_.size() < kMaxOwners;
+    }
+
+    /** Whether a new owner may join the admitted ones (room, generation and exclusivity rules). */
+    bool admitsLocked(const DecoderSessionIdentity& owner, bool exclusive) const {
+        if (!hasRoomLocked() || hasOtherGenerationLocked(owner)) {
+            return false;
+        }
+        if (exclusive) {
+            return entries_.empty();
+        }
+        for (const Entry& entry : entries_) {
+            if (entry.exclusive) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Another identity of the same session (an older or newer generation) is admitted. */
+    bool hasOtherGenerationLocked(const DecoderSessionIdentity& owner) const {
+        for (const Entry& entry : entries_) {
+            if (entry.owner.sessionId == owner.sessionId && entry.owner != owner) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    DecoderSessionIdentity soleOwnerLocked(bool requireReady) const {
+        DecoderSessionIdentity sole;
+        size_t count = 0;
+        for (const Entry& entry : entries_) {
+            if (requireReady && !entry.ready) {
+                continue;
+            }
+            sole = entry.owner;
+            ++count;
+        }
+        return count == 1 ? sole : DecoderSessionIdentity {};
+    }
+
     mutable std::shared_mutex mutex_;
-    DecoderSessionIdentity active_;
-    bool ready_ = false;
+    std::vector<Entry> entries_;
 };
 
 /** Process-wide registry; identity, not an adapter pointer, is the owner key. */

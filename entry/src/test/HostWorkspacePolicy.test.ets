@@ -6,7 +6,9 @@ import {
   hostListBottomSpacerVp,
   hostListFabLiftVp,
   hostListFabSizeVp,
+  moonlightHostMatchesSearch,
   nextWorkspaceGroupId,
+  normalizeGroupId,
   searchHosts
 } from '../main/ets/services/HostWorkspacePolicy';
 
@@ -45,6 +47,34 @@ export default function hostWorkspacePolicyTest(): void {
       userMatch.password = 'admin-secret';
       expect(searchHosts([userMatch, host('other', 'Other')], 'admin')[0].id).assertEqual('user-match');
       expect(searchHosts([userMatch], 'secret').length).assertEqual(0);
+    });
+
+    it('group_ids_keep_chinese_names', 0, (): void => {
+      expect(normalizeGroupId(' 办公室 A ')).assertEqual('办公室-a');
+      expect(normalizeGroupId('Ops Team')).assertEqual('ops-team');
+      expect(normalizeGroupId('研发部') === normalizeGroupId('办公室')).assertFalse();
+      const office = host('office', 'Office PC');
+      office.groupId = '办公室';
+      expect(filterHostsByWorkspace([office, host('other', 'Other')], '办公室').length).assertEqual(1);
+    });
+
+    it('search_finds_rustdesk_ids_but_a_locked_host_only_by_its_name', 0, (): void => {
+      const rustdesk = host('rd', 'Studio');
+      rustdesk.protocol = 'rustdesk';
+      rustdesk.customHostname = '123456789';
+      rustdesk.rustdeskProPeerId = 'peer-42';
+      expect(searchHosts([rustdesk], '1234').length).assertEqual(1);
+      expect(searchHosts([rustdesk], 'peer-42').length).assertEqual(1);
+      const locked = host('locked', 'Vault');
+      locked.locked = true;
+      expect(searchHosts([locked], 'locked.example').length).assertEqual(0);
+      expect(searchHosts([locked], 'vault').length).assertEqual(1);
+    });
+
+    it('a_locked_moonlight_host_is_found_only_by_its_name', 0, (): void => {
+      expect(moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], false, '192.168')).assertTrue();
+      expect(moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, '192.168')).assertFalse();
+      expect(moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, 'gaming')).assertTrue();
     });
 
     it('excellent_health_should_show_normal_connection_and_latency', 0, (): void => {

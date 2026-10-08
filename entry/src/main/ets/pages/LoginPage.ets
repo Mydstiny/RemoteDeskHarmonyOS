@@ -1,6 +1,7 @@
 /**
  * LoginPage.ets v8 — bindSheet 警告弹窗 + 官方 Account Kit 登录
  */
+import { ACCOUNT_LOGIN_INTERACTIVE, ACCOUNT_LOGIN_OFFLINE, ACCOUNT_LOGIN_SILENT, recordAccountLogin } from '../services/AccountDiagnosticEvents';
 import { router, promptAction } from '@kit.ArkUI';
 import { authentication } from '@kit.AccountKit';
 import { util } from '@kit.ArkTS';
@@ -12,6 +13,8 @@ import {
   AccountTransitionResult
 } from '../services/AccountSessionCoordinator';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { connection } from '@kit.NetworkKit';
+import { AccountKitService } from '../services/AccountKitService';
 import {
   SILENT_LOGIN_TIMEOUT_MS,
   shouldShowLoginAfterSilentAttempt,
@@ -144,10 +147,12 @@ struct LoginPage {
       ]);
       if (response !== null && response.data) {
         restored = await this.onLoginSuccess(response.data, false);
+        recordAccountLogin(ACCOUNT_LOGIN_SILENT, restored ? 'succeeded' : 'failed', 0);
         if (restored) {
           hilog.info(0x0001, 'LoginDebug', '静默登录恢复成功');
         }
       } else if (response === null) {
+        recordAccountLogin(ACCOUNT_LOGIN_SILENT, 'timeout', 0);
         this.loginError = silentLoginFallbackMessage(0, true);
         hilog.warn(0x0001, 'LoginDebug', '静默登录超时，显示登录页');
       } else {
@@ -159,10 +164,12 @@ struct LoginPage {
       const message: string = be && typeof be.message === 'string' ? be.message : '';
       hilog.info(0x0001, 'LoginDebug',
         '静默登录失败 code=' + code.toString() + ' msg=' + message + ', 显示登录页');
+      recordAccountLogin(ACCOUNT_LOGIN_SILENT, code === 1001502002 ? 'cancelled' : 'failed', code);
       if (code !== 0 && code !== 1001502002) {
         this.loginError = silentLoginFallbackMessage(code, false);
       }
     } finally {
+      if (!restored) { restored = await this.restoreLastAccountOffline(); }
       // Empty responses and provider errors are normal recovery paths. Never
       // leave a fresh install behind an infinite full-screen spinner. A
       // failed silent authorization is not an explicit logout: keep the
@@ -172,6 +179,44 @@ struct LoginPage {
         this.checkingLogin = false;
       }
     }
+  }
+
+  private networkAvailable(): boolean {
+    try { return connection.hasDefaultNetSync(); } catch (_error) { return true; }
+  }
+
+  /**
+   * Silent Huawei ID authorization needs the network. Without one, keep the last
+   * account this device authorized (stored by AccountKitService) so its local data
+   * and cached Pro entitlement stay available; the next online start re-authorizes.
+   * A provider failure while online still shows the login page.
+   */
+  private async restoreLastAccountOffline(): Promise<boolean> {
+    if (this.networkAvailable()) { return false; }
+    const account: AccountKitService = AccountKitService.getInstance();
+    const unionId: string = account.getUnionID();
+    if (!account.isAuthorized() || unionId.trim().length === 0) { return false; }
+    const transition: AccountTransitionResult =
+      await AccountSessionCoordinator.getInstance().transitionToAccount({
+        unionID: unionId,
+        openID: account.getOpenID(),
+        // Re-save exactly what this device already holds; nothing new is claimed offline.
+        authorizationCode: account.getAuthorizationCode(),
+        idToken: account.getIdToken(),
+        displayName: account.getDisplayName() || '华为用户',
+        avatarUrl: ''
+      }, { deferCloudBootstrap: true });
+    if (!transition.ok) {
+      hilog.warn(0x0001, 'LoginDebug', '离线恢复上次账号失败 state=' + transition.state);
+      recordAccountLogin(ACCOUNT_LOGIN_OFFLINE, 'failed', 0);
+      return false;
+    }
+    recordAccountLogin(ACCOUNT_LOGIN_OFFLINE, 'succeeded', 0);
+    hilog.info(0x0001, 'LoginDebug', '网络不可用，已离线恢复上次登录的账号 unionHash=' + hashForLog(unionId));
+    this.loginError = '';
+    promptAction.showToast({ message: '网络不可用，已使用上次登录的华为账号（离线）', duration: 2400 });
+    this.enterMainPage();
+    return true;
   }
 
   private async prepareFirstLaunch(): Promise<void> {
@@ -238,13 +283,17 @@ struct LoginPage {
       hilog.info(0x0001, 'LoginDebug', '步骤5: executeRequest 返回, data=' + (response.data ? '有' : '无'));
       if (response.data) {
         await this.onLoginSuccess(response.data);
+        recordAccountLogin(ACCOUNT_LOGIN_INTERACTIVE, 'succeeded', 0);
       } else {
+        recordAccountLogin(ACCOUNT_LOGIN_INTERACTIVE, 'failed', 0);
         hilog.error(0x0001, 'LoginDebug', '步骤6失败: response.data 为空');
         this.loginError = '登录失败，未获取到账号信息';
       }
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.error(0x0001, 'LoginDebug', '异常: code=' + be.code + ' msg=' + be.message + ' name=' + be.name);
+      recordAccountLogin(ACCOUNT_LOGIN_INTERACTIVE, be.code === 1001502002 ? 'cancelled' : 'failed',
+        typeof be.code === 'number' ? be.code : 0);
       if (be.code === 1001502014) {
         this.showEnterpriseSheet = true;
       } else if (be.code === 1001502002) {

@@ -7,7 +7,16 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'haloColorLight',
   'haloColorDark',
   'hostAddMode',
-  'totpLogoMode'
+  'totpLogoMode',
+  'settingsVisualStyle'
+];
+
+// Structured Pro organization/workspace rows share usersettings. Values are
+// serialized JSON strings so CloudStore keeps its primitive-value contract.
+const PRO_STRUCTURED_SETTING_PREFIXES: string[] = [
+  'pro.org.groups.v1',
+  'pro.org.membership.v1',
+  'pro.ws.'
 ];
 
 /**
@@ -31,7 +40,13 @@ const DEVICE_LOCAL_USER_SETTING_NAMES: string[] = [
   'useNativeTerminalCore',
   'rdpDesktopPreset',
   'rdpDesktopResolutionId',
+  'rdpCustomWidth',
+  'rdpCustomHeight',
   'rdpRemoteUiScale',
+  'rdpDesktopScaleMode',
+  'rdpDesktopScalePercent',
+  'rdpDeviceScaleMode',
+  'rdpDeviceScalePercent',
   'rdpColorDepth',
   'rdpAudioEnabled',
   'rdpClipboardEnabled',
@@ -51,6 +66,19 @@ const DEVICE_LOCAL_USER_SETTING_NAMES: string[] = [
   'sshPinchZoomEnabled',
   'vncPinchZoomEnabled',
   'moonlightPinchZoomEnabled',
+  'remotePortraitDisplayPreferenceVersion',
+  'remotePortraitDisplayRevision',
+  'remotePortraitDisplayEncoded',
+  'remotePortraitSidebarHeightMode',
+  'rdpPortraitDisplayEnabled',
+  'rdpPortraitDisplayMode',
+  'rustdeskPortraitDisplayEnabled',
+  'rustdeskPortraitDisplayMode',
+  'vncPortraitDisplayEnabled',
+  'vncPortraitDisplayMode',
+  'moonlightPortraitDisplayEnabled',
+  'moonlightPortraitDisplayMode',
+  'remoteKeyboardAutoOpenOnRemoteClick',
   'rustdeskImageQuality',
   'rustdeskCodec',
   'rustdeskDirectIp',
@@ -77,7 +105,9 @@ export function cloudUserSettingIsDeviceLocal(key: string): boolean {
   return DEVICE_LOCAL_USER_SETTING_NAMES.indexOf(key) >= 0;
 }
 
-/** 仅同步可跨设备复用的外观偏好；设备、协议运行时、账号和临时会话状态留在本机。 */
+/** 仅同步可跨设备复用的外观、分组与工作区数据；设备、协议运行时、账号和临时会话状态留在本机。 */
 export function cloudUserSettingIsSyncable(key: string): boolean {
-  return CLOUD_USER_SETTING_NAMES.indexOf(key) >= 0;
+  if (CLOUD_USER_SETTING_NAMES.indexOf(key) >= 0) { return true; }
+  return PRO_STRUCTURED_SETTING_PREFIXES.some((prefix: string): boolean =>
+    prefix.endsWith('.') ? key.indexOf(prefix) === 0 && key.length > prefix.length : key === prefix);
 }

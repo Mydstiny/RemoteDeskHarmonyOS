@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "generator": "scripts/build_fido2_ohos.py",
+  "architecture": "arm64-v8a",
+  "generatorSha256": "46e643b89c11c643da0790dfa1fae066dd3f1c02d3efd4bbc35f13c2cb0aa416",
+  "toolchain": {
+    "clangSha256": "02a361bec920057ec39b8dd65d5bb23ac71d8876ff30feb05096d7e41d616c1c",
+    "cmakeToolchainSha256": "0584729091676af239535182d9133761217cfff0f8599acf2ea2c9e394025731"
+  },
+  "sourceLockSha256": "4e82c82c624cb239cccd8f81cfcbbfacb3be6c1c02c7da42f096c31d34a97dfb",
+  "sources": [
+    {
+      "name": "libfido2",
+      "version": "1.17.0",
+      "archive": "libfido2-1.17.0.tar.gz",
+      "directory": "libfido2-1.17.0",
+      "url": "https://developers.yubico.com/libfido2/Releases/libfido2-1.17.0.tar.gz",
+      "sha256": "c1012c8871d71b65872fd5ff1a9d6b0838a55683a03e85ba97479ce57129c736",
+      "license": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "patches": [
+        {
+          "path": "patches/libfido2-ohos/0001-add-explicit-custom-io-build.patch",
+          "sha256": "f4b4958a39dde866a602552371ccec805b4317ce35e72a93a2a2478110bc1e76"
+        }
+      ]
+    },
+    {
+      "name": "libcbor",
+      "version": "0.14.0",
+      "archive": "libcbor-0.14.0.tar.gz",
+      "directory": "libcbor-0.14.0",
+      "url": "https://github.com/PJK/libcbor/archive/refs/tags/v0.14.0.tar.gz",
+      "sha256": "a8c1516e741562cf95aa4479c64916c3d4d2623e24fdc35e414e2320e7300aae",
+      "license": "MIT",
+      "patches": []
+    }
+  ],
+  "configuration": {
+    "customIoOnly": true,
+    "implicitDeviceAccess": false,
+    "hidapi": false,
+    "pcsc": false,
+    "nfc": false,
+    "winhello": false,
+    "lto": false,
+    "cStandard": 99
+  },
+  "dependencies": {
+    "opensslVersion": "3.4.1",
+    "libcryptoSha256": "6954824f69db5ec7e7fe6b2e1963f5a39333b863f25bb19127a113c9e3d58d45",
+    "opensslVersionHeaderSha256": "266366d956c114ed6d23a1440a2cbb20abf9bd06c7703307c3d7fdd276f34a83",
+    "systemZlibSha256": "0365cfb4b732b84fdba900e499529e11be76549a5ee0de1352ba0302ce4b0398"
+  },
+  "files": {
+    "include/cbor/arrays.h": "c0231518656735d1f80b8509c06bd581b02c0b022c1586b8024a1924b13a41e3",
+    "include/cbor/bytestrings.h": "70f5b6eecbea6645b5218c566cd8fe524a89e6ec46e9dc0d73928d2b2620736a",
+    "include/cbor/callbacks.h": "c11f87194bc96852934cb50b198bebe987d29b6faa7bf8e587c4ca1e0cb12cf1",
+    "include/cbor/cbor_export.h": "2b0eec9b198f887beb5c3ed9a8f7447c3c232f064ddecbc614616dfe945a2bc5",
+    "include/cbor/common.h": "db50d5bf0a03f91587a5f784e932bac739563f90383c7831d642e6106c363a09",
+    "include/cbor/configuration.h": "72bcf905423fcf752932b99261dfab857c533813785838c07c0c08fcd47a8b5a",
+    "include/cbor/data.h": "9d5bd7ae00acc18e7860bb299853461733e0961520d9e6cbcf386ac88bc75056",
+    "include/cbor/encoding.h": "4295721a09491018f8dd770a5af636c47dedc1103e4f0caf9c293dfb1bdbb693",
+    "include/cbor/floats_ctrls.h": "c73a8f4e1981596a86565879107fbd2b553c65efcdd6bda72bf9c016af8e35b9",
+    "include/cbor/internal/builder_callbacks.h": "08e43aab2577bfb3a31694b78f6e9dfc6802b17749c37e8f234b2b0ad6cdb406",
+    "include/cbor/internal/encoders.h": "39ffbf43a937d7cbe17dcaf1c61f3d2edf2f649928da0d318b5a306b98440043",
+    "include/cbor/internal/loaders.h": "34e2bdbe84f9892b8b8604a063c2652cf18aed5858a7b1d1ed9a62251cf7553c",
+    "include/cbor/internal/memory_utils.h": "3c8a6f06d1de3b501c5c6f0ad2acd59a307cd199381a7c3d42fdef1ee88147ed",
+    "include/cbor/internal/stack.h": "f962a7d3427da8e152e27c5a956272325cfe1763c7e3db3e587172730d6a6931",
+    "include/cbor/internal/unicode.h": "3b961d100fb83b140c71b5ef84952adb66ae886df8a7d56456d36f9b031ed7ee",
+    "include/cbor/ints.h": "7e92b07eababef3ba90f7a355bd4a284d02ae168184525036a66f68f51e1cd35",
+    "include/cbor/maps.h": "00eb3e81ce25986d55dec30a95c909ebe3a79e62301ff1ff96e6859be67e400e",
+    "include/cbor/serialization.h": "a7c2f4ac128f8e7a5dec4098ad6bc635f66b4c751df5f4c931ca0ec2d217cb50",
+    "include/cbor/streaming.h": "38816c04debc1ddaae11234695f572799a153135bad44f4bf68847133facfe3a",
+    "include/cbor/strings.h": "8a21db080e677d37dd494bd0386b7669fe84388069b8f9a2c26f669952e395c8",
+    "include/cbor/tags.h": "2cc775fa7ca9b952a553bb834f5552ddfe0adca61f76a663f0bbe5dc3db01bff",
+    "include/cbor.h": "afd1cbead7c877ad320f61df96aa03f5ed4cd385d8de785959d05f124d2a600d",
+    "include/fido/bio.h": "20ec9369248f978f9274b07bde446e8b1bcbeb552de038dfe2a68d01fdaabf53",
+    "include/fido/config.h": "0511e06d95bc53d72f3b6d75b4e84e93a0d0e02571c77b3d184972625ad038b3",
+    "include/fido/credman.h": "77914744f7ecc67dd3cebe55b833526cc5ca3cd33d2edde3950508ab3bf0823b",
+    "include/fido/eddsa.h": "010a3105ee147fdb85525875f3c6e2aa4b4f8bd9b91fa8728df691ef38f4cbd2",
+    "include/fido/err.h": "a9c2353fe8b8d17105b4964eea4bc163d60847ca71508850aa049c5220d6152d",
+    "include/fido/es256.h": "6b4f54c37206fc7361f5431f05bad36434d89e62687129095a791805898ea15c",
+    "include/fido/es384.h": "0f8680029819af12f22626c927fc611e46cf9534dc883df8945e631d71d9d7b4",
+    "include/fido/param.h": "54ac262627c8524877eeee6b4c99230a6bb30a548d3a4aa16e3cb08f94c05085",
+    "include/fido/rs256.h": "a18c5a715548f3d0d7374d8dcc87b95c5f2d1b9a92a55bbfe53e729da0219256",
+    "include/fido/types.h": "698e43bcd39bd22cbb3b11bf112256183f0575ebf36871ec403f461bba72cc6a",
+    "include/fido.h": "38b3b53dae4b0c0dc612b2490e0de86100037e4b84ec4da8eb23ea0d10469936",
+    "lib/libcbor.a": "aa052467bc785e35bfcb637c0f8b406f5a770661627e81eb8926d37f6d9dd6a3",
+    "lib/libfido2.a": "97e4a07f8b4bec26aca25290df654dadc2c9b4ec7520e80f7bd893003a8db194",
+    "licenses/libcbor-LICENSE.txt": "6a5e182d758db66ecad6e6fa304dc637d4d2585bafceb5003c86e8dc9f6344ff",
+    "licenses/libfido2-LICENSE.txt": "4aad6cad5e570c10cccd1a6124bf2690eedb548b709fede991ed41326122ee2a",
+    "licenses/libfido2-source-notices.txt": "457ee470e92f24085725c2ab1553a102c8413e311e61ec84171e76661964d416"
+  }
+}

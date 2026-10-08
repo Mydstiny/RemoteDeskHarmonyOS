@@ -16,6 +16,7 @@ import {
   harmonyShortcutPressedKeysForRelease,
   harmonyShortcutRememberPressedKey,
   harmonyShortcutUnrequestedSubscriptionKeyCodes,
+  HarmonyShortcutCaptureEligibility,
   HarmonyShortcutPressedKeyIdentity,
   HarmonyShortcutStorageTransactionPort,
   mutateHarmonyShortcutBlockingPreferences,
@@ -61,6 +62,17 @@ class FakeHarmonyShortcutStorage implements HarmonyShortcutStorageTransactionPor
   publish(key: string, value: string): void {
     this.published.push(key + '=' + value);
   }
+}
+
+function readyCaptureEligibility(): HarmonyShortcutCaptureEligibility {
+  return {
+    configured: true,
+    foreground: true,
+    windowActive: true,
+    sessionReady: true,
+    inputAllowed: true,
+    modalOwnsInput: false
+  };
 }
 
 export default function harmonyShortcutBlockingPolicyTest(): void {
@@ -245,21 +257,26 @@ export default function harmonyShortcutBlockingPolicyTest(): void {
     });
 
     it('requires_foreground_focused_ready_unblocked_input_without_modal', 0, (): void => {
-      const ready = {
-        configured: true,
-        foreground: true,
-        windowActive: true,
-        sessionReady: true,
-        inputAllowed: true,
-        modalOwnsInput: false
-      };
+      const ready: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
       expect(harmonyShortcutCaptureEligible(ready)).assertTrue();
-      expect(harmonyShortcutCaptureEligible({ ...ready, foreground: false })).assertFalse();
-      expect(harmonyShortcutCaptureEligible({ ...ready, windowActive: false })).assertFalse();
-      expect(harmonyShortcutCaptureEligible({ ...ready, sessionReady: false })).assertFalse();
-      expect(harmonyShortcutCaptureEligible({ ...ready, inputAllowed: false })).assertFalse();
-      expect(harmonyShortcutCaptureEligible({ ...ready, modalOwnsInput: true })).assertFalse();
-      expect(harmonyShortcutCaptureEligible({ ...ready, configured: false })).assertFalse();
+      const background: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
+      background.foreground = false;
+      expect(harmonyShortcutCaptureEligible(background)).assertFalse();
+      const inactive: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
+      inactive.windowActive = false;
+      expect(harmonyShortcutCaptureEligible(inactive)).assertFalse();
+      const notReady: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
+      notReady.sessionReady = false;
+      expect(harmonyShortcutCaptureEligible(notReady)).assertFalse();
+      const blocked: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
+      blocked.inputAllowed = false;
+      expect(harmonyShortcutCaptureEligible(blocked)).assertFalse();
+      const modal: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
+      modal.modalOwnsInput = true;
+      expect(harmonyShortcutCaptureEligible(modal)).assertFalse();
+      const unconfigured: HarmonyShortcutCaptureEligibility = readyCaptureEligibility();
+      unconfigured.configured = false;
+      expect(harmonyShortcutCaptureEligible(unconfigured)).assertFalse();
     });
 
     it('deduplicates_repeats_and_plans_owner_switch_releases', 0, (): void => {

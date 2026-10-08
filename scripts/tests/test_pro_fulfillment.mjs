@@ -1,0 +1,290 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { generateKeyPairSync, randomBytes, verify } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { ProOrderLedger } from '../../server/pro-entitlement/ledger.mjs';
+import { ProFulfillmentService, ProGrantSigner } from '../../server/pro-entitlement/fulfillment.mjs';
+import { jwsParts } from '../../server/pro-entitlement/iap-crypto.mjs';
+import { ownerForUnionId } from '../../server/pro-entitlement/huawei-api.mjs';
+
+const owner = ownerForUnionId('unit-test-user');
+const otherOwner = ownerForUnionId('other-test-user');
+const globalConfiguration = { applicationId: 'test-app', environment: 'NORMAL', productId: 'test-pro',
+  issuer: 'test-remote-desk-pro', keyId: 'test-grant-key' };
+const configuration = globalConfiguration;
+const signing = generateKeyPairSync('rsa', { modulusLength: 2048 });
+function receipt(reference) {
+  const segment = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return JSON.stringify({ jwsPurchaseOrder: segment({ alg: 'ES256' }) + '.' + segment(reference) + '.eA' });
+}
+function fixture(t, configurationOverride = {}) {
+  const configuration = { ...globalConfiguration, ...configurationOverride };
+  const directory = mkdtempSync(join(tmpdir(), 'pro-ledger-test-'));
+  const database = join(directory, 'orders.db');
+  const key = randomBytes(32);
+  let ledger = new ProOrderLedger(database, configuration, key);
+  const state = { now: Date.now(), queries: 0, confirms: 0, networkDown: false, failConfirm: false,
+    loseConfirmResponse: false, orders: new Map(), confirmationObservedDurableGrant: false };
+  const iap = {
+    async query(reference) {
+      state.queries++;
+      if (state.networkDown) throw new Error('offline');
+      const order = state.orders.get(reference.purchaseOrderId);
+      if (!order || order.purchaseToken !== reference.purchaseToken) throw new Error('invalid order');
+      return { ...order, signedTime: state.now };
+    },
+    async confirm(reference) {
+      state.confirms++;
+      state.confirmationObservedDurableGrant = ledger.snapshot(owner).status === 'verified' && ledger.references(owner).length > 0;
+      if (state.failConfirm) throw new Error('network timeout');
+      state.orders.get(reference.purchaseOrderId).needsFinish = false;
+      if (state.loseConfirmResponse) throw new Error('response lost after acknowledgement');
+    },
+    async notification() { return { id: 'notification-1', reference: { purchaseOrderId: 'order-1', purchaseToken: 'private-purchase-token-1' } }; }
+  };
+  const signer = new ProGrantSigner(configuration, signing.privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  let service = new ProFulfillmentService(ledger, iap, signer, () => state.now);
+  t.after(() => { ledger.close(); rmSync(directory, { recursive: true, force: true }); });
+  function makeOrder(id = 'order-1', account = owner) {
+    const intent = service.createIntent(account);
+    const order = { purchaseOrderId: id, purchaseToken: 'private-purchase-token-' + id.split('-').at(-1),
+      applicationId: configuration.applicationId, environment: configuration.environment, productId: configuration.productId,
+      developerPayload: intent.developerPayload, purchaseTime: state.now, signedTime: state.now,
+      revoked: false, needsFinish: true };
+    state.orders.set(id, order); return order;
+  }
+  return { state, iap, makeOrder, database, key,
+    reconcile: (account, records = [], signal) => service.reconcile(account, records, signal, randomBytes(32).toString('base64url')),
+    get ledger() { return ledger; }, get service() { return service; },
+    restart() { ledger.close(); ledger = new ProOrderLedger(database, configuration, key);
+      service = new ProFulfillmentService(ledger, iap, signer, () => state.now); }
+  };
+}
+test('sandbox refund route finds the delivered owner order without granting, finishing or refunding it', async t => {
+  const f = fixture(t, { environment: 'SANDBOX' }); const order = f.makeOrder();
+  await f.reconcile(owner, [receipt(order)]); await f.service.reconcileDue();
+  const revision = f.ledger.snapshot(owner).revision; const queries = f.state.queries;
+  assert.deepEqual(await f.service.refundOrder(owner), { owner, applicationId: 'test-app', productId: 'test-pro',
+    environment: 'SANDBOX', purchaseOrderId: 'order-1' });
+  assert.equal(f.state.queries, queries + 1); assert.equal(f.state.confirms, 1);
+  assert.equal(f.ledger.snapshot(owner).revision, revision);
+  await assert.rejects(f.service.refundOrder(otherOwner), /refund_order_not_unique/);
+  f.state.networkDown = true; await assert.rejects(f.service.refundOrder(owner), /offline/);
+  f.state.networkDown = false; order.revoked = true; f.state.now++;
+  await assert.rejects(f.service.refundOrder(owner), /refund_order_not_unique/);
+  assert.equal(f.ledger.snapshot(owner).status, 'revoked');
+});
+test('refund route rejects production, ambiguous orders and cancelled lookups', async t => {
+  const production = fixture(t);
+  await assert.rejects(production.service.refundOrder(owner), /sandbox_refund_required/);
+  assert.equal(production.state.queries, 0);
+  const f = fixture(t, { environment: 'SANDBOX' });
+  await f.reconcile(owner, [receipt(f.makeOrder()), receipt(f.makeOrder('order-2'))]);
+  await assert.rejects(f.service.refundOrder(owner), /refund_order_not_unique/);
+  await assert.rejects(f.service.refundOrder(owner, AbortSignal.abort()), /reconciliation_cancelled/);
+});
+test('grant and immutable owner binding are durable before any delivery confirmation', async t => {
+  const f = fixture(t); const order = f.makeOrder();
+  const result = await f.reconcile(owner, [receipt(order)]);
+  assert.equal(f.state.confirms, 0); assert.equal(result.pendingDelivery, true);
+  await f.service.reconcileDue();
+  assert.equal(f.state.confirmationObservedDurableGrant, true);
+  assert.equal(f.state.confirms, 1); assert.equal(f.ledger.snapshot(owner).pending, false);
+  const signed = jwsParts(result.signedEntitlement);
+  assert.equal(verify('RSA-SHA256', signed.input, signing.publicKey, signed.signature), true);
+  assert.equal(signed.payload.owner, owner); assert.equal(signed.payload.status, 'verified');
+  assert.equal(signed.payload.usableUntil - signed.payload.verifiedAt, 7 * 86400000);
+  f.restart(); assert.equal(f.ledger.snapshot(owner).status, 'verified');
+});
+test('crash/restart preserves a timed-out pending delivery and retries only after backoff', async t => {
+  const f = fixture(t); const order = f.makeOrder(); f.state.failConfirm = true;
+  const result = await f.reconcile(owner, [receipt(order)]);
+  assert.equal(result.pendingDelivery, true); assert.equal(jwsParts(result.signedEntitlement).payload.status, 'verified');
+  await f.service.reconcileDue();
+  f.restart(); assert.equal(f.ledger.snapshot(owner).pending, true);
+  await f.reconcile(owner); assert.equal(f.state.confirms, 1);
+  f.state.failConfirm = false; f.state.now += 120001;
+  await f.service.reconcileDue(); assert.equal(f.state.confirms, 2); assert.equal(f.ledger.snapshot(owner).pending, false);
+});
+test('lost successful confirmation response is resolved by status query without confirming twice', async t => {
+  const f = fixture(t); const order = f.makeOrder(); f.state.loseConfirmResponse = true;
+  await f.reconcile(owner, [receipt(order)]);
+  await f.service.reconcileDue();
+  f.restart(); f.state.now += 120001;
+  await f.service.reconcileDue();
+  assert.equal(f.state.confirms, 1); assert.equal(f.ledger.snapshot(owner).pending, false);
+});
+test('repeated, duplicate-page and concurrent restores do not deliver twice or duplicate entitlement', async t => {
+  const f = fixture(t); const order = f.makeOrder();
+  await Promise.all([f.reconcile(owner, [receipt(order), receipt(order)]), f.reconcile(owner, [receipt(order)])]);
+  await Promise.all([f.service.reconcileDue(), f.service.reconcileDue()]);
+  const revision = f.ledger.snapshot(owner).revision;
+  await f.reconcile(owner, [receipt(order)]);
+  assert.equal(f.state.confirms, 1); assert.equal(f.ledger.references(owner).length, 1);
+  assert.equal(f.ledger.snapshot(owner).revision, revision);
+});
+test('copied receipt, missing intent and reused token cannot transfer entitlement to another account', async t => {
+  const f = fixture(t); const order = f.makeOrder();
+  await assert.rejects(() => f.reconcile(otherOwner, [receipt(order)]), /another_account/);
+  assert.equal(f.ledger.snapshot(otherOwner).status, 'noEntitlement'); assert.equal(f.state.confirms, 0);
+  await f.reconcile(owner, [receipt(order)]);
+  await f.service.reconcileDue();
+  const reused = f.makeOrder('order-2'); reused.purchaseToken = order.purchaseToken;
+  await assert.rejects(() => f.reconcile(owner, [receipt(reused)]), /already_bound/);
+  const unbound = f.makeOrder('order-3'); unbound.developerPayload = 'client-chosen';
+  await assert.rejects(() => f.reconcile(owner, [receipt(unbound)]), /intent_not_found/);
+  assert.equal(f.state.confirms, 1); assert.equal(f.ledger.references(owner).length, 1);
+});
+test('failed SQL insert rolls back intent consumption and never acknowledges delivery', async t => {
+  const f = fixture(t); const order = f.makeOrder(); const fault = new DatabaseSync(f.database);
+  fault.exec("CREATE TRIGGER deny_order BEFORE INSERT ON orders BEGIN SELECT RAISE(ABORT, 'simulated disk write failure'); END");
+  await assert.rejects(() => f.reconcile(owner, [receipt(order)]));
+  assert.equal(f.ledger.references(owner).length, 0); assert.equal(f.state.confirms, 0);
+  assert.equal(fault.prepare('SELECT order_id FROM intents WHERE id=?').get(order.developerPayload).order_id, '');
+  fault.exec('DROP TRIGGER deny_order'); fault.close();
+  await f.reconcile(owner, [receipt(order)]); await f.service.reconcileDue();
+  assert.equal(f.state.confirms, 1);
+});
+test('expiry bounds checkout time but retained intent still recovers a delayed valid purchase', async t => {
+  const f = fixture(t); const order = f.makeOrder(); f.state.now += 30 * 86400000;
+  await f.reconcile(owner, [receipt(order)]); assert.equal(f.ledger.snapshot(owner).status, 'verified');
+  const invalid = f.makeOrder('order-2'); invalid.purchaseTime += 3600000 + 60001;
+  await assert.rejects(() => f.reconcile(owner, [receipt(invalid)]), /intent_not_found/);
+});
+test('refund is terminal for its order, preserves other purchases, and increments signed revision', async t => {
+  const f = fixture(t); const first = f.makeOrder(); const second = f.makeOrder('order-2');
+  await f.reconcile(owner, [receipt(first), receipt(second)]); const oldRevision = f.ledger.snapshot(owner).revision;
+  first.revoked = true; f.state.now++;
+  await f.service.notification('verified by vendor adapter');
+  assert.equal(f.ledger.snapshot(owner).status, 'verified'); assert.ok(f.ledger.snapshot(owner).revision > oldRevision);
+  second.revoked = true; f.state.now++;
+  const result = await f.reconcile(owner);
+  assert.equal(jwsParts(result.signedEntitlement).payload.status, 'revoked');
+  first.revoked = false; f.state.now++;
+  await f.reconcile(owner); assert.equal(f.ledger.snapshot(owner).status, 'revoked');
+});
+test('older concurrent order response cannot overwrite newer state or renew its verification timestamp', t => {
+  const f = fixture(t); const order = f.makeOrder(); f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  f.ledger.applyCurrentOrder({ ...order, signedTime: order.signedTime + 1000, revoked: true }, owner, f.state.now + 1000);
+  assert.throws(() => f.ledger.applyCurrentOrder(order, owner, f.state.now + 2000), /stale_order_response/);
+  assert.equal(f.ledger.snapshot(owner).status, 'revoked'); assert.equal(f.ledger.snapshot(owner).checkedAt, f.state.now + 1000);
+});
+test('unavailable reconciliation issues no new signed grant and keeps durable purchase intact', async t => {
+  const f = fixture(t); const order = f.makeOrder(); await f.reconcile(owner, [receipt(order)]);
+  f.state.networkDown = true; f.state.now += 7 * 86400000;
+  await assert.rejects(() => f.reconcile(owner)); assert.equal(f.ledger.snapshot(owner).status, 'verified');
+});
+test('database contains no raw purchase token and rejects environment/key reuse', async t => {
+  const f = fixture(t); const order = f.makeOrder(); await f.reconcile(owner, [receipt(order)]);
+  f.restart();
+  assert.equal(readFileSync(f.database).includes(Buffer.from(order.purchaseToken)), false);
+  assert.throws(() => new ProOrderLedger(f.database, { ...configuration, environment: 'SANDBOX' }, f.key));
+  assert.throws(() => new ProOrderLedger(f.database, configuration, randomBytes(32)), /integrity/);
+});
+test('two processes sharing the ledger can claim only one delivery lease', t => {
+  const f = fixture(t); const order = f.makeOrder(); f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  const second = new ProOrderLedger(f.database, configuration, f.key);
+  const lease = f.ledger.claimFinish(order, f.state.now); assert.ok(lease);
+  assert.equal(second.claimFinish(order, f.state.now), '');
+  second.finishSucceeded(order.purchaseOrderId, 'old-unrelated-lease'); assert.equal(f.ledger.snapshot(owner).pending, true);
+  f.ledger.finishSucceeded(order.purchaseOrderId, lease); assert.equal(second.snapshot(owner).pending, false); second.close();
+});
+test('an unknown schema fails without downgrading the database', t => {
+  const f = fixture(t); const db = new DatabaseSync(f.database);
+  db.exec('PRAGMA user_version=27');
+  assert.throws(() => new ProOrderLedger(f.database, configuration, f.key), /schema_unsupported/);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 27); db.close();
+});
+test('failing first batch cannot starve later healthy orders, including after restart', async t => {
+  const f = fixture(t);
+  const requests = new Map();
+  for (let index = 1; index <= 21; index++) {
+    const order = f.makeOrder('order-' + index.toString().padStart(2, '0'));
+    f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  }
+  const checkedAt = f.ledger.snapshot(owner).checkedAt;
+  const query = f.iap.query;
+  f.iap.query = async reference => {
+    requests.set(reference.purchaseOrderId, (requests.get(reference.purchaseOrderId) || 0) + 1);
+    if (reference.purchaseOrderId !== 'order-21') throw new Error('vendor rejected this order');
+    return query(reference);
+  };
+  await f.service.reconcileDue(); assert.equal(f.state.confirms, 0);
+  f.restart(); f.state.now += 180000;
+  await f.service.reconcileDue();
+  assert.equal(requests.get('order-21'), 1); assert.equal(f.state.confirms, 1);
+  assert.equal(f.ledger.snapshot(owner).checkedAt, checkedAt);
+  const noImmediateRetry = await f.service.reconcileDue();
+  assert.ok(noImmediateRetry.checked <= 1);
+});
+test('version-one ledger migrates in place without losing a pending purchase', t => {
+  const f = fixture(t); const order = f.makeOrder(); f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  const db = new DatabaseSync(f.database);
+  db.exec('ALTER TABLE orders DROP COLUMN query_attempted_at; ALTER TABLE orders DROP COLUMN query_next_attempt; PRAGMA user_version=1');
+  db.close(); f.restart();
+  assert.equal(f.ledger.snapshot(owner).status, 'verified'); assert.equal(f.ledger.snapshot(owner).pending, true);
+  assert.equal(f.ledger.dueOrders(f.state.now).length, 1);
+});
+test('terminal refund lookup failures do not block another purchase or the signed revocation tombstone', async t => {
+  const f = fixture(t); const first = f.makeOrder(); const second = f.makeOrder('order-2');
+  await f.reconcile(owner, [receipt(first), receipt(second)]);
+  first.revoked = true; f.state.now++;
+  await f.reconcile(owner);
+  const query = f.iap.query; const calls = [];
+  f.iap.query = async reference => {
+    calls.push(reference.purchaseOrderId);
+    if (reference.purchaseOrderId === first.purchaseOrderId) throw new Error('old refunded record unavailable');
+    return query(reference);
+  };
+  const active = await f.reconcile(owner, [receipt(first)]);
+  assert.equal(jwsParts(active.signedEntitlement).payload.status, 'verified');
+  assert.deepEqual(calls, [second.purchaseOrderId]);
+  await assert.rejects(() => f.reconcile(otherOwner, [receipt(first)]), /another_account/);
+  second.revoked = true; f.state.now++;
+  await f.reconcile(owner);
+  calls.length = 0; f.restart(); f.state.now++;
+  const revoked = await f.reconcile(owner, [receipt(first), receipt(second)]);
+  assert.equal(jwsParts(revoked.signedEntitlement).payload.status, 'revoked');
+  assert.deepEqual(calls, []); assert.equal(f.ledger.references(owner).length, 2);
+});
+test('a concurrent refund cannot pair an old entitlement state with the new revocation revision', t => {
+  const f = fixture(t); const order = f.makeOrder(); f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  const second = new ProOrderLedger(f.database, configuration, f.key);
+  const prepare = DatabaseSync.prototype.prepare; let inserted = false;
+  // Inject the other real connection's transaction immediately after the first
+  // read of orders. The returned snapshot must be wholly before or after it.
+  DatabaseSync.prototype.prepare = function(sql) {
+    const statement = prepare.call(this, sql);
+    if (!/^SELECT/.test(sql) || !sql.includes('orders')) return statement;
+    return new Proxy(statement, { get(target, property) {
+      const value = target[property];
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        const result = value.apply(target, args);
+        if (!inserted && (property === 'get' || property === 'all')) {
+          inserted = true;
+          second.applyCurrentOrder({ ...order, revoked: true, signedTime: f.state.now + 1 }, owner, f.state.now + 1);
+        }
+        return result;
+      };
+    } });
+  };
+  try {
+    const snapshot = f.ledger.snapshot(owner);
+    assert.equal(inserted, true); assert.equal(snapshot.status, 'verified'); assert.equal(snapshot.revision, 1);
+    const after = second.snapshot(owner); assert.equal(after.status, 'revoked'); assert.equal(after.revision, 2);
+  } finally { DatabaseSync.prototype.prepare = prepare; second.close(); }
+});
+test('a disconnected caller cannot receive a new grant but an already verified purchase remains recoverable', async t => {
+  const f = fixture(t); const order = f.makeOrder(); const controller = new AbortController();
+  const query = f.iap.query;
+  f.iap.query = async reference => { const result = await query(reference); controller.abort(); return result; };
+  await assert.rejects(() => f.reconcile(owner, [receipt(order)], controller.signal), /cancelled/);
+  assert.equal(f.ledger.snapshot(owner).status, 'verified'); assert.equal(f.state.confirms, 0);
+  f.iap.query = query; f.restart();
+  const recovered = await f.reconcile(owner);
+  assert.equal(jwsParts(recovered.signedEntitlement).payload.status, 'verified');
+});

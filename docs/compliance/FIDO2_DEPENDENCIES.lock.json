@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "name": "libfido2",
+      "version": "1.17.0",
+      "archive": "libfido2-1.17.0.tar.gz",
+      "directory": "libfido2-1.17.0",
+      "url": "https://developers.yubico.com/libfido2/Releases/libfido2-1.17.0.tar.gz",
+      "sha256": "c1012c8871d71b65872fd5ff1a9d6b0838a55683a03e85ba97479ce57129c736",
+      "license": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "patches": [
+        {
+          "path": "patches/libfido2-ohos/0001-add-explicit-custom-io-build.patch",
+          "sha256": "f4b4958a39dde866a602552371ccec805b4317ce35e72a93a2a2478110bc1e76"
+        }
+      ]
+    },
+    {
+      "name": "libcbor",
+      "version": "0.14.0",
+      "archive": "libcbor-0.14.0.tar.gz",
+      "directory": "libcbor-0.14.0",
+      "url": "https://github.com/PJK/libcbor/archive/refs/tags/v0.14.0.tar.gz",
+      "sha256": "a8c1516e741562cf95aa4479c64916c3d4d2623e24fdc35e414e2320e7300aae",
+      "license": "MIT",
+      "patches": []
+    }
+  ]
+}

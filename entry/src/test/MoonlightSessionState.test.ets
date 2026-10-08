@@ -5,6 +5,7 @@ import {
 } from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   MoonlightSessionEvent,
+  MoonlightSessionEventType,
   MoonlightSessionStateSnapshot,
   applyMoonlightSessionEvent,
   createMoonlightSessionState,
@@ -18,7 +19,7 @@ function initial(): MoonlightSessionStateSnapshot {
     MoonlightSessionStateSnapshot;
 }
 
-function event(type: MoonlightSessionEvent['type'], sequence: number,
+function event(type: MoonlightSessionEventType, sequence: number,
   generation: number = 7, nativeError: string = '', detailCode: string = ''): MoonlightSessionEvent {
   return {
     type: type, generation: generation, sequence: sequence,
@@ -26,7 +27,7 @@ function event(type: MoonlightSessionEvent['type'], sequence: number,
   };
 }
 
-function apply(state: MoonlightSessionStateSnapshot, type: MoonlightSessionEvent['type'],
+function apply(state: MoonlightSessionStateSnapshot, type: MoonlightSessionEventType,
   sequence: number): MoonlightSessionStateSnapshot {
   return applyMoonlightSessionEvent(state, event(type, sequence)).state;
 }

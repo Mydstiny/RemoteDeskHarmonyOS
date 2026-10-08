@@ -18,6 +18,7 @@ import {
 } from '../main/ets/services/DiagnosticCaptureRuntime';
 import {
   DiagnosticNetworkFacts,
+  emptyDiagnosticRuntimeFacts,
   diagnosticNetworkFactsForEndpoints
 } from '../main/ets/services/DiagnosticCapturePolicy';
 
@@ -50,11 +51,24 @@ class FakeDiagnosticDocumentPort implements DiagnosticDocumentPort {
   }
 }
 
-function frozenCapture(): FrozenDiagnosticCapture {
+function frozenCapture(withFractionalResources: boolean = false): FrozenDiagnosticCapture {
   const clock: ExportFakeClock = new ExportFakeClock();
   const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
   runtime.start(10, ['connection.rdp', 'security.ssh_key']);
   runtime.record('connection.rdp', 'rdp_state_changed', 'state', 987654321, 7, 2, 12, 1, 0);
+  if (withFractionalResources) {
+    const facts = emptyDiagnosticRuntimeFacts();
+    facts.resources.supported = true;
+    facts.resources.cpuAvailable = true;
+    facts.resources.cpuPercent = 37.5;
+    facts.resources.memoryAvailable = true;
+    facts.resources.memoryBytes = 4096;
+    facts.resources.gpuAvailable = true;
+    facts.resources.gpuPercent = 12.25;
+    facts.resources.sampledAtMs = 1234;
+    runtime.record('connection.rdp', 'rdp_runtime_snapshot', 'state',
+      987654321, 7, 0, 10, 1, 0, facts);
+  }
   runtime.record('security.ssh_key', 'ssh_key_import', 'succeeded', 0, 0, 0, 30, 1, 2048);
   clock.uptime += 500;
   clock.wall += 500;
@@ -79,12 +93,45 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
-      expect(manifest['schemaVersion'] as number).assertEqual(4);
-      expect(manifest['appVersionCode'] as number).assertEqual(1001006);
-      expect((manifest['buildId'] as string).startsWith('1.1.5.1+')).assertTrue();
+      expect(manifest['schemaVersion'] as number).assertEqual(10);
+      expect(manifest['appVersionCode'] as number).assertEqual(1001008);
+      expect((manifest['buildId'] as string).startsWith('1.2.0+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
       expect(summary['eventCount'] as number).assertEqual(capture.events.length);
       expect(summary['serializedBytes'] as number).assertEqual(result.bytes.length);
+      const event: Record<string, Object> = JSON.parse(lines[1]) as Record<string, Object>;
+      expect(event['window'] !== undefined).assertTrue();
+      expect((event['window'] as Record<string, Object>)['requestPhase'] as string)
+        .assertEqual('idle');
+    });
+
+    it('exports_full_mode_with_catalog_and_coverage_metadata', 0, (): void => {
+      const clock: ExportFakeClock = new ExportFakeClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(3, ['connection.rustdesk'], true);
+      runtime.record('connection.rustdesk', 'rustdesk_preflight', 'failed', 0, 3, -2);
+      runtime.stop();
+      const result: DiagnosticSerializationResult =
+        serializeDiagnosticCapture(runtime.frozenCapture());
+      expect(result.ok).assertTrue();
+      const lines: string[] = result.text.substring(0, result.text.length - 1).split('\n');
+      const manifest: Record<string, Object> = JSON.parse(lines[0]) as Record<string, Object>;
+      const summary: Record<string, Object> =
+        JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
+      expect(manifest['profile'] as string).assertEqual('full');
+      expect(manifest['fullLog'] as boolean).assertTrue();
+      expect((manifest['selectedModules'] as Object[]).length).assertEqual(12);
+      expect(summary['fullLog'] as boolean).assertTrue();
+      expect(summary['expectedModuleCount'] as number).assertEqual(12);
+      expect((summary['expectedEventCount'] as number) > 60).assertTrue();
+      expect(result.text.indexOf('"code":-2') >= 0).assertTrue();
+    });
+
+    it('round_trips_fractional_resource_percentages', 0, (): void => {
+      const capture: FrozenDiagnosticCapture = frozenCapture(true);
+      const result: DiagnosticSerializationResult = serializeDiagnosticCapture(capture);
+      expect(result.ok).assertTrue();
+      expect(validateDiagnosticJsonl(result.text)).assertTrue();
     });
 
     it('never_serializes_rejected_free_text_or_raw_correlation_ids', 0, (): void => {

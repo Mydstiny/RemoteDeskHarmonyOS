@@ -112,15 +112,3 @@ RdpGraphicsLifecycleSnapshot RdpGraphicsLifecycle::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return snapshot_;
 }
-
-void RdpNextConnectionGfxFallback::mark() {
-    pending_.store(true, std::memory_order_release);
-}
-
-bool RdpNextConnectionGfxFallback::consume() {
-    return pending_.exchange(false, std::memory_order_acq_rel);
-}
-
-bool RdpNextConnectionGfxFallback::pending() const {
-    return pending_.load(std::memory_order_acquire);
-}

@@ -16,9 +16,10 @@
 #include <mutex>
 #include <memory>
 #include <utility>
+#include "phone_frame_receipt.h"
 
 using SoftwareDecoderFrameCallback = std::function<int(const uint8_t* data, size_t size,
-                                                       int width, int height, int stride)>;
+    int width, int height, int stride, const Render::PhoneDecodedFramePtr& phoneFrame)>;
 
 class SoftwareDecoderFrameCallbackGate {
 public:
@@ -39,7 +40,8 @@ public:
         return Set(nullptr);
     }
 
-    int Invoke(const uint8_t* data, size_t size, int width, int height, int stride) {
+    int Invoke(const uint8_t* data, size_t size, int width, int height, int stride,
+               const Render::PhoneDecodedFramePtr& phoneFrame = {}) {
         const std::shared_ptr<State> state = state_;
         SoftwareDecoderFrameCallback callback;
         {
@@ -53,7 +55,7 @@ public:
 
         int result = 0;
         try {
-            result = callback(data, size, width, height, stride);
+            result = callback(data, size, width, height, stride, phoneFrame);
         } catch (...) {
             FinishInvocation(state);
             // Frame callbacks run on the software decoder worker. Do not let

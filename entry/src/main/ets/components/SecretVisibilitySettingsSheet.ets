@@ -1,4 +1,8 @@
 import { promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
+import { SettingsSavedBadge } from './SettingsSavedBadge';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import {
   EditableSecretKind,
@@ -16,12 +20,15 @@ import {
 export struct SecretVisibilitySettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header, larger rows and full-size switches. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @Prop initialPolicyJson: string = '';
   onClose: () => void = (): void => {};
   onSave: (policy: SecretPresentationPolicy) => boolean =
     (_policy: SecretPresentationPolicy): boolean => false;
 
   @State policyJson: string = '';
+  @State savedTick: number = 0;
   private readonly store: SecretPresentationStore = SecretPresentationStore.getInstance();
   private storeUnsubscribe: (() => void) | null = null;
 
@@ -41,6 +48,8 @@ export struct SecretVisibilitySettingsSheet {
     }
   }
 
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
+
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
@@ -52,10 +61,13 @@ export struct SecretVisibilitySettingsSheet {
   private persist(policy: SecretPresentationPolicy): void {
     if (!this.onSave(policy)) {
       promptAction.showToast({ message: '本机密码回显设置保存失败，已保留原设置', duration: 2400 });
+      // Same text as before the tap: change it once so the tapped Switch re-renders at the saved value.
+      this.policyJson = '';
       this.policyJson = this.store.getJson();
       return;
     }
     this.policyJson = serializeSecretPresentationPolicy(policy);
+    this.savedTick++;
   }
 
   private toggle(kind: EditableSecretKind, hidden: boolean): void {
@@ -71,6 +83,7 @@ export struct SecretVisibilitySettingsSheet {
           .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
           .margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SettingsSavedBadge({ savedTick: this.savedTick }).margin({ right: 10 })
       Text('完成').fontSize(13).fontColor(this.accentColor)
         .fontFamily(AppTheme.fontFamily).onClick((): void => { this.onClose(); })
     }.width('100%').padding({ left: 22, right: 22, top: 22, bottom: 14 })
@@ -79,17 +92,19 @@ export struct SecretVisibilitySettingsSheet {
   @Builder private secretRow(kind: EditableSecretKind, title: string, detail: string) {
     Row() {
       Column() {
-        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+        Text(title).fontSize(this.modern() ? 15 : 14).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-        Text(detail).fontSize(11).fontColor(this.pal().text3)
+        Text(detail).fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
           .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({
         type: ToggleType.Switch,
         isOn: secretPresentationHidden(this.policy(), kind)
-      }).selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+      }).selectedColor(this.accentColor).scale({ x: this.modern() ? 1 : 0.88, y: this.modern() ? 1 : 0.88 })
+        .accessibilityText('隐藏' + title + '的旧值')
         .onChange((hidden: boolean): void => { this.toggle(kind, hidden); })
-    }.width('100%').padding({ left: 15, right: 12, top: 10, bottom: 10 })
+    }.width('100%').constraintSize({ minHeight: this.modern() ? 56 : 0 })
+      .padding({ left: 15, right: 12, top: 10, bottom: 10 })
   }
 
   @Builder private divider() {
@@ -101,18 +116,23 @@ export struct SecretVisibilitySettingsSheet {
       SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(17).fontColor([this.pal().text3])
         .margin({ right: 10 })
       Column() {
-        Text(title).fontSize(13).fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-        Text(detail).fontSize(10).fontColor(this.pal().text3)
+        Text(title).fontSize(this.modern() ? 14 : 13).fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text(detail).fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
           .fontFamily(AppTheme.fontFamily).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Text('始终隐藏').fontSize(10).fontColor(this.pal().text3)
+      Text('始终隐藏').fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
         .fontFamily(AppTheme.fontFamily)
     }.width('100%').padding({ left: 15, right: 15, top: 9, bottom: 9 })
   }
 
   build() {
     Column() {
-      this.header()
+      if (this.modern()) {
+        AppSheetHeader({ title: '密码与秘密回显', subtitle: '选择编辑时不读取、不显示旧值的密码类型，改动会立即保存',
+          savedTick: this.savedTick, whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+      } else {
+        this.header()
+      }
       Scroll() {
         Column() {
           Column() {
@@ -124,11 +144,11 @@ export struct SecretVisibilitySettingsSheet {
             .margin({ bottom: 14 })
 
           Row() {
-            Button('全部隐藏').layoutWeight(1).height(38).borderRadius(10)
-              .backgroundColor(this.accentColor).fontColor(Color.White).fontSize(12)
+            Button('全部隐藏').layoutWeight(1).height(this.modern() ? 44 : 38).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).fontSize(this.modern() ? 13 : 12)
               .onClick((): void => { this.persist(allHiddenSecretPresentationPolicy()); })
-            Button('恢复兼容默认').layoutWeight(1).height(38).borderRadius(10)
-              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
+            Button('恢复兼容默认').layoutWeight(1).height(this.modern() ? 44 : 38).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(this.modern() ? 13 : 12)
               .margin({ left: 8 })
               .onClick((): void => { this.persist(defaultSecretPresentationPolicy()); })
           }.width('100%').margin({ bottom: 16 })

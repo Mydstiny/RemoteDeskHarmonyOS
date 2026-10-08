@@ -108,7 +108,7 @@ function nativeTerminal(code: string,
 export default function moonlightSessionRecoveryPolicyTest(): void {
   describe('MoonlightSessionRecoveryPolicy', (): void => {
     let adapter: MemoryRecoveryPreferences = new MemoryRecoveryPreferences();
-    const context: common.Context = undefined as common.Context;
+    const context: common.Context = {} as common.Context;
 
     beforeEach((): void => {
       adapter = new MemoryRecoveryPreferences();

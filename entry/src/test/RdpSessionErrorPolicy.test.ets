@@ -9,7 +9,8 @@ import {
   rdpSessionErrorSheetPrefersLandscapeCenter,
   RdpSessionErrorSource,
   shouldCleanupRdpSessionBeforeErrorDismiss,
-  shouldShowRdpSessionErrorAfterControlPanelDismiss
+  shouldShowRdpSessionErrorAfterControlPanelDismiss,
+  rdpErrorSuggestsTlsWithoutNla
 } from '../main/ets/services/RdpSessionErrorPolicy';
 
 export default function rdpSessionErrorPolicyTest() {
@@ -75,6 +76,20 @@ export default function rdpSessionErrorPolicyTest() {
       expect(model.title).assertEqual('你的会话已断开');
       expect(model.message).assertEqual('远程会话连接失败；没有收到服务器 ErrorInfo。');
       expect(model.code).assertEqual(RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+    });
+
+    it('freerdp_logon_failure_should_show_auth_guidance_without_assuming_wrong_password', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        'RDP 连接失败或被服务器拒绝: FreeRDP 连接错误: ERRCONNECT_LOGON_FAILURE ' +
+          '[E-CONN-0x00020014] Logon failed. [E-RDP-STATE-4]',
+        RDP_CONNECT_FAILURE_UNCLASSIFIED
+      );
+      expect(model.title).assertEqual('RDP 账号认证失败');
+      expect(model.message).assertEqual(
+        '请核对 Windows 账号、用户名/域格式、密码和远程登录权限。若使用 AD UPN（user@domain），检查全局“RDP 身份格式”；若当前选择 Microsoft Account 域模式，邮箱会按该域发送。域策略禁用 NTLM 时，当前 NLA 认证也可能不兼容。此码也可能来自本地 CredSSP/SSPI 凭据失败，不能单独证明密码错误。'
+      );
+      expect(model.code).assertEqual('0x20014');
       expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
     });
 
@@ -163,6 +178,15 @@ export default function rdpSessionErrorPolicyTest() {
     it('rdp_error_sheet_should_prefer_landscape_center_layout', 0, (): void => {
       expect(rdpSessionErrorSheetPrefersLandscapeCenter(true)).assertTrue();
       expect(rdpSessionErrorSheetPrefersLandscapeCenter(false)).assertFalse();
+    });
+
+    it('offers_tls_sign_in_only_after_an_nla_failure', 0, (): void => {
+      expect(rdpErrorSuggestsTlsWithoutNla('0x20009')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x20014')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x2000C')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x2000c')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x20008')).assertFalse();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x10')).assertFalse();
     });
   });
 }

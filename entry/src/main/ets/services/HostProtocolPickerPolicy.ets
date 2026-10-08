@@ -17,9 +17,11 @@ export interface HostProtocolPickerOptionState {
 export function resolveHostProtocolPickerOption(
   protocol: string,
   moonlightProtocolAvailable: boolean,
-  moonlightFabEntryAvailable: boolean = false
+  moonlightFabEntryAvailable: boolean = false,
+  protocolAvailable: boolean = true
 ): HostProtocolPickerOptionState {
-  const runtimeAvailable: boolean = protocol !== 'moonlight' || moonlightProtocolAvailable;
+  const runtimeAvailable: boolean = protocol === 'moonlight'
+    ? moonlightProtocolAvailable : protocolAvailable;
   const routeEnabled: boolean = runtimeAvailable ||
     (protocol === 'moonlight' && moonlightFabEntryAvailable);
   // Shell admission only opens the add flow. Pairing and streaming continue
@@ -31,7 +33,8 @@ export function resolveHostProtocolPickerOption(
     routeEnabled: routeEnabled,
     runtimeAvailable: runtimeAvailable,
     shellOnly: shellOnly,
-    statusLabel: shellOnly ? '仅添加' : (routeEnabled ? '' : HOST_PROTOCOL_COMING_SOON_LABEL),
+    statusLabel: shellOnly ? '仅添加' : (routeEnabled ? '' :
+      (protocol === 'ai' ? '需要 Pro' : HOST_PROTOCOL_COMING_SOON_LABEL)),
     opacity: routeEnabled ? 1 : 0.58
   };
 }

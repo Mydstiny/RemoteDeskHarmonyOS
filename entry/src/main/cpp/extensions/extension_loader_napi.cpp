@@ -1,3 +1,5 @@
+#include "transfer/transfer_export_files.h"
+#include "render/decoder_attempt_napi.h"
 /**
  * extension_loader_napi.cpp — 扩展加载器 NAPI 桥接
  *
@@ -10,12 +12,14 @@
 #include "connection_port_policy.h"
 #include "session_teardown_executor.h"
 #include "session_registry.h"
+#include "session_clipboard_authority.h"
 #include "native_network_observer_state.h"
 #include "native_network_observer_lease.h"
 #include "key_sequence_dispatch.h"
 #include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
+#include "rdp/rdp_display_layout_policy.h"
 #include "rdp/rdp_connection_identity_policy.h"
 #include "rdp/rdp_network_retry_policy.h"
 #include "rdp/rdp_preflight_operation_fence.h"
@@ -171,34 +175,55 @@ struct SshSecretGuard {
 // 全局状态
 // ============================================================
 
-// 当前活跃连接
+// 当前活跃连接：最近激活、仍在运行的画面会话。分屏和 PC 多窗口时可能有几个会话同时运行
+// (g_liveConnections，按激活先后)；不带会话 id 的调用仍交给最近激活的那个。
 static std::shared_ptr<ProtocolAdapter> g_activeConnection = nullptr;
+struct LiveConnection {
+    uint64_t sessionId = 0;
+    std::shared_ptr<ProtocolAdapter> adapter;
+};
+static std::vector<LiveConnection> g_liveConnections;
 static std::mutex g_activeConnectionMutex;
+
+static void EraseLiveConnectionLocked(uint64_t sessionId) {
+    g_liveConnections.erase(
+        std::remove_if(g_liveConnections.begin(), g_liveConnections.end(),
+            [sessionId](const LiveConnection& live) { return live.sessionId == sessionId; }),
+        g_liveConnections.end());
+}
+
+static void PublishLatestLiveConnectionLocked() {
+    g_activeConnection = g_liveConnections.empty() ? nullptr : g_liveConnections.back().adapter;
+    InputHandler::instance().setActiveAdapter(g_activeConnection);
+}
 
 static bool ActivateSessionContext(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner) {
-    if (!Render::ActivateSharedSessionSinks(owner)) {
+    // A foreground SSH page keeps the old single-owner rule; picture sessions share the sinks with each other.
+    const bool exclusive = dynamic_cast<SshAdapter*>(adapter.get()) != nullptr;
+    if (!Render::ActivateSharedSessionSinks(owner, exclusive)) {
         return false;
     }
     std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
-    g_activeConnection = adapter;
-    InputHandler::instance().setActiveAdapter(adapter);
+    EraseLiveConnectionLocked(owner.sessionId);
+    g_liveConnections.push_back(LiveConnection {owner.sessionId, adapter});
+    PublishLatestLiveConnectionLocked();
     return true;
 }
 
 static bool DeactivateSessionContextIfActive(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner) {
+    (void)adapter;
     if (!Render::DeactivateSharedSessionSinks(owner)) {
         return false;
     }
     {
+        // Only this session leaves; another live session (分屏的另一边) keeps its adapter.
         std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
-        InputHandler::instance().setActiveAdapter(nullptr);
-        if (g_activeConnection == adapter) {
-            g_activeConnection = nullptr;
-        }
+        EraseLiveConnectionLocked(owner.sessionId);
+        PublishLatestLiveConnectionLocked();
     }
     return true;
 }
@@ -207,6 +232,7 @@ static void DeactivateAllSessionContexts() {
     Render::DeactivateAllSharedSessionSinks();
     {
         std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
+        g_liveConnections.clear();
         g_activeConnection = nullptr;
         InputHandler::instance().setActiveAdapter(nullptr);
     }
@@ -226,6 +252,10 @@ struct SessionDiagnosticsCounters {
     std::atomic<uint64_t> presentationRejected {0};
     std::atomic<uint64_t> decodeOk {0};
     std::atomic<uint64_t> decodeErrors {0};
+    std::atomic<int32_t> lastDecodeResult {0};
+    std::atomic<int32_t> firstFrameCodec {-1};
+    std::atomic<int32_t> observedFrameCodec {-1};
+    std::atomic<uint64_t> codecChanges {0};
     std::atomic<uint64_t> decodeRetNotReady {0};
     std::atomic<uint64_t> decodeRetBadCodec {0};
     std::atomic<uint64_t> decodeRetMismatch {0};
@@ -266,6 +296,10 @@ struct SessionDiagnosticsCounters {
         presentationRejected.store(0, std::memory_order_release);
         decodeOk.store(0, std::memory_order_release);
         decodeErrors.store(0, std::memory_order_release);
+        lastDecodeResult.store(0, std::memory_order_release);
+        firstFrameCodec.store(-1, std::memory_order_release);
+        observedFrameCodec.store(-1, std::memory_order_release);
+        codecChanges.store(0, std::memory_order_release);
         decodeRetNotReady.store(0, std::memory_order_release);
         decodeRetBadCodec.store(0, std::memory_order_release);
         decodeRetMismatch.store(0, std::memory_order_release);
@@ -408,6 +442,7 @@ struct SessionContext {
 
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string protocolName;
+    bool explicitPhone = false; // immutable connection choice
     mutable std::mutex adapterMutex;
     // One logical key transaction owns this lane from its first down through
     // its final up. Teardown claims the same lane before changing lifecycle,
@@ -748,6 +783,7 @@ static bool RequestFrameRefreshForSession(
 }
 
 static SessionRegistry<SessionContext> g_sessionRegistry;
+static SessionClipboardAuthority g_sessionClipboardAuthority;
 static DisconnectRequestRegistry g_disconnectRequests;
 static SessionTeardown::Executor g_teardownExecutor;
 static uint64_t g_disconnectAllRequestId = 0;
@@ -1785,18 +1821,32 @@ static std::shared_ptr<ProtocolAdapter> FindAdapter(const std::string& protocolN
 }
 
 /**
- * SSH session adapter factory.
+ * Session adapter factory.
  *
  * The extension registry stores one prototype per protocol for discovery and
- * preflight. SSH protocol state is session-owned, so a real SSH connection
- * must receive a fresh SshAdapter instance. Other protocols keep their
- * existing factory/ownership path unchanged.
+ * preflight (certificate probes and the like). Protocol state is
+ * session-owned, and several picture sessions may be live at once (分屏、PC
+ * 多窗口, the same protocol more than once), so every real connection receives
+ * a fresh adapter instance.
  */
 static std::shared_ptr<ProtocolAdapter> CreateAdapterForSession(
     const std::string& protocolName) {
     EnsureExtensionsLoaded();
     if (protocolName == "ssh") {
         return std::make_shared<SshAdapter>();
+    }
+    if (protocolName == "rdp") {
+        return std::make_shared<FreeRdpAdapter>();
+    }
+    if (protocolName == "vnc") {
+        return std::make_shared<VncAdapter>();
+    }
+    if (protocolName == "rustdesk") {
+#ifdef RUSTDESK_USE_REAL_CORE
+        return std::make_shared<RustDeskBridge>(RustDeskMode::FFI);
+#else
+        return std::make_shared<RustDeskBridge>(RustDeskMode::IPC);
+#endif
     }
     return ExtensionSystem::instance().protocols.getByName("protocol", protocolName);
 }
@@ -2301,6 +2351,8 @@ static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertifica
     SetObjectBool(env, result, "hostMismatch", cert.hostMismatch);
     SetObjectInt32(env, result, "errorCode", cert.errorCode);
     SetObjectString(env, result, "errorMessage", cert.errorMessage);
+    SetObjectString(env, result, "tlsProtocol", cert.tlsProtocol);
+    SetObjectString(env, result, "connectedAddress", cert.connectedAddress);
     napi_value riskFlags;
     napi_create_array_with_length(env, cert.riskFlags.size(), &riskFlags);
     for (size_t index = 0; index < cert.riskFlags.size(); ++index) {
@@ -4057,6 +4109,39 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "inputDroppedMouseMoves", stats.inputDroppedMouseMoves);
     SetObjectInt64(env, result, "inputNonDisposableOverflow", stats.inputNonDisposableOverflow);
     SetObjectString(env, result, "graphicsMode", stats.graphicsMode);
+    napi_value gfxEvidence = nullptr;
+    if (napi_create_object(env, &gfxEvidence) == napi_ok && gfxEvidence != nullptr) {
+        const RdpGfxEvidenceStats& gfx = stats.gfxEvidence;
+        SetObjectBool(env, gfxEvidence, "requestedApplied", gfx.requestedApplied);
+        SetObjectBool(env, gfxEvidence, "compiledGfx", gfx.compiledGfx);
+        SetObjectBool(env, gfxEvidence, "compiledH264", gfx.compiledH264);
+        SetObjectBool(env, gfxEvidence, "h264PathSafe", gfx.h264PathSafe);
+        SetObjectBool(env, gfxEvidence, "supportGraphicsPipeline", gfx.supportGraphicsPipeline);
+        SetObjectBool(env, gfxEvidence, "remoteFxCodec", gfx.remoteFxCodec);
+        SetObjectBool(env, gfxEvidence, "h264Advertised", gfx.h264Advertised);
+        SetObjectBool(env, gfxEvidence, "fallbackConsumed", gfx.fallbackConsumed);
+        SetObjectString(env, gfxEvidence, "fallbackReason", gfx.fallbackReason);
+        SetObjectInt64(env, gfxEvidence, "capsAdvertisedCount",
+                       static_cast<int64_t>(gfx.capsAdvertisedCount));
+        SetObjectString(env, gfxEvidence, "capsAdvertisedMaxVersion", gfx.capsAdvertisedMaxVersion);
+        SetObjectBool(env, gfxEvidence, "capsAdvertisedAvc", gfx.capsAdvertisedAvc);
+        SetObjectBool(env, gfxEvidence, "capsConfirmed", gfx.capsConfirmed);
+        SetObjectString(env, gfxEvidence, "capsConfirmedVersion", gfx.capsConfirmedVersion);
+        SetObjectInt64(env, gfxEvidence, "capsConfirmedFlags",
+                       static_cast<int64_t>(gfx.capsConfirmedFlags));
+        SetObjectBool(env, gfxEvidence, "capsConfirmedAvc", gfx.capsConfirmedAvc);
+        SetObjectInt64(env, gfxEvidence, "surfaceCommands",
+                       static_cast<int64_t>(gfx.surfaceCommands));
+        SetObjectInt64(env, gfxEvidence, "surfaceCommandBytes",
+                       static_cast<int64_t>(gfx.surfaceCommandBytes));
+        SetObjectInt64(env, gfxEvidence, "avcSurfaceCommands",
+                       static_cast<int64_t>(gfx.avcSurfaceCommands));
+        SetObjectInt64(env, gfxEvidence, "unknownCodecCommands",
+                       static_cast<int64_t>(gfx.unknownCodecCommands));
+        SetObjectInt64(env, gfxEvidence, "wireCodecMask", static_cast<int64_t>(gfx.wireCodecMask));
+        SetObjectString(env, gfxEvidence, "wireCodec", gfx.wireCodec);
+        napi_set_named_property(env, result, "gfxEvidence", gfxEvidence);
+    }
     return result;
 }
 
@@ -4363,6 +4448,14 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "qualityAppliedGeneration",
                    static_cast<int64_t>(nativeStats.qualityAppliedGeneration));
     SetObjectInt32(env, result, "qualityUpdateStatus", nativeStats.qualityUpdateStatus);
+    SetObjectBool(env, result, "peerInstalled", nativeStats.peerInstalled);
+    SetObjectInt32(env, result, "virtualDisplayImpl", nativeStats.virtualDisplayImpl);
+    SetObjectInt32(env, result, "rustdeskVirtualDisplayMask",
+                   static_cast<int32_t>(nativeStats.rustdeskVirtualDisplayMask));
+    SetObjectInt32(env, result, "amyuniVirtualDisplayCount", nativeStats.amyuniVirtualDisplayCount);
+    SetObjectBool(env, result, "privacySupported", nativeStats.privacySupported);
+    SetObjectInt32(env, result, "privacyState", nativeStats.privacyState);
+    SetObjectInt64(env, result, "privacyGeneration", static_cast<int64_t>(nativeStats.privacyGeneration));
     SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(
         vncSession && counters ? counters->ingressFrames.load(std::memory_order_acquire) :
         nativeStats.videoMessages));
@@ -4380,6 +4473,21 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectDouble(env, result, "displayFps", displayFps);
     SetObjectDouble(env, result, "decodeFps", decodedFps);
     SetObjectDouble(env, result, "bitrateKbps", bitrateKbps);
+    if (session && session->protocolName == "rustdesk") {
+        const auto& c = nativeStats.codecEvidence;
+        SetObjectInt32(env, result, "connectionCodecPreference", c.requestedPreference);
+        SetObjectInt32(env, result, "sentCodecPreference", c.sentPreference);
+        SetObjectInt32(env, result, "wireCodecPreference", c.wirePreference);
+        SetObjectInt32(env, result, "queuedCodecPreference", static_cast<int32_t>(c.reserved) - 1);
+        SetObjectInt32(env, result, "advertisedDecoderMask", static_cast<int32_t>(c.advertisedMask));
+        SetObjectInt32(env, result, "peerEncoderMask", c.peerEncodingMask);
+        SetObjectInt32(env, result, "codecOptionStage", static_cast<int32_t>(c.lastSendStage));
+        SetObjectInt64(env, result, "loginOptionSends", static_cast<int64_t>(c.loginSends));
+        SetObjectInt64(env, result, "runtimeOptionSubmissions", static_cast<int64_t>(c.optionSends));
+        SetObjectInt64(env, result, "codecOptionSendFailures", static_cast<int64_t>(c.sendFailures));
+        Render::SetDecoderAttemptEvidence(env, result, session->identity());
+        Render::SetOrientationSelfTestEvidence(env, result);
+    }
     SetObjectInt32(env, result, "codec", counters ?
         counters->lastCodec.load(std::memory_order_acquire) : nativeStats.codec);
     SetObjectInt32(env, result, "width", counters ?
@@ -4435,6 +4543,9 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "lastPresentedFrameAgeMs", lastPresentedFrameAgeMs);
     SetObjectInt64(env, result, "decodeOk", static_cast<int64_t>(
         counters ? counters->decodeOk.load(std::memory_order_acquire) : 0));
+    SetObjectInt32(env, result, "lastDecodeResult", counters ? counters->lastDecodeResult.load() : 0);
+    SetObjectInt32(env, result, "firstFrameCodec", counters ? counters->firstFrameCodec.load() : -1);
+    SetObjectInt64(env, result, "codecChanges", counters ? static_cast<int64_t>(counters->codecChanges.load()) : 0);
     SetObjectInt64(env, result, "decodeErrors", static_cast<int64_t>(
         counters ? counters->decodeErrors.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "decodeP50Us", decodeP50Us);
@@ -4669,6 +4780,18 @@ napi_value NapiGetLocalResourceStats(napi_env env, napi_callback_info info) {
     return MakeLocalResourceStatsValue(env, state);
 }
 
+static napi_value MakeTransferStatusValue(napi_env env, const SessionTransferStatus& status) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "rdpDriveMounted", status.rdpDriveMounted);
+    SetObjectInt32(env, result, "rustdeskTransferState", static_cast<int32_t>(status.rustdeskTransfer));
+    SetObjectInt64(env, result, "transferId", static_cast<int64_t>(status.transferId));
+    SetObjectInt64(env, result, "transferredBytes", static_cast<int64_t>(status.transferredBytes));
+    SetObjectInt64(env, result, "totalBytes", static_cast<int64_t>(status.totalBytes));
+    SetObjectString(env, result, "diagnosticCode", status.diagnosticCode);
+    return result;
+}
+
 napi_value NapiGetSessionTransferStatus(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -4680,15 +4803,7 @@ napi_value NapiGetSessionTransferStatus(napi_env env, napi_callback_info info) {
     if (it != g_sessionRegistry.end() && it->second->adapter) {
         status = it->second->adapter->getSessionTransferStatus();
     }
-    napi_value result;
-    napi_create_object(env, &result);
-    SetObjectBool(env, result, "rdpDriveMounted", status.rdpDriveMounted);
-    SetObjectInt32(env, result, "rustdeskTransferState", static_cast<int32_t>(status.rustdeskTransfer));
-    SetObjectInt64(env, result, "transferId", static_cast<int64_t>(status.transferId));
-    SetObjectInt64(env, result, "transferredBytes", static_cast<int64_t>(status.transferredBytes));
-    SetObjectInt64(env, result, "totalBytes", static_cast<int64_t>(status.totalBytes));
-    SetObjectString(env, result, "diagnosticCode", status.diagnosticCode);
-    return result;
+    return MakeTransferStatusValue(env, status);
 }
 
 /**
@@ -4994,17 +5109,16 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         getBool("multiMonitor", cfg.multiMonitor);
         getInt("colorDepth", cfg.colorDepth);
         getInt("rdpDesktopScaleFactor", cfg.rdpDesktopScaleFactor);
+        if (protocolName == "rdp") getBool("rdpSecurityKeyRedirect", cfg.rdpSecurityKeyRedirect);
         getInt("rdpDeviceScaleFactor", cfg.rdpDeviceScaleFactor);
         getInt("rdpDesktopPhysicalWidthMm", cfg.rdpDesktopPhysicalWidthMm);
         getInt("rdpDesktopPhysicalHeightMm", cfg.rdpDesktopPhysicalHeightMm);
         getInt("rdpDesktopOrientation", cfg.rdpDesktopOrientation);
-        if (cfg.rdpDesktopScaleFactor != 100 && cfg.rdpDesktopScaleFactor != 140 &&
-            cfg.rdpDesktopScaleFactor != 180) {
+        if (!RdpDisplayLayoutPolicy::IsDesktopScaleFactorValid(cfg.rdpDesktopScaleFactor)) {
             cfg.rdpDesktopScaleFactor = 100;
         }
-        if (cfg.rdpDeviceScaleFactor != 100 && cfg.rdpDeviceScaleFactor != 140 &&
-            cfg.rdpDeviceScaleFactor != 180) {
-            cfg.rdpDeviceScaleFactor = cfg.rdpDesktopScaleFactor;
+        if (!RdpDisplayLayoutPolicy::IsDeviceScaleFactorValid(cfg.rdpDeviceScaleFactor)) {
+            cfg.rdpDeviceScaleFactor = 100;
         }
         if (cfg.rdpDesktopPhysicalWidthMm < 10 || cfg.rdpDesktopPhysicalWidthMm > 10000) {
             cfg.rdpDesktopPhysicalWidthMm = 0;
@@ -5098,6 +5212,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     bool hasRdDirectPort = false;
     bool hasRdRelayPort = false;
     if (isRustDesk) {
+        if (protocolName == "rustdesk") getBool("rdExplicitPhone", cfg.rdExplicitPhone);
         getInt("rdImageQuality", cfg.rdImageQuality);
         getBool("rdDirectIp", cfg.rdDirectIp);
         getString("rdConnectionStrategy", cfg.rdConnectionStrategy);
@@ -5133,7 +5248,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
         getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
         getBool("rdpCertificateAllowUnpinnedOnce", cfg.rdpCertificateAllowUnpinnedOnce);
+        getBool("rdpVerifyCertificateOnConnect", cfg.rdpVerifyCertificateOnConnect);
         getBool("rdpAllowStandardSecurityOnce", cfg.rdpAllowStandardSecurityOnce);
+        getBool("rdpAllowLegacyTls", cfg.rdpAllowLegacyTls);
         getBool("rdpTlsWithoutNla", cfg.rdpTlsWithoutNla);
         getBool("rdpCertificateAllowTimeAnomalyOnce", cfg.rdpCertificateAllowTimeAnomalyOnce);
         getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);
@@ -5381,6 +5498,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     auto session = std::shared_ptr<SessionContext>(new SessionContext());
     session->adapter = adapter;
     session->protocolName = protocolName;
+    session->explicitPhone = protocolName == "rustdesk" && cfg.rdExplicitPhone;
     if (protocolName == "vnc") {
         session->vncConnectionPath =
             cfg.vncTransport == "ultravnc_repeater" ? "repeater" : "direct";
@@ -5743,6 +5861,23 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             }
             return;
         }
+        VideoFrame decodeFrame = frame;
+        if (session->explicitPhone) {
+            const auto bridge = GetRustDeskAdapter(session);
+            const auto owner = session->identity();
+            std::weak_ptr<RustDeskBridge> weakBridge = bridge;
+            auto receipt = std::make_shared<Render::PhoneFrameReceipt>();
+            receipt->identity = {owner.sessionId, owner.generation, owner.ownerToken,
+                frame.phoneStreamEpoch, frame.phoneGeometryEpoch, frame.display, frame.width, frame.height};
+            receipt->originalTimestamp = frame.timestamp;
+            receipt->didPresent =
+                [weakBridge](const Render::PhoneFrameIdentity& identity, int width, int height) {
+                    if (const auto phone = weakBridge.lock()) {
+                        phone->observePhonePresentation(identity, width, height);
+                    }
+                };
+            decodeFrame.phonePresentation = std::move(receipt);
+        }
         if (frame.width > 0 && frame.height > 0) {
             RendererNapi::SetActiveSourceSize(session->identity(), frame.width, frame.height);
         }
@@ -5763,7 +5898,15 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         session->videoPerf.recordIngressFrame("rustdesk", frame.width, frame.height,
                                               frame.size, frame.isKeyFrame);
         const auto decodeStartedAt = std::chrono::steady_clock::now();
-        int ret = DecoderNapi::DecodeActiveNative(session->identity(), frame);
+        int32_t unseenCodec = -1;
+        const int32_t observedCodec = static_cast<int32_t>(frame.codec);
+        session->diagnostics.firstFrameCodec.compare_exchange_strong(unseenCodec, observedCodec);
+        const int32_t previousCodec = session->diagnostics.observedFrameCodec.exchange(observedCodec);
+        if (previousCodec >= 0 && previousCodec != observedCodec) {
+            session->diagnostics.codecChanges.fetch_add(1, std::memory_order_relaxed);
+        }
+        int ret = DecoderNapi::DecodeActiveNative(session->identity(), decodeFrame);
+        session->diagnostics.lastDecodeResult.store(ret, std::memory_order_release);
         const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - decodeStartedAt).count();
         if (ret < 0 || ret == DecoderNapi::kDecodeInactiveSession) {
@@ -5771,7 +5914,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             // create/bind the shared decoder. Retain a keyframe across that
             // short owner-pipeline gap so the first visible frame is not
             // dependent on a later remote refresh.
-            RememberPendingRustDeskKeyFrame(session, frame);
+            RememberPendingRustDeskKeyFrame(session, decodeFrame);
         }
         if (ret == DecoderNapi::kDecodeInactiveDisplay ||
             ret == DecoderNapi::kDecodeInactiveSession) {
@@ -6873,6 +7016,10 @@ static NativeDisconnectCoreResult ExecuteNapiDisconnectCore(
         if (const auto it = g_sessionRegistry.find(sessionId);
             it != g_sessionRegistry.end() && it->second) {
             resources.owner = it->second->identity();
+        } else if (sessionId > 0) {
+            // Several picture sessions may be live: only this session's own owner, never another one's.
+            resources.owner = Render::SharedSessionSinkOwnerLease().ownerForSession(
+                static_cast<uint64_t>(sessionId));
         } else {
             resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
         }
@@ -7208,6 +7355,11 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
     resources.decoderHandle = GetOptionalHandle(env, argc, args, 1);
     resources.audioHandle = GetOptionalHandle(env, argc, args, 2);
     resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
+    if (!resources.owner.valid()) {
+        // Several picture sessions live (分屏、PC 多窗口): the handles passed are the calling page's, so their owner
+        // is the session the decoder is bound to.
+        resources.owner = DecoderNapi::BoundOwnerForDecoderHandle(resources.decoderHandle);
+    }
     // Stop protocol producers while the exact session owner is still
     // published.  DeactivateAllSessionContexts() closes the shared owner
     // gate; doing it first makes PrepareAdapterForTeardown() fail closed and
@@ -7657,6 +7809,93 @@ napi_value NapiSendRustDeskTouchpadWheel(napi_env env, napi_callback_info info) 
     return result;
 }
 
+/** The live RustDesk bridge of a session whose owner is active, or null with the reason. */
+static std::shared_ptr<RustDeskBridge> ActiveRustDeskBridge(int32_t sessionId, const char** rejection) {
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (!session) {
+        *rejection = "session-not-found";
+        return nullptr;
+    }
+    if (!IsSessionCallbackActive(session)) {
+        *rejection = "session-owner-inactive";
+        return nullptr;
+    }
+    std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+    if (!bridge) {
+        *rejection = "bridge-unavailable";
+    }
+    return bridge;
+}
+
+/** NAPI: toggleRustDeskPrivacyMode(sessionId, on): boolean (the peer's answer arrives in the diagnostics). */
+napi_value NapiToggleRustDeskPrivacyMode(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    bool on = false;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_bool(env, args[1], &on);
+    }
+    const char* rejection = "ffi-control-rejected";
+    const std::shared_ptr<RustDeskBridge> bridge = ActiveRustDeskBridge(sessionId, &rejection);
+    const bool accepted = bridge && bridge->togglePrivacyMode(on);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk privacy mode session=%{public}d on=%{public}d accepted=%{public}d reason=%{public}s",
+        sessionId, on ? 1 : 0, accepted ? 1 : 0, accepted ? "ok" : rejection);
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: toggleRustDeskVirtualDisplay(sessionId, display, on): boolean */
+napi_value NapiToggleRustDeskVirtualDisplay(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -2;
+    bool on = false;
+    if (argc >= 3) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &display);
+        napi_get_value_bool(env, args[2], &on);
+    }
+    const char* rejection = "ffi-control-rejected";
+    const std::shared_ptr<RustDeskBridge> bridge = ActiveRustDeskBridge(sessionId, &rejection);
+    const bool accepted = bridge && bridge->toggleVirtualDisplay(display, on);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk virtual display session=%{public}d display=%{public}d on=%{public}d accepted=%{public}d reason=%{public}s",
+        sessionId, display, on ? 1 : 0, accepted ? 1 : 0, accepted ? "ok" : rejection);
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: setRustDeskStreamOptions(sessionId, codec, audioEnabled): boolean — live codec and remote audio. */
+napi_value NapiSetRustDeskStreamOptions(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t codec = -1;
+    bool audioEnabled = true;
+    if (argc >= 3) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &codec);
+        napi_get_value_bool(env, args[2], &audioEnabled);
+    }
+    const char* rejection = "ffi-control-rejected";
+    const std::shared_ptr<RustDeskBridge> bridge = ActiveRustDeskBridge(sessionId, &rejection);
+    const bool accepted = bridge && bridge->setStreamOptions(codec, audioEnabled);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk stream options session=%{public}d codec=%{public}d audio=%{public}d accepted=%{public}d reason=%{public}s",
+        sessionId, codec, audioEnabled ? 1 : 0, accepted ? 1 : 0, accepted ? "ok" : rejection);
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 /** NAPI: setRustDeskImageQuality(sessionId, quality): boolean */
 napi_value NapiSetRustDeskImageQuality(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -7672,9 +7911,32 @@ napi_value NapiSetRustDeskImageQuality(napi_env env, napi_callback_info info) {
     auto it = g_sessionRegistry.find(sessionId);
     const std::shared_ptr<SessionContext> session =
         it == g_sessionRegistry.end() ? nullptr : it->second;
-    if (quality >= 0 && quality <= 2 && IsSessionCallbackActive(session)) {
+    const char* rejection = "unknown";
+    if (quality < 0 || quality > 2) {
+        rejection = "invalid-quality";
+    } else if (!session) {
+        rejection = "session-not-found";
+    } else if (!IsSessionCallbackActive(session)) {
+        rejection = "session-owner-inactive";
+    } else {
         const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
-        accepted = bridge != nullptr && bridge->setImageQuality(quality);
+        if (!bridge) {
+            rejection = "bridge-unavailable";
+        } else {
+            accepted = bridge->setImageQuality(quality);
+            if (!accepted) {
+                rejection = "ffi-control-rejected";
+            }
+        }
+    }
+    if (accepted) {
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] RustDesk image quality accepted session=%{public}d quality=%{public}d",
+            sessionId, quality);
+    } else {
+        OH_LOG_WARN(LOG_APP,
+            "[ExtLoader] RustDesk image quality rejected session=%{public}d quality=%{public}d reason=%{public}s",
+            sessionId, quality, rejection);
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);
@@ -7734,6 +7996,11 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
     SetObjectInt32(env, result, "originalHeight", capabilities.originalHeight);
     SetObjectInt32(env, result, "scaleMilli", capabilities.scaleMilli);
     SetObjectInt32(env, result, "geometryEpoch", static_cast<int32_t>(capabilities.geometryEpoch));
+    SetObjectString(env, result, "peerVersion", capabilities.peerVersion);
+    SetObjectString(env, result, "peerPlatform", capabilities.peerPlatform);
+    SetObjectBool(env, result, "hasDisplayIndex", capabilities.hasDisplayIndex);
+    SetObjectBool(env, result, "hasPermission", capabilities.hasPermission);
+    SetObjectBool(env, result, "hasVirtualDisplay", capabilities.hasVirtualDisplay);
     napi_value resolutions;
     napi_create_array_with_length(env, capabilities.resolutions.size(), &resolutions);
     for (size_t index = 0; index < capabilities.resolutions.size(); ++index) {
@@ -8114,6 +8381,75 @@ napi_value NapiBeginRustDeskDisplaySwitch(napi_env env, napi_callback_info info)
     return result;
 }
 
+/** NAPI: getVncDisplayCapabilities(sessionId): object */
+napi_value NapiGetVncDisplayCapabilities(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
+
+    int monitorCount = 0;
+    int currentMonitor = -1;
+    int pendingMonitor = -1;
+    uint64_t switchGeneration = 0;
+    bool inputBlocked = false;
+    std::string lastResult = "disconnected";
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (IsSessionCallbackActive(session)) {
+        if (auto* vnc = dynamic_cast<VncAdapter*>(session->adapter.get())) {
+            monitorCount = vnc->monitorCount();
+            currentMonitor = vnc->currentMonitor();
+            pendingMonitor = vnc->pendingMonitor();
+            switchGeneration = vnc->monitorSwitchGeneration();
+            inputBlocked = vnc->monitorSwitchInputBlocked();
+            lastResult = vnc->monitorSwitchLastResult();
+        }
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    const bool multiDisplaySupported = monitorCount > 1;
+    SetObjectBool(env, result, "supported", multiDisplaySupported);
+    SetObjectString(env, result, "mode",
+                    multiDisplaySupported ? std::string("serverSelection")
+                                     : std::string("unsupported"));
+    SetObjectInt32(env, result, "monitorCount", monitorCount);
+    SetObjectInt32(env, result, "currentMonitor", currentMonitor);
+    SetObjectInt32(env, result, "pendingMonitor", pendingMonitor);
+    SetObjectInt64(env, result, "switchGeneration",
+                   static_cast<int64_t>(switchGeneration));
+    SetObjectBool(env, result, "inputBlocked", inputBlocked);
+    SetObjectString(env, result, "lastResult", lastResult);
+    return result;
+}
+
+/** NAPI: switchVncDisplay(sessionId, monitor): boolean */
+napi_value NapiSwitchVncDisplay(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t monitor = -1;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &monitor);
+    }
+    bool accepted = false;
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (monitor >= 0 && monitor <= 255 && IsSessionCallbackActive(session)) {
+        if (auto* vnc = dynamic_cast<VncAdapter*>(session->adapter.get())) {
+            accepted = vnc->requestMonitorSwitch(monitor);
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 /** NAPI: switchRustDeskDisplay(sessionId, display): boolean */
 napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -8198,6 +8534,35 @@ napi_value NapiSendRustDeskTouchScale(napi_env env, napi_callback_info info) {
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** Phone-only ingress. No selection setter is exposed on an existing session. */
+napi_value NapiRustDeskPhoneControl(napi_env env, napi_callback_info info) {
+    size_t argc = 7;
+    napi_value args[7];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sid = 0, operation = -2, x = 0, y = 0;
+    int64_t generation = 0, owner = 0, streamEpoch = 0;
+    int64_t value = 0;
+    if (argc == 7 && napi_get_value_int32(env, args[0], &sid) == napi_ok &&
+        napi_get_value_int64(env, args[1], &generation) == napi_ok &&
+        napi_get_value_int64(env, args[2], &owner) == napi_ok &&
+        napi_get_value_int32(env, args[3], &operation) == napi_ok &&
+        napi_get_value_int32(env, args[4], &x) == napi_ok &&
+        napi_get_value_int32(env, args[5], &y) == napi_ok &&
+        napi_get_value_int64(env, args[6], &streamEpoch) == napi_ok &&
+        generation > 0 && owner > 0 && operation >= -2 && operation <= 13) {
+        auto it = g_sessionRegistry.find(sid);
+        if (it != g_sessionRegistry.end() && it->second &&
+            it->second->generation.load(std::memory_order_acquire) == static_cast<uint64_t>(generation) &&
+            it->second->ownerToken == static_cast<uint64_t>(owner)) {
+            auto bridge = GetRustDeskAdapter(it->second);
+            if (bridge) value = bridge->phoneControl(generation, owner, operation, x, y, streamEpoch);
+        }
+    }
+    napi_value result;
+    napi_create_int64(env, value, &result);
     return result;
 }
 
@@ -8360,6 +8725,787 @@ napi_value NapiEnqueueSshTerminalInput(napi_env env, napi_callback_info info) {
  * NAPI: sendFile(sessionId: number, remotePath: string, data: ArrayBuffer): number
  * 返回 0 成功, -1 失败
  */
+// New transfer/publication APIs require the captured native generation.
+// The strong adapter reference retains the old object if teardown starts next;
+// each protocol still performs its own live/permission admission.
+static std::shared_ptr<ProtocolAdapter> TransferAdapterForOwner(
+    napi_env env, napi_value sessionArg, napi_value generationArg, bool requireActive = true) {
+    int32_t sessionId = 0;
+    int64_t generation = 0;
+    if (!ReadStrictNapiInt32Value(env, sessionArg, sessionId) || sessionId <= 0 ||
+        !ReadStrictNapiInt64Value(env, generationArg, generation) || generation <= 0) return {};
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second) return {};
+    auto session = it->second;
+    std::lock_guard<std::mutex> lock(session->adapterMutex);
+    if (session->generation.load(std::memory_order_acquire) != static_cast<uint64_t>(generation) ||
+        (requireActive && session->lifecycle.load(std::memory_order_acquire) != SessionContext::Lifecycle::Active)) return {};
+    return session->adapter;
+}
+
+static bool ReadClipboardContentBytes(napi_env env, napi_value object, const char* name,
+                                      size_t limit, std::vector<uint8_t>& output) {
+    bool present = false;
+    if (napi_has_named_property(env, object, name, &present) != napi_ok) return false;
+    if (!present) return true;
+    napi_value value; bool isBuffer = false; void* bytes = nullptr; size_t size = 0;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok ||
+        napi_is_arraybuffer(env, value, &isBuffer) != napi_ok || !isBuffer ||
+        napi_get_arraybuffer_info(env, value, &bytes, &size) != napi_ok || size > limit ||
+        (size > 0 && bytes == nullptr)) return false;
+    if (size > 0) output.assign(static_cast<uint8_t*>(bytes), static_cast<uint8_t*>(bytes) + size);
+    return true;
+}
+static bool ReadClipboardContentText(napi_env env, napi_value object, const char* name,
+                                     size_t limit, std::optional<std::string>& output) {
+    bool present = false;
+    if (napi_has_named_property(env, object, name, &present) != napi_ok) return false;
+    if (!present) return true;
+    napi_value value; std::string text;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok ||
+        !ReadBoundedNapiStringValue(env, value, limit, text)) return false;
+    output = std::move(text); return true;
+}
+static bool ReadClipboardContentDimension(napi_env env, napi_value object, const char* name, uint32_t& result) {
+    bool present = false;
+    if (napi_has_named_property(env, object, name, &present) != napi_ok) return false;
+    if (!present) return true;
+    napi_value value; int32_t dimension = 0;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok ||
+        !ReadStrictNapiInt32Value(env, value, dimension) || dimension < 0 || dimension > 8192) return false;
+    result = static_cast<uint32_t>(dimension); return true;
+}
+static void WriteClipboardContentBytes(napi_env env, napi_value object, const char* name,
+                                       const std::vector<uint8_t>& bytes, size_t limit) {
+    if (bytes.empty() || bytes.size() > limit) return;
+    napi_value buffer; void* output = nullptr;
+    if (napi_create_arraybuffer(env, bytes.size(), &output, &buffer) != napi_ok || output == nullptr) return;
+    memcpy(output, bytes.data(), bytes.size()); napi_set_named_property(env, object, name, buffer);
+}
+static napi_value WriteRdpClipboardContent(napi_env env, const RdpClipboardContent& content) {
+    napi_value result; napi_create_object(env, &result);
+    if (content.textUtf8 && content.textUtf8->size() <= 65536) SetObjectString(env, result, "textUtf8", *content.textUtf8);
+    if (content.htmlUtf8 && content.htmlUtf8->size() <= 1024 * 1024) SetObjectString(env, result, "htmlUtf8", *content.htmlUtf8);
+    WriteClipboardContentBytes(env, result, "png", content.png, 8 * 1024 * 1024);
+    WriteClipboardContentBytes(env, result, "rtfBytes", content.rtfBytes, 1024 * 1024);
+    WriteClipboardContentBytes(env, result, "rgbaStraight", content.rgbaStraight, 16 * 1024 * 1024);
+    SetObjectInt64(env, result, "width", content.width); SetObjectInt64(env, result, "height", content.height);
+    return result;
+}
+napi_value NapiPublishSessionRdpClipboardContent(napi_env env, napi_callback_info info) {
+    napi_value args[4]; uint64_t id = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        napi_valuetype type = napi_undefined; RdpClipboardContent content;
+        try {
+            if (rdp && napi_typeof(env, args[2], &type) == napi_ok && type == napi_object &&
+                ReadClipboardContentText(env, args[2], "textUtf8", 65536, content.textUtf8) &&
+                ReadClipboardContentText(env, args[2], "htmlUtf8", 1024 * 1024, content.htmlUtf8) &&
+                ReadClipboardContentBytes(env, args[2], "png", 8 * 1024 * 1024, content.png) &&
+                ReadClipboardContentBytes(env, args[2], "rtfBytes", 1024 * 1024, content.rtfBytes) &&
+                ReadClipboardContentBytes(env, args[2], "rgbaStraight", 16 * 1024 * 1024, content.rgbaStraight) &&
+                ReadClipboardContentDimension(env, args[2], "width", content.width) &&
+                ReadClipboardContentDimension(env, args[2], "height", content.height)) {
+                id = rdp->publishClipboardContentTracked(content);
+            }
+        } catch (...) { id = 0; }
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "publicationId", static_cast<int64_t>(id));
+    SetObjectInt64(env, result, "state", id > 0 ? 1 : 3); return result;
+}
+napi_value NapiGetSessionRdpClipboardFormats(napi_env env, napi_callback_info info) {
+    napi_value args[3]; RdpClipboardFormatOffer offer;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) offer = rdp->getRemoteClipboardFormats();
+    }
+    napi_value result, formats; napi_create_object(env, &result); napi_create_array(env, &formats);
+    SetObjectInt64(env, result, "sequence", static_cast<int64_t>(offer.sequence));
+    for (size_t i = 0; i < offer.formats.size() && i < 5; ++i) {
+        napi_value value; napi_create_uint32(env, static_cast<uint32_t>(offer.formats[i].format), &value);
+        napi_set_element(env, formats, i, value);
+    }
+    napi_set_named_property(env, result, "formats", formats); return result;
+}
+napi_value NapiRequestSessionRdpClipboardFormat(napi_env env, napi_callback_info info) {
+    napi_value args[5]; uint64_t id = 0; int64_t sequence = 0; int32_t format = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], sequence) && sequence > 0 &&
+            ReadStrictNapiInt32Value(env, args[3], format) && format >= 1 && format <= 5)
+            id = rdp->requestRemoteClipboardFormat(static_cast<uint64_t>(sequence), static_cast<RdpClipboardFormat>(format));
+    }
+    napi_value result; napi_create_int64(env, static_cast<int64_t>(id), &result); return result;
+}
+napi_value NapiGetSessionRdpClipboardFormatResult(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = 0; RdpClipboardFormatResult response;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            response = rdp->getRemoteClipboardFormatResult(static_cast<uint64_t>(id));
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "requestId", static_cast<int64_t>(response.requestId));
+    SetObjectInt64(env, result, "sequence", static_cast<int64_t>(response.sequence));
+    SetObjectInt64(env, result, "format", static_cast<uint32_t>(response.format));
+    SetObjectString(env, result, "state", response.state); SetObjectString(env, result, "diagnosticCode", response.diagnosticCode);
+    const RdpClipboardContent empty;
+    const RdpClipboardContent& content = response.state == "ready" ? response.content : empty;
+    napi_set_named_property(env, result, "content", WriteRdpClipboardContent(env, content));
+    return result;
+}
+napi_value NapiReleaseSessionRdpClipboardFormat(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = 0; bool released = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            released = rdp->releaseRemoteClipboardFormat(static_cast<uint64_t>(id));
+    }
+    napi_value result; napi_get_boolean(env, released, &result); return result;
+}
+
+napi_value NapiGetSessionRdpClipboardFiles(napi_env env, napi_callback_info info) {
+    napi_value args[3]; RemoteClipboardFileOffer offer;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) offer = rdp->getRemoteClipboardFiles();
+    }
+    napi_value result, entries; napi_create_object(env, &result); napi_create_array(env, &entries);
+    SetObjectInt64(env, result, "sequence", offer.sequence);
+    SetObjectString(env, result, "state", offer.state);
+    SetObjectBool(env, result, "streamSupported", offer.streamSupported);
+    SetObjectBool(env, result, "lockSupported", offer.lockSupported);
+    SetObjectBool(env, result, "totalKnown", offer.totalKnown);
+    SetObjectInt64(env, result, "totalBytes", offer.totalBytes);
+    SetObjectString(env, result, "diagnosticCode", offer.diagnosticCode);
+    for (size_t i = 0; i < offer.entries.size() && i < 1024; ++i) {
+        napi_value entry; napi_create_object(env, &entry);
+        SetObjectInt32(env, entry, "index", offer.entries[i].index);
+        SetObjectString(env, entry, "relativeName", offer.entries[i].relativeName);
+        SetObjectBool(env, entry, "directory", offer.entries[i].directory);
+        SetObjectBool(env, entry, "sizeKnown", offer.entries[i].sizeKnown);
+        SetObjectInt64(env, entry, "size", offer.entries[i].size);
+        napi_set_element(env, entries, static_cast<uint32_t>(i), entry);
+    }
+    napi_set_named_property(env, result, "entries", entries); return result;
+}
+
+napi_value NapiRequestSessionRdpClipboardFiles(napi_env env, napi_callback_info info) {
+    napi_value args[4]; bool accepted = false; int64_t sequence = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], sequence) && sequence > 0)
+            accepted = rdp->requestRemoteClipboardFiles(sequence);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+
+napi_value NapiStartSessionRdpClipboardReceive(napi_env env, napi_callback_info info) {
+    static std::atomic<uint64_t> nextId {1};
+    napi_value args[6]; int64_t resultId = -1, sequence = 0; int32_t fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 5, args, 6)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        bool array = false; uint32_t count = 0;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], sequence) && sequence > 0 &&
+            napi_is_array(env, args[3], &array) == napi_ok && array &&
+            napi_get_array_length(env, args[3], &count) == napi_ok && count > 0 && count <= 1024 &&
+            ReadStrictNapiInt32Value(env, args[4], fd) && fd >= 0) {
+            std::vector<uint32_t> selected; bool valid = true;
+            for (uint32_t i = 0; i < count; ++i) {
+                napi_value value; int32_t index = -1;
+                if (napi_get_element(env, args[3], i, &value) != napi_ok ||
+                    !ReadStrictNapiInt32Value(env, value, index) || index < 0 || index >= 1024) { valid = false; break; }
+                selected.push_back(index);
+            }
+            if (valid) {
+                const uint64_t id = nextId.fetch_add(1);
+                if (id < 9007199254740991ULL && rdp->startRemoteClipboardReceive(id, sequence, selected, fd))
+                    resultId = static_cast<int64_t>(id);
+            }
+        }
+    }
+    napi_value result; napi_create_int64(env, resultId, &result); return result;
+}
+
+napi_value NapiGetSessionRdpClipboardReceive(napi_env env, napi_callback_info info) {
+    napi_value args[4]; RemoteClipboardReceiveStatus status; int64_t id = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) status = rdp->getRemoteClipboardReceiveStatus(id);
+    }
+    napi_value result, entries; napi_create_object(env, &result); napi_create_array(env, &entries);
+    SetObjectInt64(env, result, "taskId", status.taskId); SetObjectInt64(env, result, "sequence", status.sequence);
+    SetObjectString(env, result, "phase", status.phase);
+    SetObjectInt64(env, result, "transferredBytes", status.transferredBytes);
+    SetObjectInt64(env, result, "totalBytes", status.totalBytes);
+    SetObjectBool(env, result, "totalKnown", status.totalKnown);
+    SetObjectString(env, result, "diagnosticCode", status.diagnosticCode);
+    for (size_t i = 0; i < status.artifacts.size() && i < 1024; ++i) {
+        napi_value entry; napi_create_object(env, &entry);
+        SetObjectInt32(env, entry, "index", status.artifacts[i].index);
+        SetObjectString(env, entry, "relativeName", status.artifacts[i].relativeName);
+        SetObjectBool(env, entry, "directory", status.artifacts[i].directory);
+        SetObjectInt64(env, entry, "size", status.artifacts[i].size);
+        napi_set_element(env, entries, static_cast<uint32_t>(i), entry);
+    }
+    napi_set_named_property(env, result, "artifacts", entries); return result;
+}
+
+napi_value NapiCancelSessionRdpClipboardReceive(napi_env env, napi_callback_info info) {
+    napi_value args[4]; bool accepted = false; int64_t id = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) accepted = rdp->cancelRemoteClipboardReceive(id);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+
+napi_value NapiReleaseSessionRdpClipboardReceive(napi_env env, napi_callback_info info) {
+    napi_value args[4]; bool accepted = false; int64_t id = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) accepted = rdp->releaseRemoteClipboardReceive(id);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+
+napi_value NapiPublishSessionClipboardFiles(napi_env env, napi_callback_info info) {
+    napi_value args[4]; uint64_t id = 0; int state = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        bool array = false; uint32_t count = 0;
+        if (rdp && napi_is_array(env, args[2], &array) == napi_ok && array &&
+            napi_get_array_length(env, args[2], &count) == napi_ok && count > 0 && count <= 15) {
+            std::vector<std::string> paths; bool valid = true;
+            for (uint32_t i = 0; i < count; ++i) {
+                napi_value entry; std::string path;
+                if (napi_get_element(env, args[2], i, &entry) != napi_ok ||
+                    !ReadBoundedNapiStringValue(env, entry, 4096, path) || path.empty() ||
+                    path[0] != '/' || path.find('\0') != std::string::npos) { valid = false; break; }
+                paths.push_back(std::move(path));
+            }
+            if (valid) { id = rdp->publishClipboardFilesTracked(paths); state = rdp->getClipboardPublicationState(id); }
+        }
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "publicationId", id); SetObjectInt32(env, result, "state", state); return result;
+}
+
+// (sessionId, generation) -> how far the remote has read the files offered on its clipboard.
+napi_value NapiGetSessionRdpFileOfferProgress(napi_env env, napi_callback_info info) {
+    napi_value args[3]; RdpFileOfferReadProgress progress;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) progress = rdp->getLocalFileOfferReadProgress();
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "generation", static_cast<int64_t>(progress.generation));
+    SetObjectInt64(env, result, "requestedBytes", static_cast<int64_t>(progress.requestedBytes));
+    SetObjectInt64(env, result, "requests", progress.requests);
+    SetObjectInt64(env, result, "lastRequestAgoMs", progress.lastRequestAgoMs);
+    return result;
+}
+
+napi_value NapiGetSessionRdpDrive(napi_env env, napi_callback_info info) {
+    napi_value args[3];
+    RdpDriveStatus status;
+    std::vector<RdpReceivedFileFact> facts;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) { status = rdp->getRdpDriveStatus(); facts = rdp->getRdpReceivedFileFacts(); }
+    }
+    napi_value result, entries;
+    napi_create_object(env, &result); napi_create_array(env, &entries);
+    SetObjectString(env, result, "phase", status.phase);
+    SetObjectBool(env, result, "evidenceComplete", status.evidenceComplete);
+    SetObjectInt64(env, result, "generation", status.generation);
+    SetObjectString(env, result, "diagnosticCode", status.diagnosticCode);
+    for (size_t i = 0; i < facts.size() && i < 4096; ++i) {
+        napi_value entry; napi_create_object(env, &entry);
+        SetObjectString(env, entry, "relativePath", facts[i].relativePath);
+        SetObjectInt64(env, entry, "writeGeneration", facts[i].writeGeneration);
+        SetObjectInt64(env, entry, "writtenBytes", facts[i].writtenBytes);
+        SetObjectInt32(env, entry, "activeHandles", facts[i].activeHandles);
+        SetObjectBool(env, entry, "remoteClosed", facts[i].remoteClosed);
+        SetObjectBool(env, entry, "uncertain", facts[i].uncertain);
+        napi_set_element(env, entries, static_cast<uint32_t>(i), entry);
+    }
+    napi_set_named_property(env, result, "entries", entries);
+    return result;
+}
+
+napi_value NapiDisableSessionRdpDrive(napi_env env, napi_callback_info info) {
+    napi_value args[3]; bool disabled = false;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) disabled = rdp->disableRdpDrive();
+    }
+    napi_value result; napi_get_boolean(env, disabled, &result); return result;
+}
+
+napi_value NapiGetSessionTransferPermissions(napi_env env, napi_callback_info info) {
+    napi_value args[3];
+    uint32_t known = 0, enabled = 0;
+    bool available = false;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rustdesk = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (rustdesk) available = rustdesk->getTransferPermissionSnapshot(known, enabled);
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "available", available);
+    SetObjectInt32(env, result, "knownMask", static_cast<int32_t>(known));
+    SetObjectInt32(env, result, "enabledMask", static_cast<int32_t>(enabled));
+    return result;
+}
+
+napi_value NapiOpenExclusiveTransferDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[3]; int32_t parent = -1; std::string name; int fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3) && ReadStrictNapiInt32Value(env, args[0], parent) && parent >= 0 &&
+        ReadBoundedNapiStringValue(env, args[1], 4096, name) && name.find('\0') == std::string::npos)
+        fd = openExclusiveTransferDirectory(parent, name);
+    napi_value result; napi_create_int32(env, fd, &result); return result;
+}
+napi_value NapiOpenExclusiveTransferFile(napi_env env, napi_callback_info info) {
+    napi_value args[3]; int32_t parent = -1; std::string path; int fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3) && ReadStrictNapiInt32Value(env, args[0], parent) && parent >= 0 &&
+        ReadBoundedNapiStringValue(env, args[1], 4096, path) && path.find('\0') == std::string::npos)
+        fd = openExclusiveTransferFile(parent, path);
+    napi_value result; napi_create_int32(env, fd, &result); return result;
+}
+napi_value NapiEnsureTransferExportDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[3]; int32_t parent = -1; std::string path; bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3) && ReadStrictNapiInt32Value(env, args[0], parent) && parent >= 0 &&
+        ReadBoundedNapiStringValue(env, args[1], 4096, path) && path.find('\0') == std::string::npos)
+        accepted = ensureTransferExportDirectory(parent, path);
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+
+napi_value NapiConfigureSessionRustDeskFileClipboard(napi_env env, napi_callback_info info) {
+    napi_value args[4]; bool enabled = false, accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && napi_get_value_bool(env, args[2], &enabled) == napi_ok) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], enabled);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) accepted = bridge->configureFileClipboard(enabled);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+napi_value NapiGetSessionRustDeskFileClipboard(napi_env env, napi_callback_info info) {
+    napi_value args[3], result; RustDeskFileClipboardSnapshot snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) snapshot = bridge->getFileClipboardSnapshot();
+    }
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "revision", snapshot.revision);
+    SetObjectInt32(env, result, "state", snapshot.state);
+    SetObjectBool(env, result, "capable", snapshot.capable != 0);
+    SetObjectBool(env, result, "enabled", snapshot.enabled != 0);
+    SetObjectInt32(env, result, "entryCount", snapshot.entryCount);
+    SetObjectInt32(env, result, "diagnosticCode", snapshot.diagnosticCode);
+    return result;
+}
+napi_value NapiGetSessionRustDeskClipboardEntries(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; napi_create_array(env, &result); int64_t revision = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && ReadStrictNapiInt64Value(env, args[2], revision) && revision > 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) {
+            const auto entries = bridge->getFileClipboardEntries(revision);
+            if (entries.size() > 256) return result;
+            for (size_t i = 0; i < entries.size(); ++i) {
+                napi_value entry; napi_create_object(env, &entry);
+                SetObjectInt32(env, entry, "index", static_cast<int32_t>(i));
+                SetObjectString(env, entry, "name", entries[i].name);
+                SetObjectBool(env, entry, "isDirectory", entries[i].isDirectory);
+                SetObjectInt64(env, entry, "size", entries[i].size);
+                SetObjectInt64(env, entry, "modifiedTime", entries[i].modifiedTime);
+                napi_set_element(env, result, static_cast<uint32_t>(i), entry);
+            }
+        }
+    }
+    return result;
+}
+napi_value NapiPublishSessionRustDeskClipboardFiles(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = -1; bool array = false; uint32_t count = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && napi_is_array(env, args[2], &array) == napi_ok && array &&
+        napi_get_array_length(env, args[2], &count) == napi_ok && count > 0 && count <= 256) {
+        std::vector<RustDeskFileClipboardSource> sources; bool valid = true;
+        for (uint32_t i = 0; i < count && valid; ++i) {
+            napi_value item, name, fd, directory; RustDeskFileClipboardSource source;
+            valid = napi_get_element(env, args[2], i, &item) == napi_ok &&
+                napi_get_named_property(env, item, "name", &name) == napi_ok &&
+                ReadBoundedNapiStringValue(env, name, 1024, source.name) && !source.name.empty() && source.name.find('\0') == std::string::npos &&
+                napi_get_named_property(env, item, "fd", &fd) == napi_ok && ReadStrictNapiInt32Value(env, fd, source.fd) &&
+                napi_get_named_property(env, item, "isDirectory", &directory) == napi_ok &&
+                napi_get_value_bool(env, directory, &source.isDirectory) == napi_ok &&
+                (source.isDirectory ? source.fd == -1 : source.fd >= 0);
+            if (valid) sources.push_back(std::move(source));
+        }
+        if (valid) {
+            auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+            auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+            if (bridge) id = bridge->publishFileClipboard(sources);
+        }
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+napi_value NapiGetSessionRustDeskClipboardPublication(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; int64_t id = 0; RustDeskFileClipboardPublication snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) snapshot = bridge->getFileClipboardPublication(id);
+    }
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "publicationId", snapshot.publicationId);
+    SetObjectInt32(env, result, "state", snapshot.state);
+    SetObjectInt32(env, result, "diagnosticCode", snapshot.diagnosticCode);
+    SetObjectInt64(env, result, "requestedBytes", snapshot.requestedBytes);
+    SetObjectBool(env, result, "drained", snapshot.drained != 0);
+    return result;
+}
+napi_value NapiRevokeSessionRustDeskClipboardPublication(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = 0; bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) accepted = bridge->revokeFileClipboardPublication(id);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+napi_value NapiReceiveSessionRustDeskClipboardFile(napi_env env, napi_callback_info info) {
+    napi_value args[6]; int64_t revision = 0, id = -1; int32_t index = -1, fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 5, args, 6) && ReadStrictNapiInt64Value(env, args[2], revision) && revision > 0 &&
+        ReadStrictNapiInt32Value(env, args[3], index) && index >= 0 && index < 256 &&
+        ReadStrictNapiInt32Value(env, args[4], fd) && fd >= 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) id = bridge->receiveFileClipboardToFd(revision, static_cast<uint32_t>(index), fd);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+napi_value NapiCreateSessionRemoteDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path;
+        if (bridge && ReadBoundedNapiStringValue(env, args[2], 32768, path) && !path.empty() &&
+            path.find('\0') == std::string::npos) id = bridge->createRemoteDirectory(path);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+napi_value NapiGetSessionTransferAuthentication(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; napi_create_object(env, &result);
+    RustDeskTransferAuthSnapshot snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            snapshot = bridge->getTransferAuthentication(static_cast<uint64_t>(id));
+    }
+    SetObjectInt64(env, result, "transferId", snapshot.transferId);
+    SetObjectInt64(env, result, "challengeId", snapshot.challengeId);
+    SetObjectInt32(env, result, "kind", snapshot.kind);
+    SetObjectInt32(env, result, "state", snapshot.state);
+    SetObjectInt64(env, result, "expiresInMs", snapshot.expiresInMs);
+    SetObjectInt32(env, result, "attemptsRemaining", snapshot.attemptsRemaining);
+    SetObjectInt32(env, result, "diagnosticCode", snapshot.diagnosticCode);
+    return result;
+}
+napi_value NapiSubmitSessionTransferAuthentication(napi_env env, napi_callback_info info) {
+    napi_value args[7]; bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 6, args, 7)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0, challenge = 0; int32_t kind = 0; std::string secret;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0 &&
+            ReadStrictNapiInt64Value(env, args[3], challenge) && challenge > 0 &&
+            ReadStrictNapiInt32Value(env, args[4], kind) && kind >= 1 && kind <= 3 &&
+            ReadBoundedNapiStringValue(env, args[5], 1024, secret) && secret.find('\0') == std::string::npos &&
+            (kind != 3 || secret.empty()))
+            accepted = bridge->submitTransferAuthentication(id, challenge, kind, secret);
+        // Do not keep a second plaintext copy after synchronous FFI submission.
+        volatile char* bytes = secret.empty() ? nullptr : &secret[0];
+        for (size_t i = 0; i < secret.size(); ++i) bytes[i] = 0;
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+napi_value NapiGetSessionTransferResult(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; napi_create_object(env, &result); RustDeskTransferResult snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            snapshot = bridge->getTransferResult(static_cast<uint64_t>(id));
+    }
+    SetObjectInt32(env, result, "operationKind", snapshot.operationKind);
+    SetObjectBool(env, result, "sourceMetadataAvailable", snapshot.sourceMetadataAvailable != 0);
+    SetObjectInt64(env, result, "sourceSize", snapshot.sourceSize);
+    SetObjectInt64(env, result, "sourceModifiedTime", snapshot.sourceModifiedTime);
+    SetObjectBool(env, result, "remoteOperationAcknowledged", snapshot.remoteOperationAcknowledged != 0);
+    return result;
+}
+
+napi_value NapiRequestSessionRemoteDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[4];
+    int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path;
+        if (bridge && ReadBoundedNapiStringValue(env, args[2], 32768, path) && path.find('\0') == std::string::npos)
+            id = bridge->requestRemoteDirectory(path);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+static bool ReadStrictNapiBoolArg(napi_env env, napi_value value, bool& out) {
+    napi_valuetype type = napi_undefined;
+    return napi_typeof(env, value, &type) == napi_ok && type == napi_boolean &&
+        napi_get_value_bool(env, value, &out) == napi_ok;
+}
+
+static bool ReadRemoteFilePathArg(napi_env env, napi_value value, std::string& path) {
+    return ReadBoundedNapiStringValue(env, value, 32768, path) && !path.empty() && path.find('\0') == std::string::npos;
+}
+
+// (sessionId, generation, path, includeHidden) -> transfer id: a folder listing, optionally with hidden entries.
+napi_value NapiRequestSessionRemoteListing(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; bool includeHidden = false;
+        if (bridge && ReadBoundedNapiStringValue(env, args[2], 32768, path) && path.find('\0') == std::string::npos &&
+            ReadStrictNapiBoolArg(env, args[3], includeHidden))
+            id = bridge->requestRemoteDirectory(path, includeHidden);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+// (sessionId, generation, path, includeHidden) -> transfer id: every file below a folder, read with
+// getSessionRemoteDirectory (names relative to the folder, '/' separated).
+napi_value NapiRequestSessionRemoteTree(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; bool includeHidden = false;
+        if (bridge && ReadRemoteFilePathArg(env, args[2], path) && ReadStrictNapiBoolArg(env, args[3], includeHidden))
+            id = bridge->requestRemoteTree(path, includeHidden);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+// (sessionId, generation, path, directory) -> transfer id: removes a file, or a folder with everything in it.
+napi_value NapiRemoveSessionRemotePath(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; bool directory = false;
+        if (bridge && ReadRemoteFilePathArg(env, args[2], path) && ReadStrictNapiBoolArg(env, args[3], directory))
+            id = bridge->removeRemotePath(path, directory);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+// (sessionId, generation, path, newName) -> transfer id: renames within the same folder.
+napi_value NapiRenameSessionRemotePath(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path, newName;
+        if (bridge && ReadRemoteFilePathArg(env, args[2], path) &&
+            ReadBoundedNapiStringValue(env, args[3], 1024, newName) && !newName.empty() &&
+            newName.find_first_of(std::string("/\\") + '\0') == std::string::npos)
+            id = bridge->renameFileSessionPath(path, newName);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+napi_value NapiGetSessionRemoteDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[4], result, entries;
+    napi_create_object(env, &result);
+    napi_create_array(env, &entries);
+    std::string path;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+            path = bridge->getRemoteDirectoryPath(static_cast<uint64_t>(id));
+            const auto files = bridge->getRemoteDirectoryEntries(static_cast<uint64_t>(id));
+            for (size_t i = 0; i < files.size() && i < 20000; ++i) {
+                napi_value entry; napi_create_object(env, &entry);
+                SetObjectString(env, entry, "name", files[i].name);
+                SetObjectInt32(env, entry, "type", files[i].type);
+                SetObjectInt64(env, entry, "size", files[i].size);
+                SetObjectInt64(env, entry, "modifiedTime", files[i].modifiedTime);
+                napi_set_element(env, entries, static_cast<uint32_t>(i), entry);
+            }
+        }
+    }
+    SetObjectString(env, result, "path", path);
+    napi_set_named_property(env, result, "entries", entries);
+    return result;
+}
+
+napi_value NapiDownloadSessionFileToFd(napi_env env, napi_callback_info info) {
+    napi_value args[7]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 6, args, 7)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; int32_t fd = -1; int64_t size = -1, mtime = -1;
+        if (bridge && ReadBoundedNapiStringValue(env, args[2], 32768, path) && !path.empty() &&
+            path.find('\0') == std::string::npos && ReadStrictNapiInt32Value(env, args[3], fd) && fd >= 0 &&
+            ReadStrictNapiInt64Value(env, args[4], size) && size >= 0 && size <= 2147483648LL &&
+            ReadStrictNapiInt64Value(env, args[5], mtime) && mtime >= 0)
+            id = bridge->downloadFileToFd(path, fd, size, mtime);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+napi_value NapiSendSessionFileFromFd(napi_env env, napi_callback_info info) {
+    napi_value args[6];
+    int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 5, args, 6)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rustdesk = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path;
+        int32_t fd = -1;
+        int32_t conflict = 0;
+        if (rustdesk && ReadBoundedNapiStringValue(env, args[2], 4096, path) &&
+            !path.empty() && path.find('\0') == std::string::npos &&
+            ReadStrictNapiInt32Value(env, args[3], fd) && fd >= 0 &&
+            ReadStrictNapiInt32Value(env, args[4], conflict) && conflict >= 0 && conflict <= 1) {
+            id = rustdesk->sendFileFromFd(path, fd, conflict);
+        }
+    }
+    napi_value result;
+    napi_create_int64(env, id, &result);
+    return result;
+}
+
+napi_value NapiGetSessionFileTransfer(napi_env env, napi_callback_info info) {
+    napi_value args[4];
+    SessionTransferStatus status;
+    status.diagnosticCode = "transfer_owner_unavailable";
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rustdesk = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (rustdesk && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+            status = rustdesk->getTransferStatusById(static_cast<uint64_t>(id));
+        }
+    }
+    return MakeTransferStatusValue(env, status);
+}
+
+napi_value NapiCancelSessionFileTransfer(napi_env env, napi_callback_info info) {
+    napi_value args[4];
+    bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rustdesk = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (rustdesk && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+            accepted = rustdesk->cancelTransfer(static_cast<uint64_t>(id));
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value NapiReleaseSessionFileTransfer(napi_env env, napi_callback_info info) {
+    napi_value args[4];
+    bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rustdesk = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (rustdesk && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+            accepted = rustdesk->releaseTransfer(static_cast<uint64_t>(id));
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value NapiPublishSessionClipboard(napi_env env, napi_callback_info info) {
+    napi_value args[4];
+    uint64_t id = 0;
+    uint32_t state = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        void* data = nullptr;
+        size_t length = 0;
+        if (adapter && napi_get_arraybuffer_info(env, args[2], &data, &length) == napi_ok &&
+            length <= 65536 && (data != nullptr || length == 0)) {
+            auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get());
+            if (rustdesk) {
+                id = rustdesk->publishClipboardTracked(static_cast<const uint8_t*>(data), length);
+                state = id == 0 ? 0 : rustdesk->getClipboardPublicationState(id);
+            } else if (auto* rdp = dynamic_cast<FreeRdpAdapter*>(adapter.get())) {
+                id = rdp->publishClipboardTracked(static_cast<const uint8_t*>(data), length);
+                state = rdp->getClipboardPublicationState(id);
+            } else if (adapter->publishClipboard(static_cast<const uint8_t*>(data), length)) {
+                id = 1;
+                state = 2; // Synchronous channel submission; never peer persistence.
+            }
+        }
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "publicationId", static_cast<int64_t>(id));
+    SetObjectInt32(env, result, "state", static_cast<int32_t>(state));
+    return result;
+}
+
+napi_value NapiGetSessionClipboardPublicationState(napi_env env, napi_callback_info info) {
+    napi_value args[4];
+    uint32_t state = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rustdesk = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+            if (rustdesk) state = rustdesk->getClipboardPublicationState(static_cast<uint64_t>(id));
+            else if (auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr)
+                state = rdp->getClipboardPublicationState(static_cast<uint64_t>(id));
+        }
+    }
+    napi_value result;
+    napi_create_uint32(env, state, &result);
+    return result;
+}
+
 napi_value NapiSendFile(napi_env env, napi_callback_info info) {
     size_t argc = 3;
     napi_value args[3];
@@ -9165,6 +10311,131 @@ napi_value NapiRenameRemotePath(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Clipboard authority deliberately does not use the shared renderer owner:
+// separate ArkTS runtimes/windows arbitrate here against native session life.
+static bool IsClipboardAuthoritySessionAlive(int32_t sessionId, uint64_t generation) {
+    const auto found = g_sessionRegistry.find(sessionId);
+    if (found == g_sessionRegistry.end() || !found->second) return false;
+    const auto session = found->second;
+    if (session->sessionId != static_cast<uint64_t>(sessionId) ||
+        session->generation.load(std::memory_order_acquire) != generation ||
+        session->lifecycle.load(std::memory_order_acquire) != SessionContext::Lifecycle::Active) return false;
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) return false;
+    const ConnectionState state = adapter->getState();
+    if (state == ConnectionState::DISCONNECTED || state == ConnectionState::ERROR) return false;
+    // Recheck after adapter access so a replaced registry entry cannot inherit
+    // an old generation merely because its shared_ptr was retained above.
+    const auto current = g_sessionRegistry.find(sessionId);
+    return current != g_sessionRegistry.end() && current->second == session &&
+        session->generation.load(std::memory_order_acquire) == generation &&
+        session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active;
+}
+
+static bool ReadClipboardAuthorityIdentity(napi_env env, const napi_value* args,
+                                           int32_t& sessionId, uint64_t& generation) {
+    int64_t value = 0;
+    if (!ReadStrictNapiInt32Value(env, args[0], sessionId) || sessionId <= 0 ||
+        !ReadStrictNapiInt64Value(env, args[1], value) || value <= 0) return false;
+    generation = static_cast<uint64_t>(value);
+    return true;
+}
+
+napi_value NapiClaimSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    int32_t sessionId = 0;
+    uint64_t generation = 0;
+    uint64_t token = 0;
+    bool replaceExisting = false;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) == napi_ok &&
+        (argc == 2 || argc == 3) &&
+        ReadClipboardAuthorityIdentity(env, args, sessionId, generation)) {
+        napi_valuetype type = napi_undefined;
+        const bool validReplace = argc == 2 ||
+            (napi_typeof(env, args[2], &type) == napi_ok &&
+             (type == napi_undefined ||
+              (type == napi_boolean && napi_get_value_bool(env, args[2], &replaceExisting) == napi_ok)));
+        if (validReplace) {
+            token = g_sessionClipboardAuthority.claim(sessionId, generation, replaceExisting,
+                IsClipboardAuthoritySessionAlive);
+        }
+    }
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(token), &result);
+    return result;
+}
+
+static napi_value SessionClipboardAuthorityTokenOperation(
+    napi_env env, napi_callback_info info, bool revoke) {
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    int32_t sessionId = 0;
+    uint64_t generation = 0;
+    int64_t token = 0;
+    bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) &&
+        ReadClipboardAuthorityIdentity(env, args, sessionId, generation) &&
+        ReadStrictNapiInt64Value(env, args[2], token) && token > 0) {
+        accepted = revoke ? g_sessionClipboardAuthority.revoke(sessionId, generation,
+            static_cast<uint64_t>(token), IsClipboardAuthoritySessionAlive) :
+            g_sessionClipboardAuthority.owns(sessionId, generation,
+            static_cast<uint64_t>(token), IsClipboardAuthoritySessionAlive);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value NapiOwnsSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    return SessionClipboardAuthorityTokenOperation(env, info, false);
+}
+
+napi_value NapiRevokeSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    return SessionClipboardAuthorityTokenOperation(env, info, true);
+}
+
+// The callback is strictly synchronous: metadata reads/decodes and staging must
+// finish before entry. No JS reference or lock survives this call.
+napi_value NapiWithSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    int32_t sessionId = 0;
+    uint64_t generation = 0;
+    int64_t token = 0;
+    napi_valuetype callbackType = napi_undefined;
+    bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5) &&
+        ReadClipboardAuthorityIdentity(env, args, sessionId, generation) &&
+        ReadStrictNapiInt64Value(env, args[2], token) && token > 0 &&
+        napi_typeof(env, args[3], &callbackType) == napi_ok && callbackType == napi_function) {
+        accepted = g_sessionClipboardAuthority.withAuthority(sessionId, generation,
+            static_cast<uint64_t>(token), IsClipboardAuthoritySessionAlive, [&]() -> bool {
+                napi_value receiver = nullptr;
+                napi_value returned = nullptr;
+                if (napi_get_undefined(env, &receiver) != napi_ok ||
+                    napi_call_function(env, receiver, args[3], 0, nullptr, &returned) != napi_ok) {
+                    bool pending = false;
+                    if (napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+                        napi_value exception = nullptr;
+                        (void)napi_get_and_clear_last_exception(env, &exception);
+                    }
+                    return false;
+                }
+                napi_valuetype type = napi_undefined;
+                bool result = false;
+                // Promises, undefined, boxed booleans and truthy objects are rejected.
+                return napi_typeof(env, returned, &type) == napi_ok && type == napi_boolean &&
+                    napi_get_value_bool(env, returned, &result) == napi_ok && result;
+            });
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 /**
  * NAPI: sendClipboard(sessionId: number, data: ArrayBuffer): void
  */
@@ -9172,28 +10443,22 @@ napi_value NapiSendClipboard(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
     int32_t sessionId = 0;
-    if (argc > 0) {
-        napi_get_value_int32(env, args[0], &sessionId);
-    }
-
     void* data = nullptr;
     size_t dataLen = 0;
-    if (argc > 1) {
-        napi_get_arraybuffer_info(env, args[1], &data, &dataLen);
+    bool accepted = false;
+    if (argc == 2 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_get_arraybuffer_info(env, args[1], &data, &dataLen) == napi_ok &&
+        dataLen <= 65536 && (data != nullptr || dataLen == 0)) {
+        auto it = g_sessionRegistry.find(sessionId);
+        if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
+            accepted = it->second->adapter->publishClipboard(
+                static_cast<const uint8_t*>(data), static_cast<uint32_t>(dataLen));
+        }
     }
-
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) {
-        it->second->adapter->sendClipboardData(
-            static_cast<const uint8_t*>(data),
-            static_cast<uint32_t>(dataLen));
-    }
-
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
 }
 
 /**
@@ -9248,6 +10513,17 @@ napi_value NapiSetSessionClipboardFiles(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Registry access stays on the NAPI thread; adapter teardown may run on its
+// worker. Capture the exact live adapter under the same mutex used by reset.
+static std::shared_ptr<ProtocolAdapter> ClipboardAdapterForSession(int32_t sessionId) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second) return {};
+    const auto session = it->second;
+    std::lock_guard<std::mutex> lock(session->adapterMutex);
+    if (session->lifecycle.load(std::memory_order_acquire) != SessionContext::Lifecycle::Active) return {};
+    return session->adapter;
+}
+
 napi_value NapiGetSessionClipboardText(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -9255,10 +10531,29 @@ napi_value NapiGetSessionClipboardText(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     std::string text;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) text = it->second->adapter->getClipboardText();
+    const auto adapter = ClipboardAdapterForSession(sessionId);
+    if (adapter) text = adapter->getClipboardText();
     napi_value result;
     napi_create_string_utf8(env, text.c_str(), text.size(), &result);
+    return result;
+}
+
+napi_value NapiGetSessionClipboardSnapshot(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    ClipboardSnapshot snapshot;
+    if (argc == 1 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok) {
+        const auto adapter = ClipboardAdapterForSession(sessionId);
+        if (adapter) snapshot = adapter->getClipboardSnapshot();
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "sequence", static_cast<int64_t>(snapshot.sequence));
+    SetObjectString(env, result, "kind", snapshot.kind);
+    SetObjectString(env, result, "text", snapshot.text);
+    SetObjectBool(env, result, "ready", snapshot.ready);
     return result;
 }
 
@@ -9269,8 +10564,8 @@ napi_value NapiIsSessionClipboardReady(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     bool ready = false;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) ready = it->second->adapter->isClipboardReceiveReady();
+    const auto adapter = ClipboardAdapterForSession(sessionId);
+    if (adapter) ready = adapter->isClipboardReceiveReady();
     napi_value result;
     napi_get_boolean(env, ready, &result);
     return result;
@@ -9293,10 +10588,8 @@ napi_value NapiSetSessionClipboardEnabled(napi_env env, napi_callback_info info)
         napi_get_value_bool(env, args[1], &enabled);
     }
     bool changed = false;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) {
-        changed = it->second->adapter->setSessionClipboardEnabled(enabled);
-    }
+    const auto adapter = ClipboardAdapterForSession(sessionId);
+    if (adapter) changed = adapter->setSessionClipboardEnabled(enabled);
     napi_value result;
     napi_get_boolean(env, changed, &result);
     return result;
@@ -9988,8 +11281,14 @@ napi_value NapiGetConnectionLastMessage(napi_env env, napi_callback_info info) {
     std::string message;
     auto it = g_sessionRegistry.find(sessionId);
     if (it != g_sessionRegistry.end()) {
-        std::lock_guard<std::mutex> lock(it->second->messageMutex);
-        message = it->second->lastStateMessage;
+        if (it->second->protocolName == "vnc" && it->second->adapter) {
+            auto* vnc = dynamic_cast<VncAdapter*>(it->second->adapter.get());
+            if (vnc) message = vnc->getConnectionLastMessage();
+        }
+        if (message.empty()) {
+            std::lock_guard<std::mutex> lock(it->second->messageMutex);
+            message = it->second->lastStateMessage;
+        }
     }
 
     napi_value result;
@@ -11026,7 +12325,7 @@ napi_value NapiDetachSshSession(napi_env env, napi_callback_info info) {
                     SessionContext::Lifecycle::Active) {
                 const DecoderSessionIdentity identity = session->identity();
                 const DecoderSessionIdentity activeOwner =
-                    Render::SharedSessionSinkOwnerLease().snapshot();
+                    Render::SharedSessionSinkOwnerLease().ownerForSession(identity.sessionId);
                 const bool activeOwnerMatches =
                     Render::SessionOwnerMatches(activeOwner, identity);
                 bool sharedSinkReleased = true;
@@ -12007,8 +13306,34 @@ napi_value NapiCancelSshOperation(napi_env env, napi_callback_info info) {
  * RDP: 发送 Refresh Rect PDU。RustDesk: 发送 refresh_video_display。
  */
 napi_value NapiRequestFrameRefresh(napi_env env, napi_callback_info info) {
-    (void)info;
-    const std::shared_ptr<ProtocolAdapter> activeConnection = GetActiveSessionAdapter();
+    // requestFrameRefresh(sessionId?): the named session's adapter (several picture sessions may be live); without
+    // it the most recently activated session, as before; a negative id refreshes nothing.
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc >= 1 && args[0] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, args[0], &type) == napi_ok && type == napi_number) {
+            napi_get_value_int32(env, args[0], &sessionId);
+        }
+    }
+    // A negative id is a page whose session is not live yet: nothing to refresh.
+    std::shared_ptr<ProtocolAdapter> activeConnection;
+    if (sessionId < 0) {
+        activeConnection = nullptr;
+    } else if (sessionId > 0) {
+        const auto lookup = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+        if (session && session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+            std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+            activeConnection = session->adapter;
+        }
+    } else {
+        activeConnection = GetActiveSessionAdapter();
+    }
     if (activeConnection) {
         activeConnection->requestFrameRefresh();
         OH_LOG_INFO(LOG_APP, "[ExtLoader] requestFrameRefresh: sent to active adapter");
@@ -12024,6 +13349,28 @@ static napi_value NapiIsVideoPlaybackActive(napi_env env, napi_callback_info /*i
     napi_value active;
     napi_get_boolean(env, isRemoteVideoPlaybackActive(), &active);
     return active;
+}
+
+/**
+ * NAPI: getLivePictureSessionCount(): number
+ *
+ * Live RDP, RustDesk and VNC sessions in this process, every window included. ArkTS caps how many picture sessions
+ * may be open at once (PC 4, tablet 2, phone 1) before it connects another one.
+ */
+static napi_value NapiGetLivePictureSessionCount(napi_env env, napi_callback_info info) {
+    (void)info;
+    int32_t count = 0;
+    for (const auto& item : g_sessionRegistry.snapshot()) {
+        const std::shared_ptr<SessionContext>& session = item.second;
+        if (session && session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active &&
+            (session->protocolName == "rdp" || session->protocolName == "vnc" ||
+             session->protocolName == "rustdesk")) {
+            ++count;
+        }
+    }
+    napi_value result;
+    napi_create_int32(env, count, &result);
+    return result;
 }
 
 /**
@@ -12278,9 +13625,29 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiSetRustDeskImageQuality, nullptr, &fn);
     napi_set_named_property(env, exports, "setRustDeskImageQuality", fn);
 
+    napi_create_function(env, "toggleRustDeskPrivacyMode", NAPI_AUTO_LENGTH,
+                         NapiToggleRustDeskPrivacyMode, nullptr, &fn);
+    napi_set_named_property(env, exports, "toggleRustDeskPrivacyMode", fn);
+
+    napi_create_function(env, "toggleRustDeskVirtualDisplay", NAPI_AUTO_LENGTH,
+                         NapiToggleRustDeskVirtualDisplay, nullptr, &fn);
+    napi_set_named_property(env, exports, "toggleRustDeskVirtualDisplay", fn);
+
+    napi_create_function(env, "setRustDeskStreamOptions", NAPI_AUTO_LENGTH,
+                         NapiSetRustDeskStreamOptions, nullptr, &fn);
+    napi_set_named_property(env, exports, "setRustDeskStreamOptions", fn);
+
     napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
                          NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "getVncDisplayCapabilities", NAPI_AUTO_LENGTH,
+                         NapiGetVncDisplayCapabilities, nullptr, &fn);
+    napi_set_named_property(env, exports, "getVncDisplayCapabilities", fn);
+
+    napi_create_function(env, "switchVncDisplay", NAPI_AUTO_LENGTH,
+                         NapiSwitchVncDisplay, nullptr, &fn);
+    napi_set_named_property(env, exports, "switchVncDisplay", fn);
 
     napi_create_function(env, "attachRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
                          NapiAttachRustDeskMultiCanvasPreview, nullptr, &fn);
@@ -12314,6 +13681,8 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiSendRustDeskTouchScale, nullptr, &fn);
     napi_set_named_property(env, exports, "sendRustDeskTouchScale", fn);
 
+    napi_create_function(env, "rustDeskPhoneControl", NAPI_AUTO_LENGTH, NapiRustDeskPhoneControl, nullptr, &fn);
+    napi_set_named_property(env, exports, "rustDeskPhoneControl", fn);
     napi_create_function(env, "sendRustDeskTouchPan", NAPI_AUTO_LENGTH,
                          NapiSendRustDeskTouchPan, nullptr, &fn);
     napi_set_named_property(env, exports, "sendRustDeskTouchPan", fn);
@@ -12383,12 +13752,113 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiRenameRemotePathAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "renameRemotePathAsync", fn);
 
+    napi_create_function(env, "claimSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiClaimSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "claimSessionClipboardAuthority", fn);
+    napi_create_function(env, "ownsSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiOwnsSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "ownsSessionClipboardAuthority", fn);
+    napi_create_function(env, "revokeSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiRevokeSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "revokeSessionClipboardAuthority", fn);
+    napi_create_function(env, "withSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiWithSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "withSessionClipboardAuthority", fn);
     napi_create_function(env, "sendClipboard", NAPI_AUTO_LENGTH,
                          NapiSendClipboard, nullptr, &fn);
     napi_set_named_property(env, exports, "sendClipboard", fn);
     napi_create_function(env, "setSessionClipboardFiles", NAPI_AUTO_LENGTH,
                          NapiSetSessionClipboardFiles, nullptr, &fn);
     napi_set_named_property(env, exports, "setSessionClipboardFiles", fn);
+    napi_create_function(env, "openExclusiveTransferDirectory", NAPI_AUTO_LENGTH, NapiOpenExclusiveTransferDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "openExclusiveTransferDirectory", fn);
+    napi_create_function(env, "openExclusiveTransferFile", NAPI_AUTO_LENGTH, NapiOpenExclusiveTransferFile, nullptr, &fn);
+    napi_set_named_property(env, exports, "openExclusiveTransferFile", fn);
+    napi_create_function(env, "ensureTransferExportDirectory", NAPI_AUTO_LENGTH, NapiEnsureTransferExportDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "ensureTransferExportDirectory", fn);
+    napi_create_function(env, "configureSessionRustDeskFileClipboard", NAPI_AUTO_LENGTH, NapiConfigureSessionRustDeskFileClipboard, nullptr, &fn);
+    napi_set_named_property(env, exports, "configureSessionRustDeskFileClipboard", fn);
+    napi_create_function(env, "getSessionRustDeskFileClipboard", NAPI_AUTO_LENGTH, NapiGetSessionRustDeskFileClipboard, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRustDeskFileClipboard", fn);
+    napi_create_function(env, "getSessionRustDeskClipboardEntries", NAPI_AUTO_LENGTH, NapiGetSessionRustDeskClipboardEntries, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRustDeskClipboardEntries", fn);
+    napi_create_function(env, "publishSessionRustDeskClipboardFiles", NAPI_AUTO_LENGTH, NapiPublishSessionRustDeskClipboardFiles, nullptr, &fn);
+    napi_set_named_property(env, exports, "publishSessionRustDeskClipboardFiles", fn);
+    napi_create_function(env, "getSessionRustDeskClipboardPublication", NAPI_AUTO_LENGTH, NapiGetSessionRustDeskClipboardPublication, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRustDeskClipboardPublication", fn);
+    napi_create_function(env, "revokeSessionRustDeskClipboardPublication", NAPI_AUTO_LENGTH, NapiRevokeSessionRustDeskClipboardPublication, nullptr, &fn);
+    napi_set_named_property(env, exports, "revokeSessionRustDeskClipboardPublication", fn);
+    napi_create_function(env, "receiveSessionRustDeskClipboardFile", NAPI_AUTO_LENGTH, NapiReceiveSessionRustDeskClipboardFile, nullptr, &fn);
+    napi_set_named_property(env, exports, "receiveSessionRustDeskClipboardFile", fn);
+    napi_create_function(env, "createSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiCreateSessionRemoteDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "createSessionRemoteDirectory", fn);
+    napi_create_function(env, "getSessionTransferAuthentication", NAPI_AUTO_LENGTH, NapiGetSessionTransferAuthentication, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionTransferAuthentication", fn);
+    napi_create_function(env, "submitSessionTransferAuthentication", NAPI_AUTO_LENGTH, NapiSubmitSessionTransferAuthentication, nullptr, &fn);
+    napi_set_named_property(env, exports, "submitSessionTransferAuthentication", fn);
+    napi_create_function(env, "getSessionTransferResult", NAPI_AUTO_LENGTH, NapiGetSessionTransferResult, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionTransferResult", fn);
+    napi_create_function(env, "requestSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiRequestSessionRemoteDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRemoteDirectory", fn);
+    napi_create_function(env, "getSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiGetSessionRemoteDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRemoteDirectory", fn);
+    napi_create_function(env, "requestSessionRemoteListing", NAPI_AUTO_LENGTH, NapiRequestSessionRemoteListing, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRemoteListing", fn);
+    napi_create_function(env, "requestSessionRemoteTree", NAPI_AUTO_LENGTH, NapiRequestSessionRemoteTree, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRemoteTree", fn);
+    napi_create_function(env, "removeSessionRemotePath", NAPI_AUTO_LENGTH, NapiRemoveSessionRemotePath, nullptr, &fn);
+    napi_set_named_property(env, exports, "removeSessionRemotePath", fn);
+    napi_create_function(env, "renameSessionRemotePath", NAPI_AUTO_LENGTH, NapiRenameSessionRemotePath, nullptr, &fn);
+    napi_set_named_property(env, exports, "renameSessionRemotePath", fn);
+    napi_create_function(env, "downloadSessionFileToFd", NAPI_AUTO_LENGTH, NapiDownloadSessionFileToFd, nullptr, &fn);
+    napi_set_named_property(env, exports, "downloadSessionFileToFd", fn);
+    napi_create_function(env, "publishSessionRdpClipboardContent", NAPI_AUTO_LENGTH, NapiPublishSessionRdpClipboardContent, nullptr, &fn);
+    napi_set_named_property(env, exports, "publishSessionRdpClipboardContent", fn);
+    napi_create_function(env, "getSessionRdpClipboardFormats", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardFormats, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpClipboardFormats", fn);
+    napi_create_function(env, "requestSessionRdpClipboardFormat", NAPI_AUTO_LENGTH, NapiRequestSessionRdpClipboardFormat, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRdpClipboardFormat", fn);
+    napi_create_function(env, "getSessionRdpClipboardFormatResult", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardFormatResult, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpClipboardFormatResult", fn);
+    napi_create_function(env, "releaseSessionRdpClipboardFormat", NAPI_AUTO_LENGTH, NapiReleaseSessionRdpClipboardFormat, nullptr, &fn);
+    napi_set_named_property(env, exports, "releaseSessionRdpClipboardFormat", fn);
+    napi_create_function(env, "getSessionRdpClipboardFiles", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardFiles, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpClipboardFiles", fn);
+    napi_create_function(env, "requestSessionRdpClipboardFiles", NAPI_AUTO_LENGTH, NapiRequestSessionRdpClipboardFiles, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRdpClipboardFiles", fn);
+    napi_create_function(env, "startSessionRdpClipboardReceive", NAPI_AUTO_LENGTH, NapiStartSessionRdpClipboardReceive, nullptr, &fn);
+    napi_set_named_property(env, exports, "startSessionRdpClipboardReceive", fn);
+    napi_create_function(env, "getSessionRdpClipboardReceive", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardReceive, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpClipboardReceive", fn);
+    napi_create_function(env, "cancelSessionRdpClipboardReceive", NAPI_AUTO_LENGTH, NapiCancelSessionRdpClipboardReceive, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelSessionRdpClipboardReceive", fn);
+    napi_create_function(env, "releaseSessionRdpClipboardReceive", NAPI_AUTO_LENGTH, NapiReleaseSessionRdpClipboardReceive, nullptr, &fn);
+    napi_set_named_property(env, exports, "releaseSessionRdpClipboardReceive", fn);
+    napi_create_function(env, "publishSessionClipboardFiles", NAPI_AUTO_LENGTH, NapiPublishSessionClipboardFiles, nullptr, &fn);
+    napi_set_named_property(env, exports, "publishSessionClipboardFiles", fn);
+    napi_create_function(env, "getSessionRdpDrive", NAPI_AUTO_LENGTH, NapiGetSessionRdpDrive, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpDrive", fn);
+    napi_create_function(env, "getSessionRdpFileOfferProgress", NAPI_AUTO_LENGTH, NapiGetSessionRdpFileOfferProgress, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpFileOfferProgress", fn);
+    napi_create_function(env, "disableSessionRdpDrive", NAPI_AUTO_LENGTH, NapiDisableSessionRdpDrive, nullptr, &fn);
+    napi_set_named_property(env, exports, "disableSessionRdpDrive", fn);
+    napi_create_function(env, "getSessionTransferPermissions", NAPI_AUTO_LENGTH, NapiGetSessionTransferPermissions, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionTransferPermissions", fn);
+    napi_create_function(env, "sendSessionFileFromFd", NAPI_AUTO_LENGTH, NapiSendSessionFileFromFd, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendSessionFileFromFd", fn);
+    napi_create_function(env, "getSessionFileTransfer", NAPI_AUTO_LENGTH, NapiGetSessionFileTransfer, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionFileTransfer", fn);
+    napi_create_function(env, "cancelSessionFileTransfer", NAPI_AUTO_LENGTH, NapiCancelSessionFileTransfer, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelSessionFileTransfer", fn);
+    napi_create_function(env, "releaseSessionFileTransfer", NAPI_AUTO_LENGTH, NapiReleaseSessionFileTransfer, nullptr, &fn);
+    napi_set_named_property(env, exports, "releaseSessionFileTransfer", fn);
+    napi_create_function(env, "publishSessionClipboard", NAPI_AUTO_LENGTH, NapiPublishSessionClipboard, nullptr, &fn);
+    napi_set_named_property(env, exports, "publishSessionClipboard", fn);
+    napi_create_function(env, "getSessionClipboardPublicationState", NAPI_AUTO_LENGTH, NapiGetSessionClipboardPublicationState, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionClipboardPublicationState", fn);
+    napi_create_function(env, "getSessionClipboardSnapshot", NAPI_AUTO_LENGTH,
+                         NapiGetSessionClipboardSnapshot, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionClipboardSnapshot", fn);
     napi_create_function(env, "getSessionClipboardText", NAPI_AUTO_LENGTH,
                          NapiGetSessionClipboardText, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionClipboardText", fn);
@@ -12541,6 +14011,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiIsVideoPlaybackActive, nullptr, &fn);
     napi_set_named_property(env, exports, "isVideoPlaybackActive", fn);
 
+    napi_create_function(env, "getLivePictureSessionCount", NAPI_AUTO_LENGTH,
+                         NapiGetLivePictureSessionCount, nullptr, &fn);
+    napi_set_named_property(env, exports, "getLivePictureSessionCount", fn);
     napi_create_function(env, "bindRendererToSession", NAPI_AUTO_LENGTH,
                          NapiBindRendererToSession, nullptr, &fn);
     napi_set_named_property(env, exports, "bindRendererToSession", fn);

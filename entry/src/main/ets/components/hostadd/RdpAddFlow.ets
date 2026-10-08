@@ -1,4 +1,6 @@
 /** Two-step RDP add flow: endpoint first, then an explicit authentication mode. */
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
+import { accentSecondaryText, appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { RdpCredential } from '../../model/RdpCredential';
 import {
   RemoteHost,
@@ -19,6 +21,7 @@ import {
 @Component
 export struct RdpAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onCredentialsChanged') credentials: RdpCredential[] = [];
   @Prop lanScanning: boolean = false;
@@ -26,27 +29,35 @@ export struct RdpAddFlow {
   @Prop lanStatusText: string = '';
   onBackToProtocols: () => void = (): void => {};
   onAddCredential: () => void = (): void => {};
+  onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onStartLanScan: (port: number) => void = (_port: number): void => {};
   onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string) => void =
     (_host: RemoteHost, _connectNow: boolean, _restrictedAdminHash: string): void => {};
   @State step: number = 1;
-  @State label: string = '';
-  @State hostAddress: string = '';
-  @State portText: string = '3389';
-  @State targetServerName: string = '';
-  @State clientHostname: string = '';
-  @State username: string = '';
-  @State password: string = '';
-  @State credentialId: string = '';
-  @State authMode: RdpAuthMode = 'password';
-  @State credentialStorageMode: RdpCredentialStorageMode = 'saved';
+  @State @Watch('reportDirty') label: string = '';
+  /** The name the last LAN pick filled in (a typed name is not overwritten by the next pick). */
+  private lanAutoLabel: string = '';
+  @State @Watch('reportDirty') hostAddress: string = '';
+  @State @Watch('reportDirty') portText: string = '3389';
+  @State @Watch('reportDirty') targetServerName: string = '';
+  @State @Watch('reportDirty') clientHostname: string = '';
+  @State @Watch('reportDirty') username: string = '';
+  @State @Watch('reportDirty') password: string = '';
+  @State @Watch('reportDirty') credentialId: string = '';
+  @State @Watch('reportDirty') authMode: RdpAuthMode = 'password';
+  @State @Watch('reportDirty') credentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State blankPasswordConfirmed: boolean = false;
   @State restrictedAdminSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
-  @State restrictedAdminHash: string = '';
+  @State @Watch('reportDirty') restrictedAdminHash: string = '';
   @State errorText: string = '';
+  /** A save the page could not complete: its reason shows in the form as well as in the toast. */
+  @Prop @Watch('onSaveError') saveError: string = '';
+  @Prop @Watch('onSaveError') saveErrorRevision: number = 0;
   @State credentialsViewRevision: number = 0;
   @State useLanSearch: boolean = false;
-  @State selectedLanStableId: string = '';
+  @State @Watch('reportDirty') selectedLanStableId: string = '';
   @State selectedLanDynamicCapable: boolean = false;
   @State lanAddressMode: string = '';
   private awaitingNewCredential: boolean = false;
@@ -63,6 +74,38 @@ export struct RdpAddFlow {
     this.awaitingNewCredential = false;
     this.credentialIdsBeforeAdd = [];
     this.errorText = '';
+  }
+
+  private onSaveError(): void {
+    if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The fields as the flow opened; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.hostAddress, this.portText, this.targetServerName, this.clientHostname,
+      this.username, this.password, this.credentialId, this.restrictedAdminHash, this.selectedLanStableId,
+      this.authMode, this.credentialStorageMode]);
+  }
+
+  aboutToAppear(): void {
+    this.draftBaseline = this.draftSnapshot();
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
   }
 
   private pal(): Palette {
@@ -198,7 +241,7 @@ export struct RdpAddFlow {
   @Builder private authModeButton(label: string, mode: RdpAuthMode, marginLeft: number = 0) {
     Button(label).layoutWeight(1).height(38).borderRadius(10).margin({ left: marginLeft })
       .backgroundColor(this.authMode === mode ? this.accentColor : this.pal().surface)
-      .fontColor(this.authMode === mode ? Color.White : this.pal().text2)
+      .fontColor(this.authMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontSize(12)
       .onClick((): void => { this.selectAuthMode(mode); })
   }
@@ -209,20 +252,20 @@ export struct RdpAddFlow {
     Row({ space: 8 }) {
       Column() {
         Text('静态 IP').fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.lanAddressMode === 'static' ? Color.White : this.pal().text)
+          .fontColor(this.lanAddressMode === 'static' ? appUiOnAccentText(this.accentColor) : this.pal().text)
         Text('按当前地址保存；正常参与云同步，不自动改地址')
-          .fontSize(10).fontColor(this.lanAddressMode === 'static' ? '#EAF3FF' : this.pal().text3)
+          .fontSize(10).fontColor(this.lanAddressMode === 'static' ? accentSecondaryText(this.accentColor) : this.pal().text3)
           .margin({ top: 4 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
       .backgroundColor(this.lanAddressMode === 'static' ? this.accentColor : this.pal().surface)
       .onClick((): void => { this.lanAddressMode = 'static'; this.errorText = ''; })
       Column() {
         Text('动态 IP').fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.lanAddressMode === 'dynamic' ? Color.White : this.pal().text)
+          .fontColor(this.lanAddressMode === 'dynamic' ? appUiOnAccentText(this.accentColor) : this.pal().text)
         Text(this.selectedLanDynamicCapable
           ? '仅保存在本机；连接前按证书身份自动更新 IP'
           : '未取得稳定证书身份，当前主机不可选')
-          .fontSize(10).fontColor(this.lanAddressMode === 'dynamic' ? '#EAF3FF' : this.pal().text3)
+          .fontSize(10).fontColor(this.lanAddressMode === 'dynamic' ? accentSecondaryText(this.accentColor) : this.pal().text3)
           .margin({ top: 4 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
       .backgroundColor(this.lanAddressMode === 'dynamic' ? this.accentColor : this.pal().surface)
@@ -236,7 +279,7 @@ export struct RdpAddFlow {
     Row({ space: 8 }) {
       Button('手动填写').layoutWeight(1).height(38).borderRadius(10)
         .backgroundColor(!this.useLanSearch ? this.accentColor : this.pal().surface)
-        .fontColor(!this.useLanSearch ? Color.White : this.pal().text2)
+        .fontColor(!this.useLanSearch ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => {
           this.useLanSearch = false;
           this.selectedLanStableId = '';
@@ -246,7 +289,7 @@ export struct RdpAddFlow {
         })
       Button('局域网搜索').layoutWeight(1).height(38).borderRadius(10)
         .backgroundColor(this.useLanSearch ? this.accentColor : this.pal().surface)
-        .fontColor(this.useLanSearch ? Color.White : this.pal().text2)
+        .fontColor(this.useLanSearch ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { this.useLanSearch = true; this.errorText = ''; })
     }.width('100%').margin({ bottom: 14 })
   }
@@ -284,7 +327,11 @@ export struct RdpAddFlow {
       .onClick((): void => {
         this.selectedLanStableId = item.stableId;
         this.selectedLanDynamicCapable = item.dynamicCapable;
-        this.label = item.deviceName;
+        // A name the user typed stays; only an empty name or one filled in by an earlier pick is replaced.
+        if (this.label.trim() === '' || this.label === this.lanAutoLabel) {
+          this.label = item.deviceName;
+          this.lanAutoLabel = item.deviceName;
+        }
         this.hostAddress = item.host;
         this.portText = item.port.toString();
         this.lanAddressMode = '';
@@ -299,12 +346,12 @@ export struct RdpAddFlow {
     Row() {
       Button('保存到本地').layoutWeight(1).height(38).borderRadius(10)
         .backgroundColor(this.credentialStorageMode === 'saved' ? this.accentColor : this.pal().surface)
-        .fontColor(this.credentialStorageMode === 'saved' ? Color.White : this.pal().text2)
+        .fontColor(this.credentialStorageMode === 'saved' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { this.selectCredentialStorageMode('saved'); })
       Button('每次连接输入').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
         .backgroundColor(this.credentialStorageMode === 'connect_time' ?
           this.accentColor : this.pal().surface)
-        .fontColor(this.credentialStorageMode === 'connect_time' ? Color.White : this.pal().text2)
+        .fontColor(this.credentialStorageMode === 'connect_time' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { this.selectCredentialStorageMode('connect_time'); })
     }.width('100%').margin({ bottom: 14 })
     if (this.credentialStorageMode === 'connect_time') {
@@ -319,13 +366,15 @@ export struct RdpAddFlow {
       Row() {
         Button('账号密码').layoutWeight(1).height(38).borderRadius(10)
           .backgroundColor(this.credentialId === '' ? this.accentColor : this.pal().surface)
-          .fontColor(this.credentialId === '' ? Color.White : this.pal().text2)
+          .fontColor(this.credentialId === '' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.credentialId = ''; this.errorText = ''; })
         Button('Windows 凭据').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
           .backgroundColor(this.credentialId !== '' ? this.accentColor : this.pal().surface)
-          .fontColor(this.credentialId !== '' ? Color.White : this.pal().text2)
+          .fontColor(this.credentialId !== '' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => {
-            if (this.credentials.length > 0) { this.credentialId = this.credentials[0].id; }
+            // No saved credential yet: open the place to add one instead of doing nothing.
+            if (this.credentials.length === 0) { this.onAddCredential(); return; }
+            this.credentialId = this.credentials[0].id;
             this.errorText = '';
           })
       }.width('100%').margin({ bottom: 14 })
@@ -388,13 +437,18 @@ export struct RdpAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText(this.step === 1 ? '返回协议选择' : '返回上一步')
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step = 1; } })
       Column() {
         Text('添加 RDP 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         Text(this.step === 1 ? '1/2  基础信息' : '2/2  Windows 认证')
           .fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+      // Closes from any step, as the SSH flow does (a centred sheet has no other way out).
+      Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 
@@ -416,7 +470,7 @@ export struct RdpAddFlow {
           (v: string): void => { this.clientHostname = v; })
         if (this.useLanSearch) { this.lanSearchResults() }
         Button('下一步').width('100%').height(44).borderRadius(12)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => {
             const parsed: EndpointAddressResult = this.parsedEndpoint();
             if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return; }
@@ -448,7 +502,7 @@ export struct RdpAddFlow {
               if (host) { this.onSave(host, false, this.authMode === 'restricted_admin' ? this.restrictedAdminHash : ''); }
             })
           Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-            .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => {
               const host: RemoteHost | null = this.buildHost();
               if (host) { this.onSave(host, true, this.authMode === 'restricted_admin' ? this.restrictedAdminHash : ''); }
             })

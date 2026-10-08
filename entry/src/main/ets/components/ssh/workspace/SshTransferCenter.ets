@@ -10,6 +10,10 @@ import {
 export struct SshTransferCenter {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#111820';
+  // > 0: the sheet sizes to its content and only the body scrolls past this height.
+  @Prop maxBodyHeightVp: number = 0;
+  private fitContent(): boolean { return this.maxBodyHeightVp > 0; }
+  private bodyMaxHeight(): number { return this.fitContent() ? this.maxBodyHeightVp : 100000; }
   @Prop tasks: Array<SshTransferCenterTaskView> = [];
   @Prop summary: SshTransferCenterSummary = { total: 0, active: 0, attention: 0, completed: 0 };
   @Prop compact: boolean = false;
@@ -130,11 +134,12 @@ export struct SshTransferCenter {
             ListItem() { this.TaskRow(task) }
           }, (task: SshTransferCenterTaskView): string => task.taskId)
         }
-        .width('100%').height(0).layoutWeight(1)
+        .width('100%').height(this.fitContent() ? 'auto' : 0).layoutWeight(this.fitContent() ? 0 : 1)
+        .constraintSize({ maxHeight: this.bodyMaxHeight() })
         .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None)
       }
     }
-    .width('100%').height('100%')
+    .width('100%').height(this.fitContent() ? 'auto' : '100%')
     .padding({ left: this.compact ? 14 : 20, right: this.compact ? 14 : 20,
       top: 18, bottom: 16 })
     .backgroundColor(this.sheetBackgroundColor)

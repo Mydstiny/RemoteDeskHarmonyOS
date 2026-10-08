@@ -15,6 +15,7 @@ import {
   RemoteKeyboardPreferences,
   RemoteShortcutPlatform,
   REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY,
+  REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY,
   REMOTE_KEYBOARD_FUNCTION_KEYS_VISIBLE_KEY,
   REMOTE_KEYBOARD_PREFERENCES_NAME,
   REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY,
@@ -201,7 +202,9 @@ export class RemoteKeyboardSettingsService {
         prefs.getSync(REMOTE_KEYBOARD_FUNCTION_KEYS_VISIBLE_KEY,
           defaults.functionKeysVisible) as boolean,
         prefs.getSync(REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY,
-          defaults.closePanelAfterShortcut) as boolean
+          defaults.closePanelAfterShortcut) as boolean,
+        prefs.getSync(REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY,
+          defaults.autoOpenOnRemoteClick) as boolean
       );
     } catch (_error) {
       return defaults;
@@ -216,7 +219,8 @@ export class RemoteKeyboardSettingsService {
       values.shortcutPlatform,
       values.simpleKeyboardEnabled,
       values.functionKeysVisible,
-      values.closePanelAfterShortcut
+      values.closePanelAfterShortcut,
+      values.autoOpenOnRemoteClick
     );
     try {
       const prefs: preferences.Preferences = preferences.getPreferencesSync(
@@ -225,6 +229,8 @@ export class RemoteKeyboardSettingsService {
       prefs.putSync(REMOTE_KEYBOARD_SIMPLE_MODE_KEY, normalized.simpleKeyboardEnabled);
       prefs.putSync(REMOTE_KEYBOARD_FUNCTION_KEYS_VISIBLE_KEY, normalized.functionKeysVisible);
       prefs.putSync(REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY, normalized.closePanelAfterShortcut);
+      prefs.putSync(REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY,
+        normalized.autoOpenOnRemoteClick);
       prefs.flushSync();
       this.publish(normalized);
       this.applySimpleKeyboardMode(normalized.simpleKeyboardEnabled);
@@ -279,6 +285,8 @@ export class RemoteKeyboardSettingsService {
       values.functionKeysVisible);
     AppStorage.setOrCreate<boolean>(REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY,
       values.closePanelAfterShortcut);
+    AppStorage.setOrCreate<boolean>(REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY,
+      values.autoOpenOnRemoteClick);
   }
 
   private publishHarmonyShortcutBlocking(

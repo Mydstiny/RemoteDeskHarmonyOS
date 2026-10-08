@@ -73,14 +73,4 @@ private:
     bool channelInitializing_ = false;
 };
 
-class RdpNextConnectionGfxFallback {
-public:
-    void mark();
-    bool consume();
-    bool pending() const;
-
-private:
-    std::atomic<bool> pending_ {false};
-};
-
 #endif // RDP_GRAPHICS_LIFECYCLE_H

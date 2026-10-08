@@ -66,7 +66,7 @@ export default function sshSessionLogStoreTest(): void {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
       const store = new SshSessionLogStore(persistence, crypto);
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       expect(store.init(context)).assertTrue();
       const settings: SshSessionLogSettingsV1 = store.snapshot().settings;
       settings.enabled = true;
@@ -83,7 +83,7 @@ export default function sshSessionLogStoreTest(): void {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
       const store = new SshSessionLogStore(persistence, crypto);
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       expect(store.init(context)).assertTrue();
       const settings = store.snapshot().settings;
       settings.enabled = true;
@@ -104,7 +104,7 @@ export default function sshSessionLogStoreTest(): void {
     it('should_remove_orphan_chunks_after_process_restart', 0, (): void => {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store = new SshSessionLogStore(persistence, crypto);
       expect(store.init(context)).assertTrue();
       const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
@@ -123,7 +123,7 @@ export default function sshSessionLogStoreTest(): void {
     it('should_remove_orphans_by_their_exact_persisted_row_id', 0, (): void => {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store = new SshSessionLogStore(persistence, crypto);
       expect(store.init(context)).assertTrue();
       const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
@@ -145,7 +145,7 @@ export default function sshSessionLogStoreTest(): void {
       persistence.chunks.set('preserve-for-recovery', 'cipher<unreferenced>');
       const restored = new SshSessionLogStore(persistence, crypto);
 
-      expect(restored.init(undefined as common.Context)).assertFalse();
+      expect(restored.init({} as common.Context)).assertFalse();
       expect(persistence.index === null).assertTrue();
       expect(persistence.chunks.has('preserve-for-recovery')).assertTrue();
     });
@@ -153,7 +153,7 @@ export default function sshSessionLogStoreTest(): void {
     it('should_fail_closed_when_a_repaired_index_cannot_be_committed', 0, (): void => {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store = new SshSessionLogStore(persistence, crypto);
       expect(store.init(context)).assertTrue();
       const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
@@ -173,7 +173,7 @@ export default function sshSessionLogStoreTest(): void {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
       const store = new SshSessionLogStore(persistence, crypto);
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       expect(store.init(context)).assertTrue();
       const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
       settings.enabled = true;
@@ -194,7 +194,7 @@ export default function sshSessionLogStoreTest(): void {
         const persistence = new MemoryLogPersistence();
         const crypto = new FakeLogCrypto();
         const store = new SshSessionLogStore(persistence, crypto);
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         expect(store.init(context)).assertTrue();
         const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
         settings.enabled = true;
@@ -221,7 +221,7 @@ export default function sshSessionLogStoreTest(): void {
       const crypto = new FakeLogCrypto();
       crypto.available = false;
       const store = new SshSessionLogStore(persistence, crypto);
-      expect(store.init(undefined as common.Context)).assertFalse();
+      expect(store.init({} as common.Context)).assertFalse();
       expect(store.append(logRecord('one', 'never'))).assertFalse();
     });
   });

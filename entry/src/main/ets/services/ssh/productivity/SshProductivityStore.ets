@@ -28,6 +28,7 @@ export interface SshProductivityPersistencePort {
 
 export interface SshProductivityCryptoPort {
   ready(): boolean;
+  configured(): boolean;
   generation(): number;
   isProtected(value: string): boolean;
   encrypt(value: string): string;
@@ -71,6 +72,7 @@ class HarmonySshProductivityPersistence implements SshProductivityPersistencePor
 
 class DataCryptoSshProductivityPort implements SshProductivityCryptoPort {
   ready(): boolean { return DataCrypto.getInstance().isReady(); }
+  configured(): boolean { return DataCrypto.getInstance().isSetupComplete(); }
   generation(): number { return DataCrypto.getInstance().stateGeneration(); }
   isProtected(value: string): boolean { return DataCrypto.getInstance().isEncrypted(value); }
   encrypt(value: string): string { return DataCrypto.getInstance().encrypt(value); }
@@ -96,6 +98,7 @@ export class SshProductivityStore {
   private boundOwnerScopeId: string = '';
   private boundScopeGeneration: number = 0;
   private boundCryptoGeneration: number = -1;
+  private boundCryptoConfigured: boolean = false;
 
   constructor(persistence: SshProductivityPersistencePort = new HarmonySshProductivityPersistence(),
     crypto: SshProductivityCryptoPort = new DataCryptoSshProductivityPort(),
@@ -109,11 +112,12 @@ export class SshProductivityStore {
     this.clearSensitiveState();
     const currentScope: SshProductivityScopeFence = this.scope.current();
     if (currentScope.ownerScopeId.trim().length === 0 || currentScope.generation <= 0 ||
-      !this.crypto.ready()) { return false; }
+      !this.storageAvailable()) { return false; }
     this.context = context;
     this.boundOwnerScopeId = currentScope.ownerScopeId.trim();
     this.boundScopeGeneration = currentScope.generation;
     this.boundCryptoGeneration = this.crypto.generation();
+    this.boundCryptoConfigured = this.crypto.configured();
     this.storageKey = this.storageKeyForOwner(this.boundOwnerScopeId);
     let stored: string | null = this.persistence.read(context, this.storageKey);
     if (stored === null) { return false; }
@@ -130,6 +134,7 @@ export class SshProductivityStore {
       if (legacy === null) { return false; }
       if (legacy.length > 0 && this.crypto.isProtected(legacy) &&
         (legacyClaim.length === 0 || legacyClaim === this.boundOwnerScopeId)) {
+        if (!this.crypto.ready()) { return false; }
         try {
           const migrated: SshProductivityDocumentV1 | null =
             decodeSshProductivityDocument(this.crypto.decrypt(legacy));
@@ -158,9 +163,8 @@ export class SshProductivityStore {
     }
     if (stored.length === 0) {
       try {
-        const encrypted: string = this.crypto.encrypt(
-          encodeSshProductivityDocument(this.document));
-        if (encrypted.length === 0 || !this.crypto.isProtected(encrypted) ||
+        const encrypted: string = this.encodeStored(this.document);
+        if (encrypted.length === 0 ||
           !this.persistence.write(context, this.storageKey, encrypted)) {
           return false;
         }
@@ -169,11 +173,17 @@ export class SshProductivityStore {
         return true;
       } catch (_err) { return false; }
     }
-    if (!this.crypto.isProtected(stored)) { return false; }
     try {
       const decoded: SshProductivityDocumentV1 | null =
-        decodeSshProductivityDocument(this.crypto.decrypt(stored));
+        this.decodeStored(stored);
       if (decoded === null) { return false; }
+      // Enabling app encryption upgrades this owner's plaintext slot only
+      // after the encrypted replacement has been durably written.
+      if (this.crypto.ready() && !this.crypto.isProtected(stored)) {
+        const encrypted: string = this.encodeStored(decoded);
+        if (!this.persistence.write(context, this.storageKey, encrypted)) { return false; }
+        stored = encrypted;
+      }
       this.document = decoded;
       this.persistedCiphertext = stored;
       if (legacyClaim.length === 0 && !this.repairLegacyClaim(context)) {
@@ -185,8 +195,9 @@ export class SshProductivityStore {
   }
 
   isReady(): boolean {
-    if (!this.initialized || this.context === null || !this.crypto.ready() ||
-      this.crypto.generation() !== this.boundCryptoGeneration) { return false; }
+    if (!this.initialized || this.context === null || !this.storageAvailable() ||
+      this.crypto.generation() !== this.boundCryptoGeneration ||
+      this.crypto.configured() !== this.boundCryptoConfigured) { return false; }
     const currentScope: SshProductivityScopeFence = this.scope.current();
     return currentScope.ownerScopeId.trim() === this.boundOwnerScopeId &&
       currentScope.generation === this.boundScopeGeneration;
@@ -213,6 +224,7 @@ export class SshProductivityStore {
     this.boundOwnerScopeId = '';
     this.boundScopeGeneration = 0;
     this.boundCryptoGeneration = -1;
+    this.boundCryptoConfigured = false;
   }
 
   upsertSnippet(snippet: SshSnippetV1): boolean {
@@ -291,19 +303,23 @@ export class SshProductivityStore {
     return this.commit(next);
   }
 
-  /** Every mutation rebases on the latest encrypted document. Preference I/O
+  /** Every mutation rebases on the latest owner-scoped document. Preference I/O
    * and mutation are synchronous on ArkUI's JS thread, so two open terminal
    * windows cannot overwrite each other's older in-memory snapshot. */
   private readLatestDocument(): SshProductivityDocumentV1 | null {
     if (!this.isReady() || this.context === null) { return null; }
     try {
       const stored: string | null = this.persistence.read(this.context, this.storageKey);
-      if (stored === null || stored.length === 0 || !this.crypto.isProtected(stored)) {
+      if (stored === null || stored.length === 0) {
+        this.clearSensitiveState();
+        return null;
+      }
+      if (this.crypto.isProtected(this.persistedCiphertext) && !this.crypto.isProtected(stored)) {
         this.clearSensitiveState();
         return null;
       }
       const decoded: SshProductivityDocumentV1 | null =
-        decodeSshProductivityDocument(this.crypto.decrypt(stored));
+        this.decodeStored(stored);
       if (decoded === null) {
         this.clearSensitiveState();
         return null;
@@ -323,8 +339,8 @@ export class SshProductivityStore {
       decodeSshProductivityDocument(encodeSshProductivityDocument(next));
     if (normalized === null) { return false; }
     try {
-      const encrypted: string = this.crypto.encrypt(encodeSshProductivityDocument(normalized));
-      if (encrypted.length === 0 || !this.crypto.isProtected(encrypted) ||
+      const encrypted: string = this.encodeStored(normalized);
+      if (encrypted.length === 0 ||
         !this.persistence.write(this.context as common.Context, this.storageKey, encrypted)) {
         if (this.persistedCiphertext.length > 0) {
           this.persistence.write(this.context as common.Context, this.storageKey,
@@ -341,6 +357,31 @@ export class SshProductivityStore {
   private storageKeyForOwner(ownerScopeId: string): string {
     const suffix: string = ownerScopeId.trim().replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 96);
     return suffix.length === 0 ? '' : SSH_PRODUCTIVITY_PREFERENCES_KEY + '.' + suffix;
+  }
+
+  private storageAvailable(): boolean {
+    return this.crypto.ready() || !this.crypto.configured();
+  }
+
+  private encodeStored(document: SshProductivityDocumentV1): string {
+    const encoded: string = encodeSshProductivityDocument(document);
+    if (this.crypto.ready()) {
+      const encrypted: string = this.crypto.encrypt(encoded);
+      if (encrypted.length === 0 || !this.crypto.isProtected(encrypted)) {
+        throw new Error('SSH command encryption failed');
+      }
+      return encrypted;
+    }
+    if (this.crypto.configured()) { throw new Error('SSH command storage locked'); }
+    return 'plain:v1:' + encoded;
+  }
+
+  private decodeStored(stored: string): SshProductivityDocumentV1 | null {
+    if (this.crypto.isProtected(stored)) {
+      return this.crypto.ready() ? decodeSshProductivityDocument(this.crypto.decrypt(stored)) : null;
+    }
+    if (!stored.startsWith('plain:v1:') || !this.storageAvailable()) { return null; }
+    return decodeSshProductivityDocument(stored.slice('plain:v1:'.length));
   }
 
   private normalizeLegacyClaim(value: string): string {

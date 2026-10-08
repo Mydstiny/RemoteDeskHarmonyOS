@@ -1,8 +1,94 @@
+import { PhonePasskeySettingsSheet } from '../components/pro/passkey/PhonePasskeySettingsSheet';
+import { phonePasskeyEntryAvailable } from '../services/pro/passkey/ProPasskeyEntry';
+import { proDeveloperToolsVisible } from '../services/pro/ProDeveloperTools';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
+import { ProBadge, proBadgeSummary } from '../components/ProBadge';
+import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
+import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from '../components/diagnosticAi/AiTopLayer';
+import { AiSessionRouter, aiIsSessionPage } from '../services/diagnosticAi/AiSessionRouter';
+import { AI_VOICE_ENABLED, AiVoiceSettings } from '../services/diagnosticAi/AiVoiceSettings';
+import {
+  AI_APP_ACTION_REQUEST, AI_FLOAT_REQUEST, AI_SESSION_HANDOVER, AI_SESSION_HANDOVER_TTL_MS
+} from '../services/diagnosticAi/AiBridgeKeys';
+import { DiagnosticAiMotionStore } from '../services/diagnosticAi/DiagnosticAiMotionPolicy';
+import { DiagnosticAiSettingsBridge } from '../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
+import { AiTriageHost, DiagnosticAiHostBridge } from '../services/diagnosticAi/DiagnosticAiTriagePolicy';
+import { RDP_CERTIFICATE_BYPASS, RDP_CERTIFICATE_CANCEL, RDP_CERTIFICATE_CONTINUE_ONCE, RDP_CERTIFICATE_TRUST, recordRdpCertificateDecision } from '../services/RdpDiagnosticEvents';
+import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
+import { proCloneLabel } from '../services/pro/ProClonePolicy';
+import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
+import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
+import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
+import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
+import {
+  PRO_PERSONALIZATION_FEATURE,
+  PRO_RDP_ADVANCED_DISPLAY_FEATURE,
+  PRO_DIAGNOSTICS_ASSISTANT_FEATURE,
+  PRO_DIAGNOSTICS_PROVIDER_FEATURE,
+  ProFeature
+} from '../services/pro/ProFeatureCatalog';
+import { AiHostEditor } from '../components/ai/AiHostEditor';
+import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
+import { AiPairTarget, aiPairTarget } from '../services/ai/AiWorkspacePairPolicy';
+import { AiHost } from '../services/ai/AiModels';
+import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
+import { AiLocalStore } from '../services/ai/AiLocalStore';
+import { ProIncomingConnectionShareCard } from '../components/ProConnectionShareControls';
+import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { SshAddBasicFields } from '../common/SshAddBasicFields';
+import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { ProContinuationCredentialHandoff } from '../services/pro/ProContinuationCredentials';
+import { proReconnectOnlyProtocol } from '../services/pro/ProConnectionEnvelope';
+import { resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
+import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
+import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
+import { DEBUG } from 'BuildProfile';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
+import { ProEntries } from '../services/pro/ProEntries';
+import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
+import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
+import { ProAppIconPanel } from '../components/ProAppIconPanel';
+import { ProAppIcons } from '../services/pro/ProAppIcons';
+import { HostGroupBar } from '../components/pro/org/HostGroupBar';
+import { HostBatchActions } from '../components/pro/org/HostBatchActions';
+import { HostImportPanel } from '../components/pro/org/HostImportPanel';
+import { WorkspaceStrip } from '../components/pro/workspace/WorkspaceStrip';
+import { WorkspaceGroupCard, WorkspacePanel } from '../components/pro/workspace/WorkspaceGroupCard';
+import { WorkspaceAddFlow } from '../components/pro/workspace/WorkspaceAddFlow';
+import { ProWorkspaceEditorPanel } from '../components/ProWorkspaceEditorPanel';
+import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
+import {
+  WorkspaceLaunchPrepPanel, WorkspacePrepCredential, WorkspacePrepRow
+} from '../components/pro/workspace/WorkspaceLaunchPrepPanel';
+import {
+  connectingRunIndex, newWorkspace, nextQueuedRunIndex, setRunItemState, sortedEntries, Workspace, WorkspaceEntry, workspaceRunFinished,
+  workspaceRunFor, WorkspaceRun, WorkspaceRunItem, workspaceRunSummary
+} from '../services/pro/workspace/WorkspacePolicy';
+import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
+import { WorkspaceHandoff, WorkspaceSplitSide } from '../services/pro/workspace/WorkspaceHandoff';
+import {
+  WORKSPACE_PHONE_ENABLED_KEY, workspaceDeviceKind, WorkspaceDeviceKind, workspaceEntryLimit, WorkspacePhonePreference,
+  workspaceUsableOnDevice
+} from '../services/pro/workspace/WorkspaceDevicePolicy';
+import {
+  HostFilter, HostGroupDefinition, HostMembership, hostMatchesFilter, parseHostFilterKey
+} from '../services/pro/org/HostOrganizationPolicy';
+import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
+import { orgHostView, OrgHostRow, orgRowForRemoteHost } from '../services/pro/org/HostOrganizationDirectory';
+import {
+  exportHosts, HostExportDocument, hostExportFileName, HostExportRecord, parseHostExport
+} from '../services/pro/org/HostExportPolicy';
+import { HostExportFileService, HostImportFileResult } from '../services/pro/org/HostExportFileService';
+import { SshSessionContext, SshSessionStore } from '../services/SshSessionStore';
+import { AiSettingsSurface } from './AiSettingsPage';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
  */
 import { router, promptAction, curves } from '@kit.ArkUI';
-import { display, window } from '@kit.ArkUI';
+import { display, window, LengthMetrics, componentUtils, UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preferences } from '@kit.ArkData';
 import { HdsTabs, HdsTabsController, hdsMaterial, DividerMode } from '@kit.UIDesignKit';
@@ -26,6 +112,13 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { AppCloneContext } from '../services/AppCloneContext';
 import { DataCrypto } from '../services/DataCrypto';
+import { masterPasswordSetupError } from '../services/MasterPasswordPolicy';
+import {
+  BackupCryptoRestoreDecision,
+  backupCryptoContractFromRows,
+  backupCryptoRestoreNotice,
+  backupCryptoWithheldMessage
+} from '../services/BackupCryptoContractPolicy';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
 import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
@@ -84,6 +177,7 @@ import {
   MoonlightAddress,
   MoonlightHost,
   MoonlightHostType,
+  MoonlightSettings,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
   moonlightAddressKey
 } from '../model/MoonlightModels';
@@ -107,6 +201,39 @@ import {
 } from '../services/RustDeskAuthDraftStore';
 import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { sshKeyTypePending, sshKeyTypeText } from '../services/KeyVaultFormPolicy';
+import {
+  SETTINGS_VISUAL_STYLE_CLASSIC,
+  SETTINGS_VISUAL_STYLE_KEY,
+  SETTINGS_VISUAL_STYLE_MODERN,
+  normalizeSettingsVisualStyle,
+  settingsVisualIsModern
+} from '../services/SettingsVisualStylePolicy';
+import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
+import { AppSheetHeader } from '../components/AppSheetHeader';
+import {
+  SettingsSearchEntry,
+  settingsSearchEntries,
+  settingsSearchMatches,
+  settingsSectionTitle
+} from '../services/SettingsSearchCatalog';
+import {
+  SettingsModernVisibility,
+  settingsControlModeLabel,
+  settingsModernRowSymbol,
+  settingsModernSectionIndex,
+  settingsModernSectionSymbol,
+  settingsSectionIsAbove,
+  settingsMoonlightVideoLabel,
+  settingsRustDeskCodecLabel,
+  settingsRustDeskQualityLabel,
+  settingsSecondsLabel,
+  settingsThemeLabel,
+  settingsVncDisplayScaleLabel,
+  settingsVncSecurityLabel,
+  settingsVncTransportLabel
+} from '../services/SettingsModernPolicy';
 import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
@@ -213,6 +340,7 @@ import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
 import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
 import { RemotePinchZoomSettingsSheet } from '../components/RemotePinchZoomSettingsSheet';
+import { RemotePortraitDisplaySettingsSheet } from '../components/RemotePortraitDisplaySettingsSheet';
 import { RemoteSessionControlBarSettingsSheet } from
   '../components/RemoteSessionControlBarSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
@@ -251,16 +379,22 @@ import {
   rdpCertificateLegacyProbeStage,
   rdpCertificateEffectiveRiskFlags,
   rdpCertificatePreflightAllowsRealConnection,
+  rdpCertificatePreflightSkipAllowed,
+  rdpCertificatePreflightBypassHintAllowed,
   rdpCertificateRoutePreflightAllowsRealConnection,
   rdpCertificateValidityState,
   rdpCertificateRiskSummary,
   rdpPreflightStatusLabel,
   rdpCertificateWarningMessage,
   shouldEnableStandardRdpSecurityOnce,
+  shouldAllowRdpLegacyTls,
+  rdpLegacyTlsNeedsDecision,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldPersistRdpCertificateTrust
 } from '../services/RdpCertificatePreflightPolicy';
+import { RdpLegacyTlsConsentStore } from '../services/RdpLegacyTlsConsentStore';
+import { AppSettingsActionRow } from '../components/AppSettingsActionRow';
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
@@ -291,7 +425,7 @@ import {
   SSH_WORKBENCH_V2_DEFAULT_ENABLED,
   SSH_WORKBENCH_V2_FLAG_KEY
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
-import { SshWorkspaceCapabilityStore } from
+import { SshWorkspaceCapabilityStore, sshWorkbenchHostIsPc } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
@@ -303,7 +437,8 @@ import {
   buildSshProxyProfile,
   defaultSshProxyEditorValue,
   defaultSshProxyHop,
-  sshProxyEditorValueFromProfile
+  sshProxyEditorValueFromProfile,
+  sshProxyEditorInputKey
 } from '../services/SshProxyEditorPolicy';
 import {
   SshProxyRuntimePlan,
@@ -335,6 +470,13 @@ import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
 } from '../services/RdpCertificateProbeLifecyclePolicy';
+import { RdpNameResolution, RdpNameResolutionVia, resolveRdpHostCandidates } from '../services/RdpDnsFallback';
+import {
+  rdpDnsFallbackShouldEnumerate,
+  rdpDnsFallbackProbeCanReuseTransport,
+  rdpDnsFallbackNeedsResolution,
+  normalizeRdpDnsCandidate
+} from '../services/RdpDnsFallbackPolicy';
 import {
   classifyVncCertificateProbeForOwner,
   isVncSha256Fingerprint,
@@ -384,16 +526,19 @@ import {
   hostListBottomSpacerVp,
   hostListFabLiftVp,
   hostListFabSizeVp,
-  nextWorkspaceGroupId
+  nextWorkspaceGroupId,
+  moonlightHostMatchesSearch
 } from '../services/HostWorkspacePolicy';
 import {
   buildHostGroupCards,
+  filterHostGroupCardsByProVisibility,
   HOST_PRESENCE_PROBE_OFFLINE,
   HOST_PRESENCE_PROBE_PENDING,
   HOST_PRESENCE_PROBE_UNKNOWN,
   hostGroupColumnsForBreakpoint,
   hostGroupTitle,
   hostGroupTypeForHost,
+  isHostGroupTypeVisibleByPro,
   hostIdentifier,
   hostIdentifierLabel,
   hostPresenceLabel,
@@ -429,6 +574,7 @@ import {
   normalizeRustDeskTargetDevice,
   RustDeskTargetDevice
 } from '../services/RemoteOrientationPolicy';
+import { hasExplicitRustDeskPhoneChoice, isManualRustDeskPhoneTarget, explicitPhoneImplementationReady } from '../services/RustDeskExplicitPhonePolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { shouldPrepareClassicVncEditor } from '../services/VncHostFlowPolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
@@ -457,9 +603,22 @@ import {
 } from '../services/GripMonitorLifecyclePolicy';
 import {
   SETTINGS_SHEET_ACCOUNT,
+  SETTINGS_SHEET_AI_DATA,
+  SETTINGS_SHEET_AI_DISPLAY,
+  SETTINGS_SHEET_AI_HOSTS,
+  SETTINGS_SHEET_AI_INSTALL,
+  SETTINGS_SHEET_PRO,
+  SETTINGS_SHEET_APP_ICON,
+  SETTINGS_SHEET_PRO_FEATURE,
+  SETTINGS_SHEET_PHONE_PASSKEY,
+  SETTINGS_SHEET_PRO_BADGE,
+  SETTINGS_SHEET_RDP_DISPLAY_PROFILE,
+  SETTINGS_SHEET_SSH_SKIN,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_DIAGNOSTIC_AI,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
+  SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_SESSION_CONTROL_BAR,
   SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
@@ -498,11 +657,14 @@ import {
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS,
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
+  aiSettingsLeafSheetHeight,
   MoonlightSettingsRouteSpec,
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  diagnosticAiSettingsLeafSheetHeight,
   remotePinchZoomSettingsLeafSheetHeight,
+  remotePortraitDisplaySettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
   sessionControlBarSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
@@ -510,6 +672,7 @@ import {
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
+  settingsLeafSheetFitHeight,
   settingsLeafOpenDelayMs,
   virtualKeyboardSettingsLeafSheetHeight,
   virtualKeyboardSettingsLeafUsesBottomSheet,
@@ -523,6 +686,7 @@ import {
   REMOTE_WHEEL_PREFERENCE_VERSION,
   REMOTE_WHEEL_PREFERENCE_VERSION_KEY,
   RUSTDESK_REVERSE_WHEEL_KEY,
+  RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY,
   SSH_REVERSE_WHEEL_KEY,
   VNC_REVERSE_WHEEL_KEY,
   RemoteWheelPreferenceMigration,
@@ -531,8 +695,17 @@ import {
   RemoteWheelPreferences,
   applyRemoteWheelPreferenceUpdate,
   migrateRemoteWheelPreferences,
-  remoteWheelSelectionSummary,
-  withRemoteWheelPreference
+  withRemoteWheelPreference,
+  RDP_WHEEL_SPEED_KEY,
+  RUSTDESK_WHEEL_SPEED_KEY,
+  SSH_WHEEL_SPEED_KEY,
+  VNC_WHEEL_SPEED_KEY,
+  MOONLIGHT_WHEEL_SPEED_KEY,
+  RemoteWheelProtocol,
+  RemoteWheelSpeeds,
+  normalizeRemoteWheelSpeed,
+  remoteWheelSettingsSummary,
+  remoteWheelSpeedKey
 } from '../services/RemoteWheelPreferencePolicy';
 import {
   MOONLIGHT_PINCH_ZOOM_ENABLED_KEY,
@@ -552,6 +725,27 @@ import {
   withRemotePinchZoomPreference
 } from '../services/RemotePinchZoomPreferencePolicy';
 import {
+  MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY,
+  MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY,
+  RDP_PORTRAIT_DISPLAY_ENABLED_KEY,
+  RDP_PORTRAIT_DISPLAY_MODE_KEY,
+  REMOTE_PORTRAIT_DISPLAY_REVISION_KEY,
+  RemotePortraitDisplayPreferences,
+  RemotePortraitDisplayPreferenceUpdate,
+  RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY,
+  RUSTDESK_PORTRAIT_DISPLAY_MODE_KEY,
+  VNC_PORTRAIT_DISPLAY_ENABLED_KEY,
+  VNC_PORTRAIT_DISPLAY_MODE_KEY,
+  remotePortraitDisplaySelectionSummary
+} from '../services/RemotePortraitDisplayPreferencePolicy';
+import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
+import {
+  REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY,
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightLabel,
+  normalizeRemotePortraitSidebarHeightMode
+} from '../services/RemotePortraitSidebarPolicy';
+import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
   SETTINGS_EMAIL_PANEL_TYPE,
@@ -569,14 +763,18 @@ import {
   SETTINGS_SECTION_RUSTDESK,
   SETTINGS_SECTION_SSH,
   SETTINGS_SECTION_VNC,
+  SETTINGS_SECTION_AI,
+  SETTINGS_SECTION_PRO,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_SECTION_DIAGNOSTICS,
   SETTINGS_RDP_SWITCH_ROW_COUNT,
   SETTINGS_SECURITY_ACTION_ROW_COUNT,
   SETTINGS_VNC_ACTION_ROW_COUNT,
   SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
+  settingsFeedbackBody,
   settingsFeedbackMailPanelParams,
   settingsNextExpandedSection,
   settingsRatingUriCandidates,
@@ -593,10 +791,16 @@ import {
   rdpResolutionLabel,
   rdpResolutionPresets
 } from '../services/RemoteResolutionPresetPolicy';
+import { normalizeRdpRemoteUiScalePreference, rdpRemoteUiScaleLabel } from '../services/RdpAdaptiveDisplayPolicy';
+import { RdpDisplayProfilePanel } from '../components/rdp/RdpDisplayProfilePanel';
 import {
-  normalizeRdpRemoteUiScalePreference,
-  rdpRemoteUiScaleLabel
-} from '../services/RdpAdaptiveDisplayPolicy';
+  normalizeRdpDesktopScalePercent,
+  normalizeRdpDeviceScalePercent,
+  rdpDisplayProfileSummary,
+  rdpResolutionSelection,
+  validateRemoteDisplayGeometry
+} from '../services/RemoteDisplayProfilePolicy';
+import { ProAccessContext } from '../services/pro/ProAccessPolicy';
 import {
   localViewScalePercent,
   normalizeLocalViewScaleMode,
@@ -656,7 +860,12 @@ import {
   CLOUD_SYNC_SHEET_RESTORE_CONFIRM,
   CLOUD_SYNC_SHEET_UPLOAD_CONFIRM,
   CloudSyncSheetSpec,
-  cloudSyncSheetSpec
+  cloudSyncCryptoParamsDescription,
+  cloudSyncManageTablesHint,
+  cloudSyncSheetSpec,
+  cloudSyncTableDescription,
+  cloudSyncTableProtectionLabel,
+  masterPasswordStatusText
 } from '../services/CloudSyncSheetPolicy';
 import {
   HALO_COLOR_DARK_KEY,
@@ -673,6 +882,33 @@ import {
 } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
+import { DiagnosticAiSettingsSheet } from '../components/diagnosticAi/DiagnosticAiSettingsSheet';
+import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
+import { DiagnosticAiProfileStore } from '../services/diagnosticAi/DiagnosticAiProfileStore';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, diagnosticAiSessionKind } from '../services/diagnosticAi/DiagnosticAiConversationStore';
+import { diagnosticAiResumeSession } from '../components/diagnosticAi/DiagnosticAiAssistantPanel';
+import { AI_VOICE_REQUEST, AiChatMemory, aiChatResumeSession } from '../components/diagnosticAi/AiChatView';
+import { AI_SHARE_REQUEST_KEY, AiShareInbox, aiChatRefresh } from '../services/diagnosticAi/AiShareInbox';
+import { AiAppDataBridge, AiHostSummary } from '../services/diagnosticAi/AiAppDataBridge';
+import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
+import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
+import {
+  DiagnosticOutcome,
+  diagnosticNetworkFactsForEndpoints,
+  emptyDiagnosticNetworkFacts
+} from '../services/DiagnosticCapturePolicy';
+import { recordRustDeskDirectStage } from '../services/RustDeskDiagnosticEvents';
+import {
+  RustDeskDirectStage,
+  rustDeskDirectAddressClass,
+  rustDeskDirectAddressClassCode,
+  rustDeskDirectEndpointReadbackError,
+  rustDeskDirectEndpointSource,
+  rustDeskDirectFailureMessage,
+  rustDeskDirectFailureStage,
+  rustDeskDirectSourceCode,
+  rustDeskDirectStageCode
+} from '../services/RustDeskDirectRoutePolicy';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
@@ -694,9 +930,14 @@ import { SessionConfig } from '../types/rdpnapi';
 import {
   ActiveRemoteSessionRegistry,
   ActiveRemoteSessionRecord,
-  ActiveRemoteSessionTermination
+  ActiveRemoteSessionTermination,
+  remoteVideoSessionBusyMessage
 } from '../services/ActiveRemoteSessionRegistry';
 import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
+import {
+  REMOTE_PICTURE_SESSION_LIMIT_CODE,
+  remotePictureSessionLimitMessage
+} from '../services/RemotePictureSessionLimitPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   nativeDisconnectStateIsFailed,
@@ -771,6 +1012,24 @@ interface RdpCertificateCredentialParts {
   domain: string;
 }
 
+/** A settings section header's place in the list: its List index and its top in vp. */
+interface SettingsHeaderAnchor {
+  index: number;
+  y: number;
+}
+
+/** A settings switch row. Passed as one object literal so the row reads live values (a @Builder argument passed
+ * by value is frozen at first render, so a switch changed elsewhere, e.g. by the AI, would keep its old look). */
+interface SettingsSwitchRowArgs {
+  icon: Resource;
+  label: string;
+  detail: string;
+  isOn: boolean;
+  onToggle: (on: boolean) => void;
+  neutralIcon?: boolean;
+  enabled?: boolean;
+}
+
 const ENV_COLOR_MODE_UNKNOWN = -1;
 const ENV_COLOR_MODE_LIGHT = 0;
 const ENV_COLOR_MODE_DARK = 1;
@@ -778,6 +1037,16 @@ const DYNAMIC_LAN_ADDRESS_FRESHNESS_MS: number = 5 * 60 * 1000;
 const DYNAMIC_LAN_SWEEP_COOLDOWN_MS: number = 30 * 1000;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
+
+/** 全新视觉: the height the multi-select bar under the search field takes (44 + padding + gap). */
+const MODERN_HOST_SELECTION_BAR_VP: number = 64;
+
+/** 「：A、B、C 等 7 台」 for a batch delete confirmation. */
+function hostBatchDeleteNameList(names: string[]): string {
+  if (names.length === 0) { return ''; }
+  const shown: string[] = names.slice(0, 5);
+  return '（' + shown.join('、') + (names.length > shown.length ? ' 等 ' + names.length.toString() + ' 台' : '') + '）';
+}
 // A native Sheet can finish its dismiss animation before ArkUI has completed
 // the pointer-up dispatch that closed it. Keep the host list covered for one
 // short release window so that pointer-up cannot activate the card underneath.
@@ -808,10 +1077,105 @@ const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
 const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
 const REMOTE_HOST_SHEET_RDP_CREDENTIAL = 12;
 const DESKTOP_MOONLIGHT_TAB = 7;
+/** PC large-screen sidebar page for Pro 工作区与布局. */
+const DESKTOP_WORKSPACE_TAB = 9;
+
+interface RdpCertificateDnsProbeResult {
+  info: RdpCertificateInfo;
+  transportHost: string;
+}
 
 @Entry
 @Component
 struct HostListPage {
+  @State proStatusLabel: string = '免费版';
+  @State aiProVisible: boolean = false;
+  @State appIconProVisible: boolean = true;
+  @State proManagerVisible: boolean = false;
+  @State personalizationProVisible: boolean = false;
+  /** RDP custom desktop size and Windows scale: shown only while the account may use them. */
+  @State rdpAdvancedDisplayVisible: boolean = false;
+  /** 诊断与 AI 帮助 sub-settings that need Pro; 传统日志抓取 is always there. */
+  @State diagnosticAiConfigVisible: boolean = false;
+  /** Shared through AppStorage so the AI entry on the 密钥保险库 and 中继 tabs follows the same entitlement. */
+  @StorageLink('aiEntryAssistantVisible') @Watch('syncAiLayers') diagnosticAiAssistantVisible: boolean = false;
+  /** Which sub-setting the diagnostic AI sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. */
+  @State diagnosticAiSection: number = 0;
+  /** Session selected from AI history; native sheet replacement carries it into section 1. */
+  @State diagnosticAiResumeSessionId: string = '';
+  /** 启动 AI 辅助 opens as the AI island at the top center; it unmounts after folding away. */
+  @State @Watch('syncAiLayers') aiIslandShown: boolean = false;
+  /** The island and voice mode, each in the AI top layer while shown (above every sheet and dialog). */
+  private aiIslandLayer: AiTopLayer = new AiTopLayer();
+  private aiVoiceLayer: AiTopLayer = new AiTopLayer();
+  /** The AI island floats as a capsule: its overlay lets every other touch reach the page. */
+  @State aiIslandFloating: boolean = false;
+  /** AI 语音 (Beta): Siri-style voice mode over the page ('hands' from the chat, 'hold' from a long press). */
+  @State @Watch('syncAiLayers') aiVoiceShown: boolean = false;
+  @State aiVoiceMode: string = 'hands';
+  /** Voice mode starts from the closing panel's capsule ('panel') or from the camera island ('island'). */
+  @State aiVoiceStart: string = 'island';
+  /** Voice mode comes back from the orb over a screen it opened (its last answer, listening). */
+  @State aiVoiceResume: boolean = false;
+  @StorageProp('aiVoice.resumeRequest') @Watch('onAiVoiceResume') aiVoiceResumeRequest: number = 0;
+  /** The island starts by running this app action (voice mode confirmed it). */
+  @State aiIslandStartAction: string = '';
+  /** The island starts as the floating orb (voice mode floated). */
+  @State aiIslandStartFloat: boolean = false;
+  /** That orb starts with its small chat shown (a session's AI carried on here). */
+  @State aiIslandStartChat: boolean = false;
+  /** A session's AI was up when the user left the host: it carries on here (see takeSessionAi). */
+  @StorageProp(AI_SESSION_HANDOVER) @Watch('onSessionAiHandover') aiSessionHandover: number = 0;
+  /**
+   * This page is the one showing (between onPageShow and onPageHide). `pageActive` stays true under a page pushed
+   * over it, and after VncSettingsPage's replaceUrl two lists may be alive: only the one showing takes the AI over.
+   */
+  private pageShown: boolean = false;
+  /** The island opens straight into the panel (taking over from the voice card) instead of its capsule sequence. */
+  @State aiIslandQuickOpen: boolean = false;
+  @StorageProp(AI_VOICE_REQUEST) @Watch('onAiVoiceRequest') aiVoiceRequest: number = 0;
+  @StorageProp(AI_VOICE_HOLD_EVENT) @Watch('onAiVoiceHold') aiVoiceHold: string = '';
+  /** The AI chat (or voice mode) asks for an app screen: the island opens it the usual way, or the page does. */
+  @StorageProp(AI_APP_ACTION_REQUEST) @Watch('onAiAppActionRequest') aiAppActionRequest: string = '';
+  /** Debug builds only: Pro state override (跟随真实 / 模拟开启 / 模拟关闭) and the real state behind it. */
+  @State proDebugMode: string = 'real';
+  @State proRealStateText: string = '';
+  // Pro 高级主机管理 / 工作区与布局 on the home list.
+  @State proOrgVisible: boolean = false;
+  @State proWorkspacesVisible: boolean = false;
+  // Phones show workspaces only after the user opts in; Pad runs at most two sessions per workspace.
+  @StorageProp('isPadDevice') @Watch('onWorkspaceDeviceChange') padDeviceForWorkspace: boolean = false;
+  @StorageProp(WORKSPACE_PHONE_ENABLED_KEY) @Watch('onWorkspaceDeviceChange') workspacePhoneEnabled: boolean = false;
+  @State hostOrgFilterKey: string = 'all';
+  @State hostOrgRevision: number = 0;
+  @State hostBatchProbing: boolean = false;
+  @State proWorkspaceRun: WorkspaceRun | null = null;
+  @State showHostImportSheet: boolean = false;
+  @State showWorkspaceEditor: boolean = false;
+  /** 创建并打开 from the add sheet: opened once the sheet has closed. */
+  private pendingWorkspaceOpen: Workspace | null = null;
+  @State showWorkspacePrep: boolean = false;
+  @State workspacePrepRows: WorkspacePrepRow[] = [];
+  /** Hosts the PC 连接准备 check already unlocked for the current run; each is consumed by one connection. */
+  private workspaceLockCleared: Set<string> = new Set<string>();
+  private workspacePrepStarting: boolean = false;
+  /** RDP 「连接时输入」 credentials from 连接准备, in memory for the current run only. */
+  private workspaceRunCredentials: Map<string, WorkspacePrepCredential> = new Map<string, WorkspacePrepCredential>();
+  @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
+  @State hostImportDocument: HostExportDocument = { schemaVersion: 1, exportedAt: 0, groups: [], hosts: [] };
+  private proWorkspacePageHidden: boolean = false;
+  private proWorkspaceRunTimer: number = -1;
+  private hostOrgUnsubscribe: (() => void) | null = null;
+  @StorageProp('proBadgeFlow') proBadgeFlow: boolean = true;
+  @StorageProp('proBadgeVisible') proBadgeVisible: boolean = true;
+  @StorageProp('proBadgeStyle') proBadgeStyle: string = 'capsule';
+  @StorageProp('proBadgeMotion') proBadgeMotion: string = 'sweep';
+  @StorageProp('proBadgePalette') proBadgePalette: string = 'aurora';
+  @State proFeatureRevision: number = 0;
+  @State selectedProFeatureId: string = '';
+  @State appIconSupported: boolean = false;
+  private proUnsubscribe: (() => void) | null = null;
+  private proVisibilityUnsubscribe: (() => void) | null = null;
   @State hosts: RemoteHost[] = [];
   @State filteredHosts: RemoteHost[] = [];
   @State rdpCredentials: RdpCredential[] = [];
@@ -829,6 +1193,8 @@ struct HostListPage {
   @State pageActive: boolean = false;
   @State searchText: string = '';
   @State workspaceGroupId: string = '';
+  /** The relay name 中继 → 查看主机 searched for (see relaySearchIncludesLocked). */
+  private relaySearchFromRelayPage: string = '';
   @State isLoading: boolean = true;
   @StorageLink('currentTheme') @Watch('onThemeChange') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
@@ -854,6 +1220,7 @@ struct HostListPage {
   @State appCloneLocalOnly: boolean = false;
   @State appCloneIsClone: boolean = false;
   @State appCloneStatusText: string = '';
+  @State appCloneClipboardOptIn: boolean = false;
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
   @State hostReorderEnabled: boolean = false;
@@ -879,12 +1246,23 @@ struct HostListPage {
   // the UI update for the same transition.
   private hostPresenceLocalObservationWrite: boolean = false;
   @State hostActionPopupId: string = '';  // PC大屏模式: 当前弹出操作菜单的主机ID
+  /** 全新视觉 on PC: the card under the mouse is highlighted. */
+  @State hoveredHostCardKey: string = '';
   @StorageLink('followSystem') followSystem: boolean = true;
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') appInBackground: boolean = false;
   @StorageProp('colorMode') @Watch('onSystemColorModeChange') systemUiColorMode: number = ENV_COLOR_MODE_UNKNOWN;
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  /** The reason the open add flow could not save (shown in the form); the revision repeats the same message. */
+  @State addFlowSaveError: string = '';
+  @State addFlowSaveErrorRevision: number = 0;
+  /** The open add flow holds unsaved input (each flow reports it). */
+  private hostAddFlowDirty: boolean = false;
+  /** The classic editor's fields as the sheet appeared; a difference is unsaved input. */
+  private classicEditorBaseline: string = '';
+  /** Counts add-sheet dismissals: a 放弃 question answered after its sheet went away does nothing. */
+  private hostAddSheetDismissCount: number = 0;
   @State moonlightAddOwnerToken: number = 1;
   @State moonlightLanCandidates: MoonlightHostAddCandidate[] = [];
   @State moonlightDiscoveryRunning: boolean = false;
@@ -905,6 +1283,18 @@ struct HostListPage {
   private sheetReleaseFenceTimer: number = -1;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
+  /** 设置 → 个性化 → 全新视觉 ('modern'); anything else is the classic settings look. */
+  @StorageLink('settingsVisualStyle') settingsVisualStyle: string = 'modern';
+  /** 全新视觉: the settings search text; while it is not empty the page lists matching settings. */
+  @State settingsSearchQuery: string = '';
+  private settingsListScroller: Scroller = new Scroller();
+  /** Bumped when a settings sheet closes: values read from services (VNC, Moonlight) are read again. */
+  @State settingsValuesRevision: number = 0;
+  /** Inline fields keep what is typed until it is confirmed (blur or Enter); saving each key rewrote the field. */
+  @State rdpDriveNameDraft: string = '';
+  @State rdpDriveNameEditing: boolean = false;
+  @State remoteDisplayScaleDraft: string = '';
+  @State remoteDisplayScaleEditing: boolean = false;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
   @StorageLink('totpLogoMode') totpLogoMode: string = 'logo';
   @State lanScanning: boolean = false;
@@ -935,12 +1325,39 @@ struct HostListPage {
   @State showAccount: boolean = false;
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
+  @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
+  /** Shared through AppStorage so every tab's AI entry shows the same state. */
+  @StorageLink('aiEntryState') diagnosticAiOrbState: string = 'idle';
+  /** An AI entry on another tab (its own page component) asks to open the assistant. */
+  @StorageProp('aiEntryOpenRequest') @Watch('onAiEntryOpenRequest') aiEntryOpenRequest: number = 0;
+  /** Documents or text shared to the app (分享 → RemoteDesktop) open the AI island in 聊天. */
+  @StorageProp(AI_SHARE_REQUEST_KEY) @Watch('openSharedToAi') aiShareRequest: number = 0;
+  private aiShareRefusedTimer: number = -1;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State virtualKeyboardCustomEditorVisible: boolean = false;
+  /** The combo key editor holds a new or changed combo that is not saved yet. */
+  private virtualKeyboardCustomEditorDirty: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
+  /** A Switch keeps the position the user tapped until its isOn value changes. When a change is cancelled or
+   * fails, the value stays the same, so bumping this rebuilds the settings Switches at their saved values. */
+  @State settingsSwitchEpoch: number = 0;
+  /** The terminal skin editor holds changes that are not saved yet. */
+  @State sshSkinEditorDirty: boolean = false;
+  /** 远端显示方案 has a typed size or scale that was not applied yet. */
+  @State rdpDisplayDraftDirty: boolean = false;
+  /** The Windows credential editor's fields when it opened, to tell whether anything was typed since. */
+  private rdpCredEditorBaseline: string = '';
+  /** PC: the leaf was opened from the settings panel, so closing it goes back there (not to the host list). */
+  private settingsLeafReturnsToPanel: boolean = false;
+  /** The user closed the leaf (its close button or a swipe); other flows close it to move on elsewhere. */
+  private settingsLeafClosedByUser: boolean = false;
   @State moonlightSettingsLeafHostId: string = '';
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
+  /** The section closing above a header the user just opened: it closes at once, so the page does not jump. */
+  private settingsInstantCollapseSection: string = SETTINGS_SECTION_NONE;
+  /** Bumped by each header tap: a scroll still pending from an earlier tap is dropped. */
+  private settingsScrollGeneration: number = 0;
   @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
@@ -956,6 +1373,8 @@ struct HostListPage {
   @State moonlightRestoreActivationState: string = 'clear';
   @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
+  /** Crypto line of the restore preview, decided once when the file is chosen. */
+  private pendingLocalRestoreCryptoNotice: string = '';
   @State sheetPwd: string = '';
   @State sheetPasswordChanged: boolean = false;
   private sheetPasswordFromStoredProjection: boolean = false;
@@ -1033,6 +1452,10 @@ struct HostListPage {
   @State rdpCertificateHostLabel: string = '';
   @State rdpCertificateWarning: string = '';
   @State rdpCertificateInfo: RdpCertificateInfo | null = null;
+  /** Which step the RDP certificate probe is on, under 「正在检查 RDP 证书…」. */
+  @State rdpCertificateProgress: string = '';
+  /** Hosts with their own lowered RDP security choice (legacy TLS / TLS sign-in), for 「恢复各电脑的默认安全设置」. */
+  @State rdpSecurityDowngradeHosts: number = 0;
   @State rdpGatewayCertificateInfo: RdpCertificateInfo | null = null;
   @State rdpCertificateRouteResult: RdpPreflightResult | null = null;
   @State rdpCertificateError: string = '';
@@ -1163,6 +1586,7 @@ struct HostListPage {
   private preserveFormOnAddSheetDisappear: boolean = false;
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
+  private pendingAddSheetShareId: string = '';
   private pendingVncConnectHostId: string = '';
   private pendingVncConnectUserId: string = '';
   private moonlightCatalogHandoffGeneration: number = 0;
@@ -1191,17 +1615,34 @@ struct HostListPage {
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
   @StorageLink(RDP_REVERSE_WHEEL_KEY) rdpReverseWheel: boolean = false;
   @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) rustdeskReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY)
+  rustdeskWheelDirectionFollowsKeyboard: boolean = true;
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
   @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheel: boolean = false;
   @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
+  /** 远程滚轮 › 速度 per protocol (percent of its tuned default). */
+  @StorageLink(RDP_WHEEL_SPEED_KEY) rdpWheelSpeed: number = 100;
+  @StorageLink(RUSTDESK_WHEEL_SPEED_KEY) rustdeskWheelSpeed: number = 100;
+  @StorageLink(SSH_WHEEL_SPEED_KEY) sshWheelSpeed: number = 100;
+  @StorageLink(VNC_WHEEL_SPEED_KEY) vncWheelSpeed: number = 100;
+  @StorageLink(MOONLIGHT_WHEEL_SPEED_KEY) moonlightWheelSpeed: number = 100;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0; // 0=自动, 1=1080p, 2=2K, 3=4K
   @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
+  @StorageLink('rdpCustomWidth') rdpCustomWidth: number = 1920;
+  @StorageLink('rdpCustomHeight') rdpCustomHeight: number = 1080;
   @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
+  @StorageLink('rdpDesktopScaleMode') rdpDesktopScaleMode: string = 'auto';
+  @StorageLink('rdpDesktopScalePercent') rdpDesktopScalePercent: number = 100;
+  @StorageLink('rdpDeviceScaleMode') rdpDeviceScaleMode: string = 'auto';
+  @StorageLink('rdpDeviceScalePercent') rdpDeviceScalePercent: number = 100;
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @State private rdpCustomWidthDraft: string = '1920';
+  @State private rdpCustomHeightDraft: string = '1080';
+  @State private rdpDesktopScaleDraft: string = '100';
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY)
   sessionControlBarHiddenRdp: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY)
@@ -1217,6 +1658,17 @@ struct HostListPage {
   @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) sshPinchZoomEnabled: boolean = true;
   @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) vncPinchZoomEnabled: boolean = false;
   @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) moonlightPinchZoomEnabled: boolean = false;
+  @StorageLink(RDP_PORTRAIT_DISPLAY_ENABLED_KEY) rdpPortraitDisplayEnabled: boolean = false;
+  @StorageLink(RDP_PORTRAIT_DISPLAY_MODE_KEY) rdpPortraitDisplayMode: string = 'default';
+  @StorageLink(RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY) rustdeskPortraitDisplayEnabled: boolean = false;
+  @StorageLink(RUSTDESK_PORTRAIT_DISPLAY_MODE_KEY) rustdeskPortraitDisplayMode: string = 'default';
+  @StorageLink(VNC_PORTRAIT_DISPLAY_ENABLED_KEY) vncPortraitDisplayEnabled: boolean = false;
+  @StorageLink(VNC_PORTRAIT_DISPLAY_MODE_KEY) vncPortraitDisplayMode: string = 'default';
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY) moonlightPortraitDisplayEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY) moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY)
+  remotePortraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
+  @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) remotePortraitDisplayRevision: number = 0;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpClipboardEnabled') rdpClipboardEnabled: boolean = true;
@@ -1226,6 +1678,7 @@ struct HostListPage {
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
   @StorageLink('rdpTlsWithoutNla') rdpTlsWithoutNla: boolean = false;
+  @StorageLink('rdpSkipCertificatePreflight') rdpSkipCertificatePreflight: boolean = false;
   @State sheetPwdMode: number = 0; // 0=一次性密码, 1=永久密码
   @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
@@ -1234,10 +1687,11 @@ struct HostListPage {
   @State sheetRustdeskTotpEntryId: string = '';
   @State sheetRustdeskTotpAutoSubmit: boolean = false;
   @State sheetRustdeskTargetDevice: RustDeskTargetDevice = 'computer';
+  @State sheetRustdeskPhoneChoiceVersion: number = 0;
   @State sheetRustdeskAdaptiveOrientation: boolean = false;
   @State sheetSshProxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
-  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isDesktopDevice') @Watch('onWorkspaceDeviceChange') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @State windowW: number = 360;
   @State isFullScreen: boolean = false;
@@ -1455,7 +1909,7 @@ struct HostListPage {
             this.closeHostPassphraseSheet('');
           })
         Button('确定').fontSize(14).height(38).layoutWeight(1)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8).margin({ left: 12 })
           .onClick(() => {
             this.closeHostPassphraseSheet(this.hlPassphraseInput);
           })
@@ -1467,6 +1921,7 @@ struct HostListPage {
   private presetColors: string[] = ['#FFFFFF','#F0F0F0','#F0F5FA','#FFF8F0','#F5F0F8','#1A1A2E','#1E4377','#2D1B4E'];
   @State wallpaperItems: WallpaperItem[] = [];
   @State pageViewportHeight: number = 720;
+  @State pageViewportWidth: number = 360;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -1880,13 +2335,386 @@ struct HostListPage {
     return false;
   }
 
+  private proContinuationAutoAcceptedId: string = '';
+  private proContinuationStop: (() => void) | null = null;
+  private proContinuationAttemptId: string = '';
+  @State proIncomingConnectionShareVisible: boolean = false;
+  @State proConnectionShareBasicFields: SshAddBasicFields | null = null;
+  private proConnectionShareStop: (() => void) | null = null;
+  private proConnectionShareDraftId: string = '';
+  private proConnectionShareAttemptId: string = '';
+
+  @State private aiEditingHost: AiHost | null = null;
+  private aiSheetGeneration: number = 0;
+  /** The open-after-pairing handoff has its own token: the form reset on the same dismissal bumps aiSheetGeneration. */
+  private aiConnectHandoff: number = 0;
+  private aiSheetAccount: AiAccountLease | null = null;
+  private pendingAiAccount: AiAccountLease | null = null;
+  private pendingAiConnectId: string = '';
+  private aiStopStore: () => void = (): void => {};
+  private aiStopAccess: () => void = (): void => {};
+  private async refreshAiHosts(): Promise<void> {
+    if (!AiAccess.getInstance().proVisible()) {
+      AiHostService.getInstance().clear();
+      if (this.pageActive) { this.refreshHostListView(true); }
+      return;
+    }
+    await AiHostService.getInstance().refresh(getContext(this) as common.UIAbilityContext);
+    if (this.pageActive) { this.refreshHostListView(true); }
+  }
+  private async openAiHost(id: string): Promise<void> {
+    const host = AiHostService.getInstance().find(id);
+    if (host === null || !this.pageActive || this.appInBackground) { return; }
+    try {
+      AiAccess.getInstance().assertExecute(AiAccess.getInstance().capture(), host.backend);
+      await router.pushUrl({ url: 'pages/RemoteAiWorkspace', params: { hostId: id } });
+    } catch (_error) { promptAction.showToast({ message: '请确认当前账号的 Pro 远程 AI 功能已开放', duration: 2200 }); }
+  }
+  private async removeAiHost(host: RemoteHost): Promise<void> {
+    try {
+      await AiLocalStore.getInstance().removeHost(AiAccess.getInstance().capture(), aiHostId(host));
+      await this.refreshAiHosts();
+    } catch (_error) { promptAction.showToast({ message: '删除 AI 主机失败，请重试', duration: 2200 }); }
+  }
+
+  private proCatalogFeatures(_revision: number): ProFeature[] { return ProFeatureVisibility.getInstance().proCatalog(); }
+  private proFeatureIcon(id: string): Resource {
+    if (id === 'pro.personalization.appIcon') { return $r('sys.symbol.square_and_pencil'); }
+    if (id.startsWith('pro.ai.')) { return protocolIcon('ai'); }
+    if (id === 'pro.connection.continuation' || id === 'pro.connection.knockShare') { return $r('sys.symbol.desktop_fill'); }
+    if (id === 'pro.file.knockTransfer') { return $r('sys.symbol.doc_plaintext'); }
+    if (id.startsWith('pro.security.')) { return $r('sys.symbol.lock_shield_fill'); }
+    return $r('sys.symbol.star');
+  }
+
+  // Entitled users pick presets. After a revocation a non-default icon keeps the entry,
+  // whose panel then offers only the free restore of the default icon.
+  private refreshAppIconEntry(): void {
+    const id = 'pro.personalization.appIcon';
+    const icons = ProAppIcons.getInstance().snapshot();
+    this.appIconSupported = icons.supported;
+    this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
+    this.personalizationProVisible = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
+    this.rdpAdvancedDisplayVisible = ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
+    this.diagnosticAiConfigVisible = ProEntries.visible(PRO_DIAGNOSTICS_PROVIDER_FEATURE);
+    this.diagnosticAiAssistantVisible = ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE);
+    this.refreshAiVoiceFlags();
+    if (this.diagnosticAiAssistantVisible && AiShareInbox.pending()) { this.openSharedToAi(); }
+    const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
+    const workspacesVisible: boolean = ProEntries.visible('pro.workspaces') &&
+      workspaceUsableOnDevice(this.workspaceDeviceKind(), this.workspacePhoneEnabled);
+    if (orgVisible !== this.proOrgVisible || workspacesVisible !== this.proWorkspacesVisible) {
+      this.proOrgVisible = orgVisible;
+      this.proWorkspacesVisible = workspacesVisible;
+      // Losing Pro keeps every group and workspace but returns the home page to the plain list.
+      if (!orgVisible) { this.hostOrgFilterKey = 'all'; }
+      if (!workspacesVisible) {
+        this.endProWorkspaceRun();
+        if (this.curTab === DESKTOP_WORKSPACE_TAB) { this.curTab = 0; }
+      }
+      this.refreshFilteredHostView();
+    }
+  }
+
+  /**
+   * The AI assistant changes settings through the same savers as 设置 (persisted, cloud-synced where the setting
+   * syncs, side effects included). Ids and values come from the assistant's settings catalog; anything else is refused.
+   */
+  private readonly assistantSettingApplier = (id: string, value: string): boolean => this.applyAssistantSetting(id, value);
+  private readonly assistantSettingReader = (id: string): string | null => {
+    if (id === 'ui.hostCardSensitiveHidden') { return this.hostCardSensitiveInfoHidden ? 'true' : 'false'; }
+    // 远程 AI 设置 are the account's, read with its AI hosts.
+    if (id.indexOf('remoteAi.') === 0) { return AiHostService.getInstance().remoteSetting(id); }
+    // AI 语音 is the account's too (its own preferences).
+    if (id.indexOf('ai.voice.') === 0) { return this.assistantVoiceSetting(id); }
+    if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
+      const prefs: DiagnosticAiAssistantPreferences = this.assistantConversationStore().assistantPreferences();
+      return id === 'ai.personality' ? prefs.personality : id === 'ai.verbosity' ? prefs.verbosity : prefs.role;
+    }
+    return null;
+  };
+
+  private assistantOwner(): string {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+  }
+
+  private assistantConversationStore(): DiagnosticAiConversationStore {
+    const store = new DiagnosticAiConversationStore();
+    store.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+    return store;
+  }
+
+  /** 设置 › AI 语音 for the signed-in account, as the assistant reads it ('true' / 'false' for switches). */
+  private assistantVoiceSetting(id: string): string | null {
+    const voice: AiVoiceSettings = new AiVoiceSettings();
+    voice.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+    const config = voice.read();
+    if (id === 'ai.voice.enabled') { return config.enabled ? 'true' : 'false'; }
+    if (id === 'ai.voice.sessionReply') { return config.sessionReply; }
+    if (id === 'ai.voice.rate') { return config.rate; }
+    if (id === 'ai.voice.continuous') { return config.continuous ? 'true' : 'false'; }
+    if (id === 'ai.voice.sessionStartVoice') { return config.sessionStartVoice ? 'true' : 'false'; }
+    if (id === 'ai.voice.sessionQuickStart') { return config.sessionQuickStart ? 'true' : 'false'; }
+    return null;
+  }
+
+  /**
+   * AI 助理's own settings: its answers (assistant preferences), reduced motion (profile), AI 动效 (motion store) and
+   * AI 语音 (the account's voice preferences, as 设置 › AI 语音 saves them).
+   */
+  private applyAssistantAiSetting(id: string, value: string): boolean {
+    if (id.indexOf('ai.voice.') === 0) {
+      const voice: AiVoiceSettings = new AiVoiceSettings();
+      voice.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+      if (id === 'ai.voice.enabled') { voice.setEnabled(value === 'true'); }
+      else if (id === 'ai.voice.sessionReply') { voice.setSessionReply(value); }
+      else if (id === 'ai.voice.rate') { voice.setRate(value); }
+      else if (id === 'ai.voice.continuous') { voice.setContinuous(value === 'true'); }
+      else if (id === 'ai.voice.sessionStartVoice') { voice.setSessionStartVoice(value === 'true'); }
+      else if (id === 'ai.voice.sessionQuickStart') { voice.setSessionQuickStart(value === 'true'); }
+      else { return false; }
+      return this.assistantVoiceSetting(id) === value;
+    }
+    if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
+      const store: DiagnosticAiConversationStore = this.assistantConversationStore();
+      const prefs: DiagnosticAiAssistantPreferences = store.assistantPreferences();
+      if (id === 'ai.personality') { prefs.personality = value as 'balanced' | 'warm' | 'concise' | 'technical'; }
+      else if (id === 'ai.verbosity') { prefs.verbosity = value as 'concise' | 'standard' | 'detailed'; }
+      else { prefs.role = value as 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first'; }
+      prefs.updatedAt = Date.now();
+      return store.saveAssistantPreferences(prefs);
+    }
+    if (id === 'ai.reducedMotion') {
+      const store = new DiagnosticAiProfileStore();
+      store.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+      const settings = store.settingsSnapshot();
+      settings.reducedMotion = value === 'true';
+      const saved: boolean = store.saveSettings(settings);
+      AppStorage.setOrCreate('diagnosticAiReducedMotion', value === 'true');
+      return saved;
+    }
+    // AI 风格 (and its window wash) are kept with the motion choices; a style brings its own motions.
+    if (id === 'ai.style' || id === 'ai.style.wash') {
+      const key: string = id === 'ai.style' ? 'aiStyle' : 'aiStyle.wash';
+      DiagnosticAiMotionStore.save(getContext(this), key, value);
+      return AppStorage.get<string>(key) === value;
+    }
+    const motionKeys: string[] = ['thinking', 'orb', 'done', 'open', 'sendGlow', 'speed'];
+    const kind: string = id.slice('ai.motion.'.length);
+    if (id.indexOf('ai.motion.') === 0 && motionKeys.indexOf(kind) >= 0) {
+      DiagnosticAiMotionStore.save(getContext(this), 'aiMotion.' + kind, value);
+      return AppStorage.get<string>('aiMotion.' + kind) === value;
+    }
+    return false;
+  }
+
+  /** 排障问答: the saved hosts of a protocol (newest first as listed), and the "替我连一次" connection. */
+  private readonly assistantHostLister = (protocol: string): AiTriageHost[] =>
+    this.hosts.filter((host: RemoteHost): boolean => host.protocol === protocol)
+      .map((host: RemoteHost): AiTriageHost => new AiTriageHost(host.id, host.label !== '' ? host.label : host.host));
+  /** The AI chat's 主机列表 tool: names, protocols, groups and last use only — no address or credential. */
+  private readonly chatHostLister = (): AiHostSummary[] => this.hosts.map((host: RemoteHost): AiHostSummary => {
+    const groupId: string = HostOrganizationStore.getInstance().membership(host.id).groupId;
+    const group = groupId === '' ? null : HostOrganizationStore.getInstance().group(groupId);
+    return new AiHostSummary(host.label !== '' ? host.label : '未命名主机', host.protocol, group !== null ? group.name : '',
+      host.lastConnected, host.lastHealth as number, host.lastLatency);
+  });
+  private readonly assistantHostConnector = (hostId: string): boolean => {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return false; }
+    void this.connectToHost(host);
+    return true;
+  };
+  /** The AI's 编辑主机 card: the host's own edit sheet, where the user changes and saves it. */
+  private readonly assistantHostEditor = (hostId: string): boolean => {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return false; }
+    void this.editHost(host);
+    return true;
+  };
+  /** The AI's 删除主机 card: the list's own delete, with its lock check and 确认删除 dialog. */
+  private readonly assistantHostRemover = (hostId: string): boolean => {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return false; }
+    void this.doDeleteHost(host);
+    return true;
+  };
+
+  private applyAssistantSetting(id: string, value: string): boolean {
+    const on: boolean = value === 'true';
+    const num: number = Number(value);
+    switch (id) {
+      case 'ui.theme':
+        if (value === 'system') { this.applyFollowSystemColorMode(); } else { this.applyManualTheme(value === 'dark', 'assistant'); }
+        return true;
+      case 'ui.ambientLightEffect': this.saveAmbientLightEffectEnabled(on); return true;
+      case 'ui.groupedHostCards': this.saveGroupedHostCards(on); return true;
+      case 'ui.hostCardSensitiveHidden': this.saveHostCardSensitiveInfoHidden(on); return true;
+      case 'ui.liveViewEnabled': this.liveViewEnabled = on; this.persistPref('liveViewEnabled', on); return true;
+      case 'ui.hostAddMode': this.saveFabAddStyle(value); return true;
+      case 'ui.settingsVisual': this.saveSettingsVisualStyle(value === SETTINGS_VISUAL_STYLE_MODERN); return true;
+      case 'ui.virtualMouseStyle': this.saveVirtualMouseStyle(value); return true;
+      case 'rdp.audioEnabled': this.saveRdpAudioEnabled(on); return true;
+      case 'rdp.clipboardEnabled': this.saveRdpClipboardEnabled(on); return true;
+      case 'rdp.driveEnabled': this.saveRdpDriveEnabled(on); return true;
+      case 'rdp.showDiagnostics': this.saveRdpShowDiagnostics(on); return true;
+      case 'rdp.colorDepth': this.saveRdpColorDepth(num); return true;
+      case 'rdp.controlMode': this.saveRdpControlMode(num); return true;
+      case 'rdp.remoteUiScale': this.saveRdpRemoteUiScale(value); return true;
+      case 'rustdesk.imageQuality': this.saveRustDeskImageQuality(num); return true;
+      case 'rustdesk.codec': this.saveRustDeskCodec(num); return true;
+      case 'rustdesk.controlMode': this.saveRustDeskControlMode(num); return true;
+      case 'rustdesk.audioEnabled': this.saveRustDeskAudioEnabled(on); return true;
+      case 'rustdesk.clipboardEnabled': this.saveRustDeskClipboardEnabled(on); return true;
+      case 'rustdesk.filePasteEnabled': this.saveRustDeskFilePasteEnabled(on); return true;
+      case 'rustdesk.showDiagnostics': this.saveRustDeskShowDiagnostics(on); return true;
+      case 'rustdesk.privacyMode': this.saveRustDeskPrivacyMode(on); return true;
+      case 'rustdesk.lanDiscovery': this.saveRustDeskLanDiscovery(on); return true;
+      case 'rustdesk.presenceDetectionEnabled': this.saveRustDeskPresenceDetection(on); return true;
+      case 'rustdesk.remoteAppTouchScaleEnabled': this.saveRustDeskRemoteAppTouchScaleEnabled(on); return true;
+      case 'rustdesk.showLocalCursor': this.persistPref('rustdeskShowLocalCursor', on); return true;
+      case 'rustdesk.relativeMouseMode': this.persistPref('rustdeskRelativeMouseMode', on); return true;
+      case 'rustdesk.swapMouseButtons': this.persistPref('rustdeskSwapMouseButtons', on); return true;
+      case 'ssh.inputMode': this.saveSshInputMode(num); return true;
+      case 'remote.displayScaleMode': this.saveRemoteDisplayScaleMode(value); return true;
+      case 'remote.quickExitDisabled': return this.saveRemoteSessionQuickExitDisabled(on);
+      case 'remote.rdpPinchZoom': return this.saveAssistantPinchZoom('rdp', on);
+      case 'remote.rustdeskPinchZoom': return this.saveAssistantPinchZoom('rustdesk', on);
+      case 'remote.sshPinchZoom': return this.saveAssistantPinchZoom('ssh', on);
+      case 'remote.vncPinchZoom': return this.saveAssistantPinchZoom('vnc', on);
+      case 'remote.moonlightPinchZoom': return this.saveAssistantPinchZoom('moonlight', on);
+      case 'remote.rdpReverseWheel': return this.saveAssistantReverseWheel('rdp', on);
+      case 'remote.rustdeskReverseWheel': return this.saveAssistantReverseWheel('rustdesk', on);
+      case 'remote.sshReverseWheel': return this.saveAssistantReverseWheel('ssh', on);
+      case 'remote.vncReverseWheel': return this.saveAssistantReverseWheel('vnc', on);
+      case 'remote.moonlightReverseWheel': return this.saveAssistantReverseWheel('moonlight', on);
+      case 'remote.rdpWheelSpeed': return this.saveRemoteWheelSpeed('rdp', num);
+      case 'remote.rustdeskWheelSpeed': return this.saveRemoteWheelSpeed('rustdesk', num);
+      case 'remote.sshWheelSpeed': return this.saveRemoteWheelSpeed('ssh', num);
+      case 'remote.vncWheelSpeed': return this.saveRemoteWheelSpeed('vnc', num);
+      case 'remote.moonlightWheelSpeed': return this.saveRemoteWheelSpeed('moonlight', num);
+      default:
+        if (id.indexOf('remoteAi.') === 0) {
+          return AiHostService.getInstance().applyRemoteSetting(id, value, (): void => {
+            promptAction.showToast({ message: '远程 AI 设置没有保存，请重试', duration: 2200 });
+          });
+        }
+        return id.indexOf('ai.') === 0 ? this.applyAssistantAiSetting(id, value) : false;
+    }
+  }
+
+  private saveAssistantPinchZoom(protocol: string, on: boolean): boolean {
+    const values: RemotePinchZoomPreferences = this.remotePinchZoomPreferences();
+    const touched: RemotePinchZoomPreferencePresence = { rdp: false, rustdesk: false, ssh: false, vnc: false, moonlight: false };
+    if (protocol === 'rdp') { values.rdp = on; touched.rdp = true; }
+    else if (protocol === 'rustdesk') { values.rustdesk = on; touched.rustdesk = true; }
+    else if (protocol === 'ssh') { values.ssh = on; touched.ssh = true; }
+    else if (protocol === 'vnc') { values.vnc = on; touched.vnc = true; }
+    else { values.moonlight = on; touched.moonlight = true; }
+    return this.saveRemotePinchZoomPreferenceUpdate({ values: values, touched: touched });
+  }
+
+  private saveAssistantReverseWheel(protocol: string, on: boolean): boolean {
+    const values: RemoteWheelPreferences = this.remoteWheelPreferences();
+    const touched: RemoteWheelPreferencePresence = { rdp: false, rustdesk: false, ssh: false, vnc: false, moonlight: false };
+    if (protocol === 'rdp') { values.rdp = on; touched.rdp = true; }
+    else if (protocol === 'rustdesk') { values.rustdesk = on; touched.rustdesk = true; }
+    else if (protocol === 'ssh') { values.ssh = on; touched.ssh = true; }
+    else if (protocol === 'vnc') { values.vnc = on; touched.vnc = true; }
+    else { values.moonlight = on; touched.moonlight = true; }
+    return this.saveRemoteWheelPreferenceUpdate({ values: values, touched: touched });
+  }
+
+  private syncDiagnosticAiOrbPreference(): void {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const owner: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+    const store = new DiagnosticAiProfileStore();
+    store.init(getContext(this) as common.UIAbilityContext, owner);
+    const settings = store.settingsSnapshot();
+    AppStorage.setOrCreate('diagnosticAiOrbEnabled', settings.showOrbOnHostPage);
+    AppStorage.setOrCreate('diagnosticAiReducedMotion', settings.reducedMotion);
+    DiagnosticAiMotionStore.init(getContext(this));
+  }
+
+  /**
+   * 「现在订购」 in the startup Pro 功能介绍 ends the guide and leaves this flag; the Pro page opens once the home page
+   * is showing. Consumed once.
+   */
+  private openPendingProOrder(): void {
+    if (AppStorage.get<boolean>(PRO_ORDER_PENDING_KEY) !== true) { return; }
+    AppStorage.setOrCreate(PRO_ORDER_PENDING_KEY, false);
+    setTimeout((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, 600);
+  }
+
   async aboutToAppear(): Promise<void> {
+    const proVisibility = ProFeatureVisibility.getInstance();
+    proVisibility.load(getContext(this) as common.UIAbilityContext);
+    WorkspacePhonePreference.load(getContext(this) as common.UIAbilityContext);
+    this.workspacePhoneEnabled = AppStorage.get<boolean>(WORKSPACE_PHONE_ENABLED_KEY) ?? false;
+    this.syncDiagnosticAiOrbPreference();
+    DiagnosticAiSettingsBridge.register(this.assistantSettingApplier, this.assistantSettingReader);
+    DiagnosticAiHostBridge.register(this.assistantHostLister, this.assistantHostConnector, this.assistantHostEditor,
+      this.assistantHostRemover);
+    AiAppDataBridge.register(this.chatHostLister);
+    this.refreshAppIconEntry();
+    this.ensureHostOrganizationSubscription();
+    this.proVisibilityUnsubscribe?.();
+    const stopEntries = ProEntries.subscribe((): void => {
+      this.refreshAppIconEntry(); this.proManagerVisible = ProEntries.proActive(); this.proFeatureRevision++;
+      this.refreshProDebugState();
+    });
+    const stopIcons = ProAppIcons.getInstance().subscribe((): void => { this.refreshAppIconEntry(); });
+    this.proVisibilityUnsubscribe = (): void => { stopEntries(); stopIcons(); };
+    if (this.appIconSupported) { void ProAppIcons.getInstance().refresh(); }
+    this.aiStopStore = AiLocalStore.getInstance().subscribe((): void => { void this.refreshAiHosts(); });
+    this.aiStopAccess = AiAccess.getInstance().subscribe((): void => {
+      this.aiProVisible = AiAccess.getInstance().proVisible();
+      if (!this.aiProVisible) {
+        AiHostService.getInstance().clear();
+        this.activeFilterProto = '';
+        this.pendingAiConnectId = '';
+        this.pendingAiAccount = null;
+        this.aiEditingHost = null;
+        this.aiSheetAccount = null;
+        this.aiSheetGeneration++; this.aiConnectHandoff++;
+        if (this.expandedHostGroup === 'ai') { this.expandedHostGroup = ''; }
+        if (this.showAddSheet && this.activeHostAddProtocol() === 'ai') { this.requestAddSheetClose(); }
+        if (this.curTab === 8) {
+          this.curTab = 0;
+          this.hostPageTitle = 'RDP 远程主机';
+          this.updateHostFilter();
+        }
+      }
+      void this.refreshAiHosts();
+    });
     this.pageActive = true;
+    this.proContinuationStop?.();
+    this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
+      const service = ProContinuationService.getInstance();
+      const snapshot = service.snapshot();
+      const id = service.incomingId();
+      if (snapshot.incomingCanAccept && id !== '' && id !== this.proContinuationAutoAcceptedId) {
+        this.proContinuationAutoAcceptedId = id;
+        setTimeout((): void => { void this.autoAcceptProContinuation(id, 0); }, 0);
+      }
+    });
+    this.proConnectionShareStop?.();
+    this.proConnectionShareStop = ProConnectionShareReceiver.getInstance().subscribe((): void => {
+      this.proIncomingConnectionShareVisible = ProConnectionShareReceiver.getInstance().snapshot().visible;
+    });
+    this.proUnsubscribe?.();
+    this.proUnsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
+      const pro = ProAppRuntime.getInstance().runtime.snapshot();
+      // 应用分身 cannot sign in, so it cannot buy or restore Pro: name that instead of 免费版.
+      this.proStatusLabel = proCloneLabel(AppCloneContext.getInstance().isClone(), pro.effectiveState, pro.label);
+    });
     const appClone: AppCloneContext = AppCloneContext.getInstance();
     appClone.init(getContext(this) as common.Context);
     this.appCloneLocalOnly = appClone.isLocalOnly();
     this.appCloneIsClone = appClone.isClone();
     this.appCloneStatusText = appClone.snapshot().statusText;
+    this.appCloneClipboardOptIn = appClone.cloneClipboardOptIn();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     // Keep VNC storage isolated while preparing its display projection before
@@ -1904,19 +2732,28 @@ struct HostListPage {
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
     this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
-      getContext(this) as common.Context);
+      getContext(this) as common.Context, sshWorkbenchHostIsPc(this.isDesktopDevice));
     this.refreshSshNotificationAuthorization();
     this.sshProxyProfilesReady = this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const savedRemotePortraitDisplay = RemotePortraitDisplayStore.getInstance().load(
+        getContext(this) as common.Context);
       const defaults: PersonalizationDefaults = personalizationDefaults(
         prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
           AppStorage.get<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY) ?? false) as boolean,
         this.isDesktopDevice);
       const savedRemoteWheelPreferences: RemoteWheelPreferences =
         this.restoreRemoteWheelPreferences(prefs);
+      const savedWheelSpeed = (key: string, protocol: string): number =>
+        normalizeRemoteWheelSpeed(prefs.getSync(key, 100) as number, protocol);
+      const savedRemoteWheelSpeeds: RemoteWheelSpeeds = {
+        rdp: savedWheelSpeed(RDP_WHEEL_SPEED_KEY, 'rdp'), rustdesk: savedWheelSpeed(RUSTDESK_WHEEL_SPEED_KEY, 'rustdesk'),
+        ssh: savedWheelSpeed(SSH_WHEEL_SPEED_KEY, 'ssh'), vnc: savedWheelSpeed(VNC_WHEEL_SPEED_KEY, 'vnc'),
+        moonlight: savedWheelSpeed(MOONLIGHT_WHEEL_SPEED_KEY, 'moonlight')
+      };
       // 核心外观设置
       const savedTheme: string = prefs.getSync('currentTheme', '') as string;
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
@@ -1926,6 +2763,8 @@ struct HostListPage {
         prefs.getSync('liveViewEnabled', defaults.liveViewEnabled) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', defaults.liveViewMode) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
+      const savedSettingsVisualStyle: string =
+        prefs.getSync(SETTINGS_VISUAL_STYLE_KEY, SETTINGS_VISUAL_STYLE_MODERN) as string;
       const savedVirtualMouseStyle: string =
         prefs.getSync('virtualMouseStyle', defaults.virtualMouseStyle) as string;
       const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', defaults.totpLogoMode) as string;
@@ -1984,6 +2823,8 @@ struct HostListPage {
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
       this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
+      this.settingsVisualStyle = normalizeSettingsVisualStyle(savedSettingsVisualStyle);
+      AppStorage.setOrCreate(SETTINGS_VISUAL_STYLE_KEY, this.settingsVisualStyle);
       this.virtualMouseStyle = normalizeRemoteCursorStyle(savedVirtualMouseStyle);
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
       this.totpLogoMode = savedTotpLogoMode === 'initials' ? 'initials' : 'logo';
@@ -2058,7 +2899,13 @@ struct HostListPage {
         prefs.getSync('rustdeskControlMode', defaults.rustdeskControlMode) as number;
       const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 0) as number;
       const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
+      const savedRdpCustomWidth: number = prefs.getSync('rdpCustomWidth', 1920) as number;
+      const savedRdpCustomHeight: number = prefs.getSync('rdpCustomHeight', 1080) as number;
       const savedRdpRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
+      const savedRdpDesktopScaleMode: string = prefs.getSync('rdpDesktopScaleMode', 'auto') as string;
+      const savedRdpDesktopScalePercent: number = prefs.getSync('rdpDesktopScalePercent', 100) as number;
+      const savedRdpDeviceScaleMode: string = prefs.getSync('rdpDeviceScaleMode', 'auto') as string;
+      const savedRdpDeviceScalePercent: number = prefs.getSync('rdpDeviceScalePercent', 100) as number;
       const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
       const remoteDisplayScalePreferenceVersion: number =
         prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
@@ -2081,6 +2928,8 @@ struct HostListPage {
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
       const savedRdpShowDiagnostics: boolean = prefs.getSync('rdpShowDiagnostics', false) as boolean;
       const savedRdpTlsWithoutNla: boolean = prefs.getSync('rdpTlsWithoutNla', false) as boolean;
+      const savedRdpSkipCertificatePreflight: boolean =
+        prefs.getSync('rdpSkipCertificatePreflight', false) as boolean;
       const rdpDriveDefaultVersion: number = prefs.getSync('rdpDriveDefaultVersion', 0) as number;
       const hasSavedRdpDriveEnabled: boolean = prefs.hasSync('rdpDriveEnabled');
       let savedRdpDriveEnabled: boolean = prefs.getSync('rdpDriveEnabled', true) as boolean;
@@ -2150,11 +2999,26 @@ struct HostListPage {
       this.sshReverseWheel = savedRemoteWheelPreferences.ssh;
       this.vncReverseWheel = savedRemoteWheelPreferences.vnc;
       this.moonlightReverseWheel = savedRemoteWheelPreferences.moonlight;
+      this.rdpWheelSpeed = savedRemoteWheelSpeeds.rdp;
+      this.rustdeskWheelSpeed = savedRemoteWheelSpeeds.rustdesk;
+      this.sshWheelSpeed = savedRemoteWheelSpeeds.ssh;
+      this.vncWheelSpeed = savedRemoteWheelSpeeds.vnc;
+      this.moonlightWheelSpeed = savedRemoteWheelSpeeds.moonlight;
       this.rdpPinchZoomEnabled = savedRemotePinchZoomPreferences.rdp;
       this.rustdeskPinchZoomEnabled = savedRemotePinchZoomPreferences.rustdesk;
       this.sshPinchZoomEnabled = savedRemotePinchZoomPreferences.ssh;
       this.vncPinchZoomEnabled = savedRemotePinchZoomPreferences.vnc;
       this.moonlightPinchZoomEnabled = savedRemotePinchZoomPreferences.moonlight;
+      this.rdpPortraitDisplayEnabled = savedRemotePortraitDisplay.values.rdp.enabled;
+      this.rdpPortraitDisplayMode = savedRemotePortraitDisplay.values.rdp.mode;
+      this.rustdeskPortraitDisplayEnabled = savedRemotePortraitDisplay.values.rustdesk.enabled;
+      this.rustdeskPortraitDisplayMode = savedRemotePortraitDisplay.values.rustdesk.mode;
+      this.vncPortraitDisplayEnabled = savedRemotePortraitDisplay.values.vnc.enabled;
+      this.vncPortraitDisplayMode = savedRemotePortraitDisplay.values.vnc.mode;
+      this.moonlightPortraitDisplayEnabled = savedRemotePortraitDisplay.values.moonlight.enabled;
+      this.moonlightPortraitDisplayMode = savedRemotePortraitDisplay.values.moonlight.mode;
+      this.remotePortraitDisplayRevision = savedRemotePortraitDisplay.revision;
+      this.remotePortraitSidebarHeightMode = savedRemotePortraitDisplay.sidebarHeightMode;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
@@ -2162,13 +3026,33 @@ struct HostListPage {
       this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 0;
       this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
       this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+      const customGeometry = validateRemoteDisplayGeometry(savedRdpCustomWidth, savedRdpCustomHeight);
+      this.rdpCustomWidth = customGeometry.accepted ? customGeometry.width : 1920;
+      this.rdpCustomHeight = customGeometry.accepted ? customGeometry.height : 1080;
+      this.rdpCustomWidthDraft = this.rdpCustomWidth.toString();
+      this.rdpCustomHeightDraft = this.rdpCustomHeight.toString();
       this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRdpRemoteUiScale);
+      this.rdpDesktopScaleMode = savedRdpDesktopScaleMode === 'custom' || savedRdpDesktopScaleMode === 'preset' ?
+        savedRdpDesktopScaleMode : (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'preset');
+      this.rdpDesktopScalePercent = normalizeRdpDesktopScalePercent(
+        savedRdpDesktopScalePercent, this.rdpRemoteUiScale === 'auto' ? 100 : Number(this.rdpRemoteUiScale));
+      this.rdpDesktopScaleDraft = this.rdpDesktopScalePercent.toString();
+      this.rdpDeviceScaleMode = savedRdpDeviceScaleMode === 'fixed' ? 'fixed' :
+        (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'fixed');
+      this.rdpDeviceScalePercent = normalizeRdpDeviceScalePercent(
+        savedRdpDeviceScalePercent, this.rdpRemoteUiScale === 'auto' ? 100 : Number(this.rdpRemoteUiScale));
       this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(savedRemoteDisplayScaleMode,
         remoteDisplayScalePreferenceVersion, prefs.hasSync('remoteDisplayScaleMode'));
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      prefs.putSync('rdpCustomWidth', this.rdpCustomWidth);
+      prefs.putSync('rdpCustomHeight', this.rdpCustomHeight);
       prefs.putSync('rdpRemoteUiScale', this.rdpRemoteUiScale);
+      prefs.putSync('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+      prefs.putSync('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+      prefs.putSync('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+      prefs.putSync('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
         REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
@@ -2185,6 +3069,7 @@ struct HostListPage {
       this.rdpControlMode = this.clampRdpControlMode(savedRdpControlMode);
       this.rdpAuthIdentityMode = this.clampRdpAuthIdentityMode(savedRdpAuthIdentityMode);
       this.rdpTlsWithoutNla = savedRdpTlsWithoutNla;
+      this.rdpSkipCertificatePreflight = savedRdpSkipCertificatePreflight;
       AppStorage.setOrCreate('totpLocked', savedLock);
       AppStorage.setOrCreate('rustdeskImageQuality', this.rustdeskImageQuality);
       AppStorage.setOrCreate('rustdeskCodec', this.rustdeskCodec);
@@ -2206,6 +3091,11 @@ struct HostListPage {
       AppStorage.setOrCreate(SSH_REVERSE_WHEEL_KEY, this.sshReverseWheel);
       AppStorage.setOrCreate(VNC_REVERSE_WHEEL_KEY, this.vncReverseWheel);
       AppStorage.setOrCreate(MOONLIGHT_REVERSE_WHEEL_KEY, this.moonlightReverseWheel);
+      AppStorage.setOrCreate(RDP_WHEEL_SPEED_KEY, this.rdpWheelSpeed);
+      AppStorage.setOrCreate(RUSTDESK_WHEEL_SPEED_KEY, this.rustdeskWheelSpeed);
+      AppStorage.setOrCreate(SSH_WHEEL_SPEED_KEY, this.sshWheelSpeed);
+      AppStorage.setOrCreate(VNC_WHEEL_SPEED_KEY, this.vncWheelSpeed);
+      AppStorage.setOrCreate(MOONLIGHT_WHEEL_SPEED_KEY, this.moonlightWheelSpeed);
       AppStorage.setOrCreate(RDP_PINCH_ZOOM_ENABLED_KEY, this.rdpPinchZoomEnabled);
       AppStorage.setOrCreate(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, this.rustdeskPinchZoomEnabled);
       AppStorage.setOrCreate(SSH_PINCH_ZOOM_ENABLED_KEY, this.sshPinchZoomEnabled);
@@ -2216,7 +3106,13 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
       AppStorage.setOrCreate('rdpDesktopPreset', this.rdpDesktopPreset);
       AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      AppStorage.setOrCreate('rdpCustomWidth', this.rdpCustomWidth);
+      AppStorage.setOrCreate('rdpCustomHeight', this.rdpCustomHeight);
       AppStorage.setOrCreate('rdpRemoteUiScale', this.rdpRemoteUiScale);
+      AppStorage.setOrCreate('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+      AppStorage.setOrCreate('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+      AppStorage.setOrCreate('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+      AppStorage.setOrCreate('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
       AppStorage.setOrCreate('rdpColorDepth', this.rdpColorDepth);
@@ -2228,6 +3124,7 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpControlMode', this.rdpControlMode);
       AppStorage.setOrCreate('rdpAuthIdentityMode', this.rdpAuthIdentityMode);
       AppStorage.setOrCreate('rdpTlsWithoutNla', this.rdpTlsWithoutNla);
+      AppStorage.setOrCreate('rdpSkipCertificatePreflight', this.rdpSkipCertificatePreflight);
     } catch (_err) { /* ignore */ }
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
@@ -2246,6 +3143,13 @@ struct HostListPage {
 
   onPageShow(): void {
     this.pageActive = true;
+    this.pageShown = true;
+    this.openPendingProOrder();
+    this.openSharedToAi();
+    this.takeSessionAi();
+    // 全新视觉 reads some values from services (VNC, Moonlight); read them again whenever the page comes back.
+    this.settingsValuesRevision++;
+    this.refreshRdpSecurityDowngradeHosts();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     this.refreshMoonlightDirectory();
@@ -2271,6 +3175,41 @@ struct HostListPage {
     void this.refreshDynamicLanHosts(false);
     this.handleVncRelayRouteRequest();
     this.consumeRemoteSessionConnectionIntent();
+    this.resumeProWorkspaceRun();
+  }
+
+  onPageHide(): void {
+    this.pageShown = false;
+    // A workspace entry whose session page covered the list counts as opened once the list returns.
+    if (this.proWorkspaceRun !== null && connectingRunIndex(this.proWorkspaceRun as WorkspaceRun) >= 0) {
+      this.proWorkspacePageHidden = true;
+    }
+    // Once the pushed page is in place (going to the background leaves the list on top).
+    setTimeout((): void => { this.foldAiUnderSession(); }, 120);
+  }
+
+  /**
+   * A remote session (or Moonlight's app list on the way to one) covered the list in this window: the list's AI
+   * layers would stay above it, so voice mode closes and the AI goes away — the session has its own AI in its side
+   * bar. A capture or an answer still running keeps its orb, so the user can come back to it.
+   */
+  private foldAiUnderSession(): void {
+    let top: string = '';
+    try { top = this.getUIContext().getRouter().getState().name; } catch (_error) { return; }
+    if (!aiIsSessionPage(top) && top !== 'MoonlightAppCatalogPage') { return; }
+    if (this.aiVoiceShown) { this.aiVoiceShown = false; }
+    if (!this.aiIslandShown) { return; }
+    if (this.diagnosticAiOrbState === 'thinking' || this.diagnosticAiOrbState === 'capturing') {
+      // Still working: an open panel floats as the orb instead of covering the session.
+      if (!this.aiIslandFloating) { AppStorage.setOrCreate(AI_FLOAT_REQUEST, Date.now()); }
+    } else {
+      hilog.info(0x0000, 'AiChat', 'host list AI folds under %{public}s', top);
+      this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
+      this.aiIslandStartAction = '';
+      this.aiIslandStartFloat = false;
+      this.aiIslandStartChat = false;
+      this.diagnosticAiOrbState = 'idle';
+    }
   }
 
   private consumeRemoteSessionConnectionIntent(): void {
@@ -2575,6 +3514,13 @@ struct HostListPage {
       this.sshPreflightHostId === host.id;
   }
 
+  /** A host add flow could not save: the reason shows in the open form and as a toast. */
+  private addFlowSaveFailed(message: string, duration: number): void {
+    this.addFlowSaveError = message;
+    this.addFlowSaveErrorRevision++;
+    promptAction.showToast({ message: message, duration: duration });
+  }
+
   private saveHostFromAddFlow(host: RemoteHost, connectNow: boolean, restrictedAdminHash: string = ''): void {
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
       hilog.info(0x0001, 'HostList', 'ignored repeated add-host save while Sheet is closing');
@@ -2584,7 +3530,7 @@ struct HostListPage {
       host.rdpAuthMode === 'restricted_admin' &&
       host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
     if (!this.srv.prepareHostNetworkEndpoints(host)) {
-      promptAction.showToast({ message: '主机地址无效，未保存凭据', duration: 2200 });
+      this.addFlowSaveFailed('主机地址无效，未保存凭据', 2200);
       return;
     }
     const rustDeskTotpEntryId: string = host.protocol === 'rustdesk' ?
@@ -2593,52 +3539,97 @@ struct HostListPage {
       host.rustdeskTotpAutoSubmit && rustDeskTotpEntryId !== '';
     if (requiresLocalRestrictedAdminHash &&
       !CloudStore.getInstance().saveRdpRestrictedAdminHash(host, restrictedAdminHash)) {
-      promptAction.showToast({ message: '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', duration: 2600 });
+      this.addFlowSaveFailed('无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', 2600);
       return;
     }
     if (!this.srv.addHost(host)) {
       if (requiresLocalRestrictedAdminHash) {
         CloudStore.getInstance().clearRdpRestrictedAdminHash(host.id);
       }
-      promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      this.addFlowSaveFailed('保存主机失败，请稍后重试', 1800);
       return;
+    }
+    if (host.protocol === 'rustdesk') {
+      // A direct record must read back with the exact endpoint just entered;
+      // otherwise the first connection would silently use a different
+      // address or port (or a stale relay binding).
+      const readbackError: string =
+        rustDeskDirectEndpointReadbackError(host, this.srv.readBackHost(host.id));
+      if (readbackError !== '') {
+        const rolledBack: boolean = this.srv.removeHost(host.id);
+        this.addFlowSaveFailed(rolledBack ? readbackError : readbackError + '；回滚未完成，请返回列表检查', 3000);
+        return;
+      }
     }
     if (host.protocol === 'rustdesk' && rustDeskTotpEntryId !== '' &&
       !this.srv.setRustDeskPeerTwoFactorBinding(
         host.id, rustDeskTotpEntryId, rustDeskTotpAutoSubmit)) {
       const rolledBack: boolean = this.srv.removeHost(host.id);
-      promptAction.showToast({
-        message: rolledBack ?
-          'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
-          'RustDesk 2FA 绑定保存失败，且主机回滚未完成；请返回列表检查',
-        duration: 3000
-      });
+      this.addFlowSaveFailed(rolledBack ?
+        'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
+        'RustDesk 2FA 绑定保存失败，且主机回滚未完成；请返回列表检查', 3000);
       return;
     }
     this.refreshHostSnapshotAfterMutation();
+    this.announceSavedHost(host.id, '已添加「' + host.label + '」' + (connectNow ? '，正在连接' : ''));
     this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
     this.requestAddSheetClose();
   }
 
   private saveSshHostFromAddFlow(host: RemoteHost, connectNow: boolean,
     proxyProfile: SshProxyProfileV1): void {
+    const sharedId = this.proConnectionShareDraftId;
+    const shared = ProConnectionShareReceiver.getInstance();
+    if (sharedId !== '' && !shared.draftCurrent(sharedId)) {
+      this.addFlowSaveFailed('分享已过期或账号已变化，请重新接收连接信息', 2400); return;
+    }
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
       hilog.info(0x0001, 'HostList', 'ignored repeated SSH add-host save while Sheet is closing');
       return;
     }
     if (host.protocol !== 'ssh' || proxyProfile.hostId !== host.id ||
       !this.sshProxyProfiles.upsert(proxyProfile)) {
-      promptAction.showToast({ message: 'SSH 连接方式保存失败，未写入主机', duration: 2200 });
+      this.addFlowSaveFailed('SSH 连接方式保存失败，未写入主机', 2200);
       return;
     }
     if (!this.srv.addHost(host)) {
       this.sshProxyProfiles.remove(host.id);
-      promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      this.addFlowSaveFailed('保存主机失败，请稍后重试', 1800);
       return;
     }
     this.refreshHostSnapshotAfterMutation();
+    this.announceSavedHost(host.id, '已添加「' + host.label + '」' + (connectNow ? '，正在连接' : ''));
     this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
+    if (sharedId !== '') {
+      const bound = connectNow && shared.bindSaved(sharedId, host, getContext(this) as common.Context);
+      this.pendingAddSheetShareId = bound ? sharedId : '';
+      if (!bound) { shared.cancel(sharedId); }
+      this.proConnectionShareDraftId = ''; this.proConnectionShareBasicFields = null;
+    }
     this.requestAddSheetClose();
+  }
+
+  private clearProConnectionShareDraft(): void {
+    if (this.proConnectionShareDraftId !== '') {
+      ProConnectionShareReceiver.getInstance().cancel(this.proConnectionShareDraftId);
+    }
+    this.proConnectionShareDraftId = ''; this.proConnectionShareBasicFields = null;
+  }
+
+  private openProConnectionShareImport(id: string): void {
+    if (!this.pageActive || this.appInBackground || this.showAddSheet || this.addSheetClosing ||
+        this.showRemoteHostSheet || this.remoteHostSheetClosing || this.hostSelectionMode) { return; }
+    this.resetForm();
+    const service = ProConnectionShareReceiver.getInstance();
+    const fields = service.accept(id);
+    if (fields === null) { return; }
+    this.proConnectionShareDraftId = id; this.proConnectionShareBasicFields = fields;
+    this.modernAddProtocol = 'ssh'; this.addSheetShowsModernPicker = false;
+    this.openSheetSafely((): void => {
+      if (this.pageActive && !this.appInBackground && this.proConnectionShareDraftId === id && service.draftCurrent(id)) {
+        this.showAddSheet = true;
+      } else { this.clearProConnectionShareDraft(); }
+    });
   }
 
   private prepareVncAddFlow(): void {
@@ -2660,13 +3651,13 @@ struct HostListPage {
       return;
     }
     if (!this.vncHosts.isReady()) {
-      promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
+      this.addFlowSaveFailed('VNC 主机列表还在同步，请稍后重试', 2200);
       return;
     }
     const result = this.vncHosts.save(values, '', password, plainStorageConfirmed,
       passwordMutation);
     if (!result.ok) {
-      promptAction.showToast({ message: result.message || '保存 VNC 主机失败', duration: 2200 });
+      this.addFlowSaveFailed(result.message || '保存 VNC 主机失败', 2200);
       return;
     }
     this.refreshHostSnapshotAfterMutation();
@@ -2676,10 +3667,7 @@ struct HostListPage {
     if (connectNow && !values.rememberPassword && password.length > 0) {
       VncSessionCredentialHandoff.getInstance().put(currentUserId, result.id, password);
     }
-    promptAction.showToast({
-      message: connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存',
-      duration: 1800
-    });
+    this.announceSavedHost(result.id, connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存');
     this.requestAddSheetClose();
   }
 
@@ -2720,16 +3708,15 @@ struct HostListPage {
 
   private visibleMoonlightHosts(): MoonlightHostLocalView[] {
     const query: string = this.searchText.trim().toLowerCase();
-    if (query === '') { return this.moonlightHosts.slice(); }
-    return this.moonlightHosts.filter((view: MoonlightHostLocalView): boolean => {
+    // The Pro group/tag/smart filter applies to Moonlight on both the classic and categorized pages.
+    const organized: MoonlightHostLocalView[] = this.moonlightHosts.filter((view: MoonlightHostLocalView): boolean =>
+      view.host === null || !this.proOrgVisible || this.orgMoonlightVisible(view.host as MoonlightHost));
+    if (query === '') { return organized; }
+    return organized.filter((view: MoonlightHostLocalView): boolean => {
       const host: MoonlightHost | null = view.host;
       if (host === null) { return false; }
-      if (host.displayName.toLowerCase().indexOf(query) >= 0 ||
-          host.serverUuid.toLowerCase().indexOf(query) >= 0) { return true; }
-      for (let index: number = 0; index < host.addresses.length; index++) {
-        if (host.addresses[index].host.toLowerCase().indexOf(query) >= 0) { return true; }
-      }
-      return false;
+      return moonlightHostMatchesSearch(host.displayName, host.serverUuid,
+        host.addresses.map((address: MoonlightAddress): string => address.host), host.locked === true, query);
     });
   }
 
@@ -2747,10 +3734,12 @@ struct HostListPage {
     // Moonlight tab receives Moonlight rows. A workspace chip excludes
     // Moonlight because Moonlight currently has no workspace-group field.
     if ((desktopProtocolTab && this.curTab === DESKTOP_MOONLIGHT_TAB) ||
-        (!desktopProtocolTab && this.workspaceGroupId === '')) {
+        (!desktopProtocolTab && (this.proOrgVisible || this.workspaceGroupId === ''))) {
       const views: MoonlightHostLocalView[] = this.visibleMoonlightHosts();
       for (let index: number = 0; index < views.length; index++) {
-        if (views[index].host !== null) { moonlightIds.push((views[index].host as MoonlightHost).id); }
+        if (views[index].host !== null && this.orgMoonlightVisible(views[index].host as MoonlightHost)) {
+          moonlightIds.push((views[index].host as MoonlightHost).id);
+        }
       }
     }
     return buildUnifiedHostCardRefs(remoteIds, moonlightIds, this.hostManualOrder);
@@ -3799,7 +4788,7 @@ struct HostListPage {
   }
 
   private openExistingMoonlightHost(hostId: string, ownerToken: number): void {
-    if (!shouldAcceptHostAddPostSaveHandoff(
+    if (!this.showAddSheet || !shouldAcceptHostAddPostSaveHandoff(
       this.pageActive,
       this.addSheetClosing,
       this.pendingMoonlightCatalogHandoff,
@@ -3837,7 +4826,7 @@ struct HostListPage {
       }
       return;
     }
-    if (!shouldAcceptHostAddPostSaveHandoff(
+    if (!this.showAddSheet || !shouldAcceptHostAddPostSaveHandoff(
       this.pageActive,
       this.addSheetClosing,
       this.pendingMoonlightCatalogHandoff,
@@ -3860,6 +4849,22 @@ struct HostListPage {
   }
 
   private handleAddSheetDisappear(): void {
+    if (this.pendingWorkspaceOpen !== null) {
+      const created: Workspace = this.pendingWorkspaceOpen as Workspace;
+      this.pendingWorkspaceOpen = null;
+      setTimeout((): void => { this.openProWorkspace(created); }, 0);
+    }
+    const pendingAiId = this.pendingAiConnectId, pendingAiAccount = this.pendingAiAccount;
+    this.pendingAiConnectId = ''; this.pendingAiAccount = null; this.aiEditingHost = null;
+    ++this.aiSheetGeneration;
+    const aiHandoff = ++this.aiConnectHandoff;
+    if (pendingAiId !== '' && pendingAiAccount !== null) {
+      setTimeout((): void => {
+        if (aiHandoff === this.aiConnectHandoff && !this.showAddSheet && AiAccess.getInstance().current(pendingAiAccount)) {
+          void this.openAiHost(pendingAiId);
+        }
+      }, 100);
+    }
     const moonlightDraftWasOpen: boolean = this.modernAddProtocol === 'moonlight';
     const moonlightDraftWasCommitted: boolean = this.moonlightAddCommitted;
     if (moonlightDraftWasOpen && !moonlightDraftWasCommitted) {
@@ -3870,6 +4875,9 @@ struct HostListPage {
       this.clearMoonlightVerificationState();
     }
     this.moonlightAddCommitted = false;
+    this.addFlowSaveError = '';
+    this.hostAddFlowDirty = false;
+    this.hostAddSheetDismissCount++;
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
@@ -3881,6 +4889,8 @@ struct HostListPage {
     this.pendingVncConnectUserId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const pendingShareId: string = this.pendingAddSheetShareId;
+    this.pendingAddSheetShareId = '';
     const pendingMoonlightDestination: HostAddPostSaveHandoff =
       this.pendingMoonlightCatalogHandoff;
     this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
@@ -3892,6 +4902,8 @@ struct HostListPage {
     const preserveForm: boolean = this.preserveFormOnAddSheetDisappear;
     this.rustDeskTotpBindingPendingOpen = false;
     this.preserveFormOnAddSheetDisappear = false;
+    // A form kept for the 2FA binding comes back with what was typed: it keeps the baseline it opened with.
+    if (!preserveForm) { this.classicEditorBaseline = ''; }
 
     if (openRustDeskTotpBinding) {
       const generation: number = this.rustDeskTotpBindingGeneration;
@@ -3980,6 +4992,7 @@ struct HostListPage {
 
     if (!shouldStartHostAddConnectionAfterDisappear(
       this.pageActive, this.addSheetClosing, pendingHostId)) {
+      if (pendingShareId !== '') { ProConnectionShareReceiver.getInstance().cancel(pendingShareId); }
       if (pendingHostId !== '') {
         this.releaseConnectionAttempt(pendingHostId);
       }
@@ -3987,6 +5000,7 @@ struct HostListPage {
     }
     const host: RemoteHost | undefined = this.srv.getHost(pendingHostId);
     if (!host) {
+      if (pendingShareId !== '') { ProConnectionShareReceiver.getInstance().cancel(pendingShareId); }
       hilog.warn(0x0001, 'HostList', 'saved host disappeared before connect id=' + pendingHostId);
       this.releaseConnectionAttempt(pendingHostId);
       return;
@@ -3994,7 +5008,8 @@ struct HostListPage {
     // 只保存稳定 ID，交接时重新读取，确保直连地址、端口、密码和密码类型
     // 都来自刚刚持久化的主机记录，而不是 Sheet 回调中的旧对象副本。
     hilog.info(0x0001, 'HostList', 'add-host Sheet disappeared; starting saved connection host=' + pendingHostId);
-    this.handleHostCardClick(host);
+    if (pendingShareId !== '') { void this.connectToHost(host, '', pendingShareId); }
+    else { this.handleHostCardClick(host); }
   }
 
   private resumeRustDeskHostAddFromRelayDirectory(
@@ -4042,11 +5057,115 @@ struct HostListPage {
     });
   }
 
+  /** The 「+」 button (and 全新视觉's 添加主机 in an empty list): the add flow for the current page. */
+  private onFabAddClick(): void {
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
+      if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB || this.curTab === 8) {
+        this.resetForm();
+        const nextProto: string = this.curTab === 8 ? 'ai' : this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
+        this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
+        const modernPicker: boolean =
+          this.curTab === DESKTOP_MOONLIGHT_TAB ||
+          resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+        this.addSheetShowsModernPicker = modernPicker;
+        if (modernPicker) { this.probeMoonlightCapabilityForPicker(); }
+        this.modernAddProtocol = '';
+        if (shouldPrepareClassicVncEditor(nextProto, modernPicker)) {
+          this.prepareClassicVncEditor(null);
+        }
+        this.openSheetSafely((): void => { this.showAddSheet = true; });
+      } else if (this.curTab === 4) {
+        this.kvAddTrigger++;
+      } else if (this.curTab === 5) {
+        this.keyVaultInnerTab = 1;
+        this.kvAddTrigger++;
+      } else if (this.curTab === 6) {
+        this.relayAddTrigger++;
+      } else if (this.curTab === DESKTOP_WORKSPACE_TAB) {
+        this.openWorkspaceAddSheet();
+      }
+    } else {
+      // 手机/平板/PC小窗: 主机/密钥/中继/设置
+      if (this.curTab === 0) {
+        this.resetForm();
+        this.addSheetShowsModernPicker =
+          resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+        if (this.addSheetShowsModernPicker) { this.probeMoonlightCapabilityForPicker(); }
+        this.modernAddProtocol = '';
+        this.openSheetSafely((): void => { this.showAddSheet = true; });
+      }
+      if (this.curTab === 1) { this.kvAddTrigger++; }
+      if (this.curTab === 2) { this.relayAddTrigger++; }
+    }
+  }
+
+  private classicEditorSnapshot(): string {
+    return JSON.stringify([this.label, this.hostAddr, this.rdpPortVal, this.sshPortVal, this.portVal, this.username,
+      this.chn, this.rdpClientHostname, this.sheetPasswordChanged, this.sheetUseKey, this.sheetKeyId, this.sheetKeyText,
+      this.sheetKeyPath, this.sheetKeyDataChanged, this.selectedRelayId, this.selectedAccountId,
+      this.selectedRdpCredentialId, this.sheetRdpAuthMode, this.sheetRdpRestrictedAdminHash,
+      this.sheetRustdeskDirectEnabled, this.sheetRustdeskDirectHost, this.sheetRustdeskDirectPort, this.sheetPwdMode,
+      this.sheetRustdeskTotpEntryId, this.vncHostTransport, this.vncHostGatewayId, this.vncHostViewOnly,
+      this.vncHostScalingMode, this.vncHostSecurityPolicy, this.vncHostTls, this.vncHostDisplayOverrideEnabled,
+      this.vncHostClipboardEnabled, sshProxyEditorInputKey(this.sheetSshProxyEditorValue), this.keyPassphraseInputMarker(),
+      this.sheetRustdeskAuthMode, this.sheetRustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
+      this.sheetRdpCredentialStorageMode, this.vncHostRepeaterMode]);
+  }
+
+  /** The key passphrase as unsaved-input state, never the secret itself: stored, typed, or empty. */
+  private keyPassphraseInputMarker(): string {
+    if (this.sheetKeyPassphraseFromStoredProjection) { return 'stored'; }
+    return this.sheetKeyPassphrase === '' ? '' : 'typed';
+  }
+
+  /** Whether closing the add sheet now would throw away input (a Moonlight host already saved is not lost). */
+  private hostAddHasUnsavedInput(): boolean {
+    if (!this.showAddSheet || this.addSheetClosing || this.addSheetShowsModernPicker) { return false; }
+    if (this.modernAddProtocol === 'moonlight' && this.moonlightAddCommitted) { return false; }
+    if (this.modernAddProtocol !== '' || this.activeHostAddProtocol() === 'ai') { return this.hostAddFlowDirty; }
+    return this.classicEditorBaseline !== '' && this.classicEditorSnapshot() !== this.classicEditorBaseline;
+  }
+
+  /** Asks before throwing away unsaved input; `proceed` runs when nothing is lost or the user agrees. */
+  private confirmDiscardHostAdd(proceed: () => void): void {
+    if (!this.hostAddHasUnsavedInput()) { proceed(); return; }
+    const dismissCount: number = this.hostAddSheetDismissCount;
+    promptAction.showDialog({
+      title: '放弃未保存的内容？',
+      message: '填写的内容还没有保存，放弃后不会保留。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      // The sheet closed some other way meanwhile (rotation, a window resize…): nothing left to close.
+      if (this.hostAddSheetDismissCount !== dismissCount || !this.showAddSheet) { return; }
+      this.hostAddFlowDirty = false;
+      this.classicEditorBaseline = this.classicEditorSnapshot();
+      proceed();
+    }).catch((): void => {});
+  }
+
+  /** ✕ in an add flow or the classic editor: the same question as a swipe-down. */
+  private requestAddSheetCloseByUser(): void {
+    this.confirmDiscardHostAdd((): void => { this.requestAddSheetClose(); });
+  }
+
+  /** Back from a flow's first step to the protocol picker drops what the flow holds. */
+  private backToHostAddPicker(after: () => void): void {
+    this.confirmDiscardHostAdd((): void => {
+      this.hostAddFlowDirty = false;
+      after();
+    });
+  }
+
   private requestAddSheetClose(): void {
     if (this.pendingSheetOpenTimer !== -1) {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
     }
+    // No sheet up: nothing to close, and no dismissal will come to clear the closing flag.
+    if (!this.showAddSheet) { return; }
     this.activateSheetReleaseFence();
     this.addSheetClosing = true;
     this.showAddSheet = false;
@@ -4087,6 +5206,7 @@ struct HostListPage {
     }
     this.closeLegacySettingsSheetFlags();
     this.virtualKeyboardCustomEditorVisible = false;
+    this.virtualKeyboardCustomEditorDirty = false;
     this.settingsLeafSheetMode = mode;
     this.showSettingsLeafSheet = true;
   }
@@ -4150,6 +5270,7 @@ struct HostListPage {
       return;
     }
     const panelWasOpen: boolean = this.showSettingsPanel;
+    this.settingsLeafReturnsToPanel = panelWasOpen;
     if (panelWasOpen) {
       this.lastSheetDismissAtMs = Date.now();
       this.showSettingsPanel = false;
@@ -4165,6 +5286,7 @@ struct HostListPage {
   }
 
   private closeSettingsLeafSheet(): void {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO || this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { ProPurchaseLifecycle.dismiss(); }
     const sheetWasVisible: boolean = this.showSettingsLeafSheet;
     this.clearPendingSettingsLeafOpen();
     if (sheetWasVisible) {
@@ -4188,37 +5310,89 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
   }
 
+  /** Close the leaf because the user asked to (its close button); on PC it returns to the settings panel. */
+  private closeSettingsLeafSheetByUser(): void {
+    this.settingsLeafClosedByUser = true;
+    this.closeSettingsLeafSheet();
+  }
+
+  /** PC: reopen the settings panel the closed leaf came from, unless the page has moved on meanwhile. */
+  private returnToSettingsPanelAfterLeaf(): void {
+    if (!this.pageActive || !this.isDesktopDevice || this.breakpoint !== 'xl') { return; }
+    this.openSheetSafely((): void => {
+      if (this.pageActive && !this.settingsPanelReturnBlocked()) { this.showSettingsPanel = true; }
+    });
+  }
+
+  /** Something else opened meanwhile (another sheet, the AI island): leave it on top instead of the settings. */
+  private settingsPanelReturnBlocked(): boolean {
+    return this.showSettingsLeafSheet || this.showAddSheet || this.addSheetClosing || this.showWorkspaceEditor ||
+      this.showWorkspacePrep || this.showRemoteHostSheet || this.showHostImportSheet || this.aiIslandShown;
+  }
+
+  private rdpCredentialEditorSnapshot(): string {
+    return JSON.stringify([this.rdpCredLabel, this.rdpCredUsername, this.rdpCredPassword]);
+  }
+
+  /** The open leaf editor that holds changes not saved yet, or '' when nothing would be lost by closing. */
+  private settingsLeafUnsavedLabel(): string {
+    if (this.moonlightSettingsLeafDirty) { return 'Moonlight 设置'; }
+    if (this.vncSettingsLeafDirty) { return 'VNC 设置'; }
+    const mode: number = this.settingsLeafSheetMode;
+    if (mode === SETTINGS_SHEET_SSH_SKIN && this.sshSkinEditorDirty) { return '终端皮肤'; }
+    if (mode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE && this.rdpDisplayDraftDirty) { return '远端显示尺寸'; }
+    if (mode === SETTINGS_SHEET_RDP_CREDENTIAL_EDITOR &&
+      this.rdpCredentialEditorSnapshot() !== this.rdpCredEditorBaseline) { return 'Windows 凭据'; }
+    if (this.isVirtualKeyboardSettingsLeafSheet() && this.virtualKeyboardCustomEditorDirty) { return '组合键'; }
+    if (mode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 0 &&
+      (this.cryptoPwd !== '' || this.cryptoPwdConfirm !== '')) { return '加密密码'; }
+    return '';
+  }
+
   private settingsLeafHasUnsavedChanges(): boolean {
-    return this.vncSettingsLeafDirty || this.moonlightSettingsLeafDirty;
+    return this.settingsLeafUnsavedLabel() !== '';
   }
 
   private dismissSettingsLeafIfNeeded(continueAction: () => void): void {
-    if (!this.settingsLeafHasUnsavedChanges()) {
+    const label: string = this.settingsLeafUnsavedLabel();
+    if (label === '') {
       continueAction();
       return;
     }
-    const moonlightDirty: boolean = this.moonlightSettingsLeafDirty;
+    const crypto: boolean = label === '加密密码';
     promptAction.showDialog({
-      title: moonlightDirty ? '放弃未保存的 Moonlight 设置？' : '放弃未保存的 VNC 设置？',
-      message: moonlightDirty ? '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。' :
-        '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
-      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃修改', color: this.pal().danger }]
+      title: crypto ? '放弃输入的密码？' : '放弃未保存的' + label + '？',
+      message: label === 'Moonlight 设置' ? '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。' :
+        crypto ? '输入的主密码不会保存，加密设置保持不变。' : '这些修改还没有保存，放弃后不会写入本机或云端。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: crypto ? '放弃' : '放弃修改', color: this.pal().danger }]
     }).then((result: Object): void => {
       const dialogResult: Record<string, number> = result as Record<string, number>;
       if (dialogResult['index'] === 1) {
         this.vncSettingsLeafDirty = false;
         this.moonlightSettingsLeafDirty = false;
+        this.sshSkinEditorDirty = false;
+        this.rdpDisplayDraftDirty = false;
+        this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
+        this.virtualKeyboardCustomEditorVisible = false;
+        this.virtualKeyboardCustomEditorDirty = false;
+        this.cryptoPwd = '';
+        this.cryptoPwdConfirm = '';
         continueAction();
       }
     });
   }
 
   private handleSettingsLeafWillDismiss(action: DismissSheetAction): void {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO || this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { ProPurchaseLifecycle.dismiss(); }
     if (!this.settingsLeafHasUnsavedChanges()) {
+      this.settingsLeafClosedByUser = true;
       action.dismiss();
       return;
     }
-    this.dismissSettingsLeafIfNeeded((): void => { action.dismiss(); });
+    this.dismissSettingsLeafIfNeeded((): void => {
+      this.settingsLeafClosedByUser = true;
+      action.dismiss();
+    });
   }
 
   private resetSettingsLeafSheetAfterDismiss(): void {
@@ -4248,17 +5422,34 @@ struct HostListPage {
     // Sheet transition has completed so the outgoing builder remains visible.
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
+    if (dismissedMode === SETTINGS_SHEET_DIAGNOSTIC_AI) { this.diagnosticAiResumeSessionId = ''; }
     this.vncSettingsLeafDirty = false;
     this.moonlightSettingsLeafDirty = false;
+    this.sshSkinEditorDirty = false;
+    this.rdpDisplayDraftDirty = false;
+    this.virtualKeyboardCustomEditorVisible = false;
+    this.virtualKeyboardCustomEditorDirty = false;
     if (moonlightSettingsRouteSpec(dismissedMode) !== null) {
       this.moonlightSettingsLeafHostId = '';
     }
+    const closedByUser: boolean = this.settingsLeafClosedByUser;
+    this.settingsLeafClosedByUser = false;
+    this.settingsValuesRevision++;
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
+      // Another leaf replaces this one; it keeps the way back to the settings panel.
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
         sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs));
+    } else {
+      const returnToPanel: boolean = closedByUser && this.settingsLeafReturnsToPanel;
+      this.settingsLeafReturnsToPanel = false;
+      if (returnToPanel) { this.returnToSettingsPanelAfterLeaf(); }
     }
     if (dismissedMode === SETTINGS_SHEET_POPUP && dismissedPopupMode === 0) {
+      // A swipe or a tap outside closes the crypto sheet too; never keep a typed master password around.
+      this.cryptoPwd = '';
+      this.cryptoPwdConfirm = '';
+      this.cryptoResetCountdown = 0;
       this.refreshCryptoStatus();
     }
   }
@@ -4376,6 +5567,23 @@ struct HostListPage {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_DETAILS;
       this.popupSheetMode = 3;
     });
+  }
+
+  private setAppCloneClipboardOptIn(on: boolean): void {
+    const saved: boolean = AppCloneContext.getInstance().setCloneClipboardOptIn(
+      getContext(this) as common.Context, on);
+    const actual: boolean = AppCloneContext.getInstance().cloneClipboardOptIn();
+    // Mirror the switch first so a failed change still re-renders it back.
+    this.appCloneClipboardOptIn = on;
+    if (actual !== on) {
+      setTimeout((): void => { this.appCloneClipboardOptIn = actual; }, 0);
+    }
+    if (!saved) {
+      promptAction.showToast({
+        message: on ? '分身剪贴板未能开启，请重试' : '分身剪贴板已关闭，但设置未能保存',
+        duration: 2000
+      });
+    }
   }
 
   private returnToCloudSyncActions(): void {
@@ -4498,6 +5706,29 @@ struct HostListPage {
     }
   }
 
+  /** Explicit, destructive choice to let this device's reset state replace the cloud copy. */
+  private confirmReleaseCryptoResetUploadBlock(): void {
+    promptAction.showDialog({
+      title: '以本机为准覆盖云端？',
+      message: '之后的上传会用本机数据替换云端：重置时清空的密码、私钥、2FA、中继密钥和 VNC 机密会在云端和其他设备上一并清空，' +
+        '云端加密参数会改为本机当前的状态（未设置主密码时会被移除）。此操作不可撤销。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '覆盖云端', color: this.pal().danger }
+      ]
+    }).then((value: Object): void => {
+      const result: Record<string, number> = value as Record<string, number>;
+      if (result['index'] !== 1) { return; }
+      if (!CloudStore.getInstance().releaseCryptoResetUploadBlock()) {
+        this.cloudSyncError = '未能解除上传暂停，请重试';
+        return;
+      }
+      this.cloudSyncError = '';
+      // The existing confirmation still governs the actual upload.
+      this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOAD_CONFIRM;
+    });
+  }
+
   private confirmMoonlightRestoreActivation(): void {
     promptAction.showDialog({
       title: '允许恢复的 Moonlight 数据上传？',
@@ -4570,6 +5801,8 @@ struct HostListPage {
         promptAction.showToast({ message: backup.getLastErrorMessage(), duration: 2200 });
         return;
       }
+      // Adapting a large backup is not free; decide once per selected file.
+      this.pendingLocalRestoreCryptoNotice = this.localRestoreCryptoNotice(document);
       this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
         this.pendingLocalRestore = document;
         this.cloudSyncError = '';
@@ -4585,6 +5818,8 @@ struct HostListPage {
     if (!this.pendingLocalRestore) { this.cloudSyncError = '请重新选择备份文件'; return; }
     const backup: LocalBackupService =
       LocalBackupService.getInstance();
+    const backupConfigured: boolean = backupCryptoContractFromRows(
+      this.pendingLocalRestore.tables['cryptoparams'] || []).configured;
     const restored: boolean = await backup.restore(
       this.pendingLocalRestore,
       this.pendingLocalRestore.version < 3);
@@ -4593,11 +5828,23 @@ struct HostListPage {
       return;
     }
     this.pendingLocalRestore = null;
+    const secretsWithheld: boolean =
+      CloudStore.getInstance().lastPortableRestoreCryptoDecision() === 'secrets_withheld';
     promptAction.showToast({
-      message: '本地配置已合并，未自动上传到云端',
-      duration: 1800
+      message: secretsWithheld ?
+        '本地配置已合并，未自动上传到云端。' + backupCryptoWithheldMessage(backupConfigured) :
+        '本地配置已合并，未自动上传到云端',
+      duration: secretsWithheld ? 4000 : 1800
     });
     this.closeSettingsLeafSheet();
+  }
+
+  private localRestoreCryptoNotice(document: LocalBackupDocument): string {
+    const decision: BackupCryptoRestoreDecision =
+      CloudStore.getInstance().portableBackupCryptoRestoreDecision(document);
+    return backupCryptoRestoreNotice(decision,
+      backupCryptoContractFromRows(document.tables['cryptoparams'] || []).configured,
+      this.cryptoEnabled, document.version >= 3 && document.manifest?.crypto.mode === 'full');
   }
 
   private localRestorePreviewSummary(): string {
@@ -4609,11 +5856,13 @@ struct HostListPage {
     const legacy: string = preview.legacyOwnerUnbound
       ? '；旧版文件将在确认后绑定当前本地数据作用域' : '';
     const redacted: string = !preview.secretsIncluded
-      ? '；该备份为脱敏配置，不含密码、SSH 私钥、2FA 与设备信任（SSH 公钥/RDP 证书），恢复后需重新导入/确认' : '';
+      ? '；该备份为脱敏配置，不含密码、SSH 私钥与 2FA；设备信任（SSH 公钥/RDP 证书）不会导入，首次连接时需重新确认' :
+      '；完整备份中的 SSH/RDP 设备信任会作为待确认记录导入，首次连接时需重新确认';
+    const crypto: string = preview.secretsIncluded ? this.pendingLocalRestoreCryptoNotice : '';
     return '格式 v' + preview.formatVersion.toString() +
       ' · ' + preview.rowCount.toString() + ' 行 · ' +
       preview.presentTables.length.toString() + ' 个数据表' +
-      legacy + redacted;
+      legacy + redacted + crypto;
   }
 
   private currentCloudSyncSheetSpec(): CloudSyncSheetSpec {
@@ -4701,9 +5950,66 @@ struct HostListPage {
   }
 
   private toggleSettingsSection(section: string): void {
+    this.settingsInstantCollapseSection = SETTINGS_SECTION_NONE;
     animateTo({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn }, (): void => {
       this.expandedSettingsSection = settingsNextExpandedSection(this.expandedSettingsSection, section);
     });
+  }
+
+  private settingsBodyAnimation(section: string): AnimateParam {
+    return {
+      duration: this.settingsInstantCollapseSection === section ? 0 : SETTINGS_ACCORDION_ANIMATION_MS,
+      curve: Curve.FastOutSlowIn
+    };
+  }
+
+  /**
+   * A tapped section header. Opening a section below the open one closes that one at once and keeps the tapped
+   * header where the finger is, instead of letting the closing rows pull the page up; 全新视觉 then brings the
+   * header up under the title while its rows unfold.
+   */
+  private onSettingsSectionHeaderClick(section: string): void {
+    this.settingsScrollGeneration++;
+    const opening: boolean = !this.settingsSectionExpanded(section);
+    const previous: string = this.expandedSettingsSection;
+    const anchor: SettingsHeaderAnchor | null = opening && previous !== SETTINGS_SECTION_NONE &&
+      settingsSectionIsAbove(previous, section, this.settingsModern()) ? this.settingsHeaderAnchor(section) : null;
+    if (anchor === null) {
+      this.toggleSettingsSection(section);
+    } else {
+      this.settingsInstantCollapseSection = previous;
+      this.expandedSettingsSection = settingsNextExpandedSection(previous, section);
+      try {
+        this.settingsListScroller.scrollToIndex(anchor.index, false, ScrollAlign.START,
+          { extraOffset: LengthMetrics.vp(-anchor.y) });
+      } catch (_error) { /* the list is not laid out; the section still opens */ }
+    }
+    if (opening && this.settingsModern()) {
+      // Start once the closed section is gone (a frame or two), then once more after the rows have unfolded in
+      // case the end of the list held the header back; the second call does not move an arrived header.
+      this.scrollSettingsSectionIntoView(section, anchor === null ? 0 : 48);
+      this.scrollSettingsSectionIntoView(section, SETTINGS_ACCORDION_ANIMATION_MS + 40);
+    }
+  }
+
+  /** Where the header of `section` sits in the settings list now (its List index and top, in vp). */
+  private settingsHeaderAnchor(section: string): SettingsHeaderAnchor | null {
+    try {
+      const ui: UIContext = this.getUIContext();
+      const header: componentUtils.ComponentInfo = ui.getComponentUtils().getRectangleById('settingsHeader_' + section);
+      const list: componentUtils.ComponentInfo = ui.getComponentUtils().getRectangleById('settingsList');
+      if (header.size.height <= 0 || list.size.height <= 0) { return null; }
+      const x: number = ui.px2vp(header.windowOffset.x - list.windowOffset.x) + 24;
+      const y: number = ui.px2vp(header.windowOffset.y - list.windowOffset.y) + 4;
+      const index: number = this.settingsListScroller.getItemIndex(x, y);
+      if (index < 0) { return null; }
+      const rect: RectResult = this.settingsListScroller.getItemRect(index);
+      // The header item starts at the header's top; anything else means the two measures disagree.
+      if (Math.abs(rect.y - (y - 4)) > 2) { return null; }
+      return { index: index, y: rect.y };
+    } catch (_error) {
+      return null;
+    }
   }
 
   private openSshHostListFromSettings(): void {
@@ -4817,6 +6123,17 @@ struct HostListPage {
     this.relayVncAddTrigger++;
   }
 
+  private confirmResetSshTerminalAppearance(): void {
+    promptAction.showDialog({
+      title: '恢复终端默认显示？',
+      message: 'SSH 终端的文字颜色、字号和行距会回到默认值，终端皮肤和主机设置不受影响。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '恢复默认', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] === 1) { this.resetSshTerminalAppearance(); }
+    }).catch((_err: Error): void => { });
+  }
+
   private resetSshTerminalAppearance(): void {
     this.terminalFgColor = this.sshSettings.saveForegroundColor('#33FF33');
     this.terminalFontSize = this.sshSettings.saveFontSize(18);
@@ -4851,11 +6168,82 @@ struct HostListPage {
     return Math.max(88, this.terminalPreviewLineHeight() * 2 + 24);
   }
 
+  /**
+   * 全新视觉: a collapsed section says what it is set to now. `_revision` only makes the header read again after a
+   * settings sheet closed (VNC and Moonlight values come from their services, not from page state).
+   */
+  private settingsSectionSummary(section: string, fallback: string, _revision: number): string {
+    try {
+      if (section === SETTINGS_SECTION_APPEARANCE) {
+        return settingsThemeLabel(this.followSystem, this.theme) +
+          (this.ambientLightEffectEnabled ? ' · 光感已开' : '') + (this.hostCardSensitiveInfoHidden ? ' · 隐藏卡片信息' : '');
+      }
+      if (section === SETTINGS_SECTION_HOME) {
+        return (this.groupedHostCards ? '按类型分组' : '平铺主机') + ' · 添加入口' +
+          (this.fabAddStyle === 'classic' ? '经典' : '新版') + (this.rustdeskPresenceDetectionEnabled ? ' · 在线检测' : '');
+      }
+      if (section === SETTINGS_SECTION_CLOUD_SYNC) {
+        return this.appCloneLocalOnly ? this.appCloneStatusText : cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText;
+      }
+      if (section === SETTINGS_SECTION_CONNECTION_LIVE) {
+        return this.liveViewEnabled ? '后台连接展示已开启' : '后台连接展示已关闭';
+      }
+      if (section === SETTINGS_SECTION_DISPLAY_INTERACTION) {
+        return (this.remoteSessionQuickExitDisabled ? '已关闭快捷退出' : '可快捷退出') +
+          (this.isDesktopDevice ? '' : ' · 鼠标' + (this.virtualMouseStyle === 'arrow' ? '箭头' : '圆环'));
+      }
+      if (section === SETTINGS_SECTION_RDP) {
+        return this.rdpColorDepth.toString() + ' 位色 · ' + settingsControlModeLabel(this.rdpControlMode) +
+          (this.rdpAudioEnabled ? ' · 音频' : '') + (this.rdpClipboardEnabled ? ' · 剪贴板' : '');
+      }
+      if (section === SETTINGS_SECTION_RUSTDESK) {
+        return settingsRustDeskQualityLabel(this.rustdeskImageQuality) + ' · ' +
+          settingsRustDeskCodecLabel(this.rustdeskCodec) + ' · ' + settingsControlModeLabel(this.rustdeskControlMode);
+      }
+      if (section === SETTINGS_SECTION_SSH) {
+        return '字号 ' + this.terminalFontSize.toString() + ' · 行距 ' + this.terminalLineSpacingLabel() + ' · ' +
+          this.sshCount.toString() + ' 台主机';
+      }
+      if (section === SETTINGS_SECTION_VNC) {
+        const vnc = this.vncSettings.get();
+        return settingsVncTransportLabel(vnc.defaultTransport) + ' · 端口 ' + vnc.defaultPort.toString() + ' · ' +
+          settingsVncSecurityLabel(vnc.securityPolicy);
+      }
+      if (section === SETTINGS_SECTION_MOONLIGHT) {
+        const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+        if (moonlight === null) { return fallback; }
+        const video = moonlight.video;
+        return settingsMoonlightVideoLabel(video.resolutionMode, video.customWidth, video.customHeight, video.fps,
+          video.bitrateKbps);
+      }
+      if (section === SETTINGS_SECTION_SECURITY) {
+        return (this.cryptoEnabled ? (this.cryptoUnlocked ? '加密已解锁' : '加密已锁定') : '未启用端到端加密') +
+          ' · TOTP 保护' + (this.totpPageLocked ? '已开' : '未开');
+      }
+      if (section === SETTINGS_SECTION_PRO) { return this.proStatusLabel; }
+      if (section === SETTINGS_SECTION_TUTORIAL) { return '当前版本 ' + CURRENT_RELEASE_VERSION; }
+      if (section === SETTINGS_SECTION_ABOUT) { return 'RemoteDesktop ' + CURRENT_RELEASE_VERSION; }
+    } catch (_error) {
+      return fallback;
+    }
+    return fallback;
+  }
+
   private settingsSectionExpanded(section: string): boolean {
     return this.expandedSettingsSection === section;
   }
 
+  private settingsModernCap(classic: number): number {
+    return this.settingsModern() ? Math.ceil(classic * 1.5) : classic;
+  }
+
+  /** 全新视觉 rows grow with two-line descriptions and full-size switches; give their accordions room for it. */
   private settingsSectionExpandedMaxHeight(section: string): number {
+    const classic: number = this.classicSectionExpandedMaxHeight(section);
+    return this.settingsModern() && section !== SETTINGS_SECTION_APPEARANCE ? Math.ceil(classic * 1.5) : classic;
+  }
+
+  private classicSectionExpandedMaxHeight(section: string): number {
     if (section === SETTINGS_SECTION_APPEARANCE) {
       return this.appearanceExpandedMaxHeight();
     }
@@ -4872,7 +6260,8 @@ struct HostListPage {
       return 470;
     }
     if (section === SETTINGS_SECTION_RDP) {
-      return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT);
+      return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT,
+        this.rdpAdvancedDisplayVisible);
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
@@ -4889,8 +6278,15 @@ struct HostListPage {
     if (section === SETTINGS_SECTION_SECURITY) {
       return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
+    if (section === SETTINGS_SECTION_DIAGNOSTICS) {
+      // Card title plus configuration, assistant, usage, personalization, session history, tools, AI 语音, AI 动效 and
+      // classic-log rows. Keep enough room for the complete card; the native settings page remains independently
+      // scrollable.
+      return 680;
+    }
     if (section === SETTINGS_SECTION_TUTORIAL) {
-      return 300;
+      // Five action rows (更新日志, 快速认识, Pro 介绍, 操作引导, 连接前准备) plus the card title.
+      return 380;
     }
     if (section === SETTINGS_SECTION_ABOUT) {
       return 300;
@@ -4907,13 +6303,17 @@ struct HostListPage {
       measured > 0 ? Math.ceil(measured + 8) : 0);
   }
 
-  private async openFeedbackEmail(): Promise<void> {
+  private async openFeedbackEmail(subject: string = '', body: string = ''): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const versionName: string = CURRENT_RELEASE_VERSION;
+    const resolvedSubject: string = subject.trim() === '' ? 'RemoteDesktop 用户反馈' : subject;
+    const resolvedBody: string = body.trim() === '' ? '' : body;
     const attempts: SettingsFeedbackLaunchAttempt[] =
-      settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice);
+      settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice,
+        resolvedSubject, resolvedBody === '' ? settingsFeedbackBody(versionName, this.breakpoint, this.isDesktopDevice) : resolvedBody);
     const params: Record<string, Object> =
-      settingsFeedbackMailPanelParams(versionName, this.breakpoint, this.isDesktopDevice);
+      settingsFeedbackMailPanelParams(versionName, this.breakpoint, this.isDesktopDevice,
+        resolvedSubject, resolvedBody === '' ? settingsFeedbackBody(versionName, this.breakpoint, this.isDesktopDevice) : resolvedBody);
     for (let i = 0; i < attempts.length; i++) {
       try {
         const spec: SettingsFeedbackLaunchAttempt = attempts[i];
@@ -5132,6 +6532,23 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    this.aiIslandLayer.close();
+    this.aiVoiceLayer.close();
+    DiagnosticAiSettingsBridge.unregister(this.assistantSettingApplier);
+    DiagnosticAiHostBridge.unregister(this.assistantHostLister);
+    AiAppDataBridge.unregister(this.chatHostLister);
+    this.hostOrgUnsubscribe?.(); this.hostOrgUnsubscribe = null;
+    this.endProWorkspaceRun();
+    this.aiStopStore(); this.aiStopAccess();
+    this.proVisibilityUnsubscribe?.(); this.proVisibilityUnsubscribe = null;
+    this.proContinuationStop?.(); this.proContinuationStop = null;
+    this.proConnectionShareStop?.(); this.proConnectionShareStop = null;
+    this.clearProConnectionShareDraft();
+    if (this.pendingAddSheetShareId !== '') {
+      ProConnectionShareReceiver.getInstance().cancel(this.pendingAddSheetShareId);
+      this.pendingAddSheetShareId = '';
+    }
+    this.proUnsubscribe?.(); this.proUnsubscribe = null;
     this.pageActive = false;
     this.sheetReleaseFenceGeneration += 1;
     this.sheetReleaseFenceActive = false;
@@ -5421,6 +6838,10 @@ struct HostListPage {
       // account lease. Reload it on the same lifecycle/data-change cadence as
       // the RDP/RustDesk/SSH/VNC cards.
       this.refreshMoonlightDirectory();
+      await this.refreshAiHosts();
+      // Cloud sync may have replaced the Pro group and workspace rows since the last visit.
+      if (this.proOrgVisible) { HostOrganizationStore.getInstance().reload(); }
+      if (this.proWorkspacesVisible) { WorkspaceStore.getInstance().reload(); }
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -5554,6 +6975,7 @@ struct HostListPage {
     for (let i = 0; i < vncViews.length; i++) {
       nextHosts.push(projectVncHost(vncViews[i]));
     }
+    AiHostService.getInstance().list().forEach((host: AiHost): void => { nextHosts.push(projectAiHost(host)); });
     this.hostCount = nextHosts.length;
     this.lockedCount = 0;
     for (let i = 0; i < nextHosts.length; i++) {
@@ -5563,9 +6985,15 @@ struct HostListPage {
     this.rustdeskCount = this.srv.getRustdeskCount();
     this.sshCount = this.srv.getSshCount();
     this.vncCount = vncViews.length;
+    // Relay edits do not necessarily mutate the legacy host endpoint fields.
+    // Include the relay snapshot in the render signature so cards rebuild
+    // immediately when an idServer/idServerPort changes.
+    const relaySignature: string = JSON.stringify(this.srv.getAllRelays()
+      .map((relay: RustDeskRelayConfig): string => JSON.stringify(
+        [relay.id, relay.idServer, relay.idServerPort.toString()])).sort());
     const nextSignature: string = JSON.stringify(nextHosts.map(
       (host: RemoteHost): string => JSON.stringify(host.toJSON()) + '|' +
-        host.runtimeSecretStateSignature()));
+        host.runtimeSecretStateSignature())) + '|relays=' + relaySignature;
     if (!force && nextSignature === this.hostDataSignature && !activeSessionChanged) { return; }
     this.hostDataSignature = nextSignature;
     this.hosts = nextHosts;
@@ -5585,6 +7013,12 @@ struct HostListPage {
     }
     this.hostDataSource.replaceAll(this.filteredHosts);
     this.hostViewRevision += 1;
+    // A batch acts only on hosts the user can see: a search or filter drops hidden ones from the selection.
+    if (this.hostSelectionMode && this.hostSelectedIds.size > 0) {
+      const visible: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
+      const kept: string[] = Array.from(this.hostSelectedIds).filter((key: string): boolean => visible.has(key));
+      if (kept.length !== this.hostSelectedIds.size) { this.hostSelectedIds = new Set<string>(kept); }
+    }
   }
 
   /** 根据本地保存的手动排序顺序重排主机列表。已排序的主机按保存顺序排列，新主机追加到末尾。 */
@@ -5612,7 +7046,8 @@ struct HostListPage {
 
   private visibleHostsForCurrentMode(): RemoteHost[] {
     if (this.groupedHostCardsActive()) {
-      return searchHosts(this.hosts, this.searchText);
+      return this.orgFilterHosts(searchHosts(this.hosts, this.searchText, this.relayNamesForSearch(),
+        this.relaySearchIncludesLocked()));
     }
     let visible = visibleHostsForHostListMode(
       this.hosts,
@@ -5620,13 +7055,495 @@ struct HostListPage {
       this.isDesktopDevice,
       this.breakpoint,
       this.activeFilterProto,
-      this.curTab
+      this.curTab,
+      this.relayNamesForSearch(),
+      this.relaySearchIncludesLocked()
     );
+    if (this.proOrgVisible) { return this.orgFilterHosts(visible); }
     return filterHostsByWorkspace(visible, this.workspaceGroupId);
   }
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  /**
+   * 中继 → 查看主机 lists every host on the relay, locked ones too (the relay card counts them). A search the user types
+   * does not: a locked host is found only by its card name.
+   */
+  private relaySearchIncludesLocked(): boolean {
+    return this.relaySearchFromRelayPage !== '' && this.searchText === this.relaySearchFromRelayPage;
+  }
+
+  /** Relay names, so a search for a relay finds the RustDesk hosts that use it. */
+  private relayNamesForSearch(): Map<string, string> {
+    const names: Map<string, string> = new Map<string, string>();
+    this.srv.getAllRelays().forEach((relay: RustDeskRelayConfig): void => { names.set(relay.id, relay.displayName()); });
+    return names;
+  }
+
+  /** 中继 → 绑定主机 → 查看主机: the host list, searched for that relay. */
+  private showRelayHostsFromRelayPage(relayId: string): void {
+    const relay: RustDeskRelayConfig | undefined =
+      this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === relayId);
+    if (relay === undefined) { return; }
+    this.searchText = relay.displayName();
+    this.relaySearchFromRelayPage = this.searchText;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 1;
+      this.hostPageTitle = 'RustDesk 远程主机';
+      this.updateHostFilter();
+      return;
+    }
+    this.curTab = 0;
+    this.tabsCtrl.changeIndex(0);
+    this.refreshFilteredHostView();
+  }
+
+  // ---------- Pro 高级主机管理 ----------
+  /** Every host card on the home list as an organization row; Moonlight cards included. */
+  private orgRows(_revision: number): OrgHostRow[] {
+    const rows: OrgHostRow[] = this.hosts.map((host: RemoteHost): OrgHostRow => orgRowForRemoteHost(host));
+    this.moonlightHosts.forEach((view: MoonlightHostLocalView): void => {
+      if (view.host === null) { return; }
+      const host: MoonlightHost = view.host as MoonlightHost;
+      rows.push({ ref: 'moonlight:' + host.id, protocol: 'moonlight', label: host.displayName,
+        address: host.addresses.length > 0 ? host.addresses[0].host : '', port: 0, username: '', lastConnected: 0 });
+    });
+    return rows;
+  }
+  private orgOnline(host: RemoteHost): boolean | undefined {
+    const state: HostPresenceState = this.hostGroupPresenceForHost(host);
+    if (state === 'online' || state === 'recently_online') { return true; }
+    return state === 'offline' ? false : undefined;
+  }
+  private orgPresenceRefs(online: boolean, _revision: number): string[] {
+    return this.hosts.filter((host: RemoteHost): boolean => this.orgOnline(host) === online)
+      .map((host: RemoteHost): string => host.id);
+  }
+  private orgMembership(ref: string, _revision: number): HostMembership {
+    return HostOrganizationStore.getInstance().membership(ref);
+  }
+  private orgGroupFor(ref: string, _revision: number): HostGroupDefinition | null {
+    const groupId: string = HostOrganizationStore.getInstance().membership(ref).groupId;
+    return groupId === '' ? null : HostOrganizationStore.getInstance().group(groupId);
+  }
+  private orgFilterHosts(hosts: RemoteHost[]): RemoteHost[] {
+    if (!this.proOrgVisible || this.hostOrgFilterKey === 'all') { return hosts; }
+    const filter: HostFilter = parseHostFilterKey(this.hostOrgFilterKey);
+    const store: HostOrganizationStore = HostOrganizationStore.getInstance();
+    const now: number = Date.now();
+    return hosts.filter((host: RemoteHost): boolean =>
+      hostMatchesFilter(orgHostView(orgRowForRemoteHost(host), this.orgOnline(host)), store.membership(host.id), filter, now));
+  }
+  private orgMoonlightVisible(host: MoonlightHost): boolean {
+    if (!this.proOrgVisible || this.hostOrgFilterKey === 'all') { return this.workspaceGroupId === '' || this.proOrgVisible; }
+    const filter: HostFilter = parseHostFilterKey(this.hostOrgFilterKey);
+    const ref: string = 'moonlight:' + host.id;
+    const row: OrgHostRow = { ref, protocol: 'moonlight', label: host.displayName,
+      address: host.addresses.length > 0 ? host.addresses[0].host : '', port: 0, username: '', lastConnected: 0 };
+    return hostMatchesFilter(orgHostView(row, undefined), HostOrganizationStore.getInstance().membership(ref), filter, Date.now());
+  }
+  private setHostOrgFilter(key: string): void {
+    this.hostOrgFilterKey = parseHostFilterKey(key).kind === 'all' ? 'all' : key;
+    this.refreshFilteredHostView();
+  }
+  private ensureHostOrganizationSubscription(): void {
+    if (this.hostOrgUnsubscribe !== null) { return; }
+    this.hostOrgUnsubscribe = HostOrganizationStore.getInstance().subscribe((): void => {
+      this.hostOrgRevision++;
+      // A deleted group can no longer be the active filter.
+      const filter: HostFilter = parseHostFilterKey(this.hostOrgFilterKey);
+      if (filter.kind === 'group' && HostOrganizationStore.getInstance().group(filter.value) === null) {
+        this.hostOrgFilterKey = 'all';
+      }
+      if (this.proOrgVisible) { this.refreshFilteredHostView(); }
+    });
+  }
+  /** The organization reference behind a selection key (remote:<id>, moonlight:<id> or a bare id). */
+  private orgRefForSelectionKey(key: string): string {
+    const remoteId: string = remoteHostIdFromCardKey(key);
+    if (remoteId !== '') { return remoteId; }
+    const moonlightId: string = moonlightHostIdFromCardKey(key);
+    return moonlightId !== '' ? 'moonlight:' + moonlightId : key;
+  }
+  private selectedOrgRefs(): string[] {
+    return Array.from(this.hostSelectedIds).map((key: string): string => this.orgRefForSelectionKey(key));
+  }
+  /** Enters multi-select with the given hosts already selected (used by 重复主机 → 在列表中选中). */
+  private selectHostsByRefs(refs: string[]): void {
+    const keys: string[] = refs.map((ref: string): string => ref.startsWith('moonlight:') ?
+      unifiedMoonlightHostCardKey(ref.substring('moonlight:'.length)) : remoteHostCardKey(ref));
+    // A search or group filter would hide some of them, and a batch must act only on hosts in view: clear them first.
+    this.searchText = '';
+    this.relaySearchFromRelayPage = '';
+    this.workspaceGroupId = '';
+    this.hostOrgFilterKey = 'all';
+    this.refreshFilteredHostView();
+    const inView: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
+    const shown: string[] = keys.filter((key: string): boolean => inView.has(key));
+    if (shown.length < keys.length) {
+      promptAction.showToast({
+        message: '另有 ' + (keys.length - shown.length).toString() + ' 台不在当前页面，没有选中', duration: 2200
+      });
+    }
+    // On the categorized page the selected hosts sit inside a category; open it so the selection is visible.
+    const first: OrgHostRow | undefined = this.orgRows(this.hostViewRevision)
+      .find((row: OrgHostRow): boolean => refs.indexOf(row.ref) >= 0);
+    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, (): void => {
+      if (this.groupedHostCardsActive() && first !== undefined) { this.expandedHostGroup = first.protocol; }
+      this.hostSelectionMode = true;
+      this.hostReorderEnabled = false;
+      this.hostSelectedIds = new Set<string>(shown);
+      this.hostViewRevision += 1;
+    });
+  }
+  private async batchProbeHosts(): Promise<void> {
+    if (this.hostBatchProbing) { return; }
+    const refs: string[] = this.selectedOrgRefs();
+    const targets: RemoteHost[] = this.hosts.filter((host: RemoteHost): boolean => refs.indexOf(host.id) >= 0 &&
+      host.protocol !== 'ai' && !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled));
+    if (targets.length === 0) { promptAction.showToast({ message: '所选主机无需在线探测', duration: 1800 }); return; }
+    this.hostBatchProbing = true;
+    let online: number = 0;
+    let offline: number = 0;
+    try {
+      // Four probes at a time keeps the radio and the remote hosts calm.
+      for (let start: number = 0; start < targets.length && this.pageActive; start += 4) {
+        const batch: RemoteHost[] = targets.slice(start, start + 4);
+        await Promise.all(batch.map((host: RemoteHost): Promise<void> => this.probeHostConnectivity(host, false)));
+      }
+      targets.forEach((host: RemoteHost): void => {
+        const state: boolean | undefined = this.orgOnline(host);
+        if (state === true) { online++; } else if (state === false) { offline++; }
+      });
+      if (this.pageActive) {
+        promptAction.showToast({ message: '检测完成 · ' + online.toString() + ' 在线 · ' + offline.toString() + ' 离线' +
+          (targets.length - online - offline > 0 ? ' · ' + (targets.length - online - offline).toString() + ' 未知' : ''),
+          duration: 2400 });
+      }
+    } finally {
+      this.hostBatchProbing = false;
+      this.hostViewRevision += 1;
+    }
+  }
+  private async batchSetHostLock(lock: boolean): Promise<void> {
+    const refs: string[] = this.selectedOrgRefs();
+    const targets: RemoteHost[] = this.hosts.filter((host: RemoteHost): boolean => refs.indexOf(host.id) >= 0 &&
+      host.protocol !== 'ai' && host.locked !== lock);
+    if (targets.length === 0) {
+      promptAction.showToast({ message: lock ? '所选主机都已上锁' : '所选主机都未上锁', duration: 1800 });
+      return;
+    }
+    const gate: LockGateResult = await showLockGate(targets.length.toString() + ' 台主机', 'biometric');
+    if (!gate.ok) {
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') { promptAction.showToast({ message, duration: 2000 }); }
+      return;
+    }
+    let changed: number = 0;
+    targets.forEach((host: RemoteHost): void => {
+      const vncHostId: string = this.vncRecordIdForHost(host);
+      if (vncHostId !== '') {
+        if (this.vncHosts.updateLock(vncHostId, lock, lock ? LockType.BIOMETRIC : LockType.NONE)) { changed++; }
+        return;
+      }
+      const current: RemoteHost | undefined = this.srv.getHost(host.id);
+      if (current === undefined) { return; }
+      const updated: RemoteHost = current.runtimeClone();
+      updated.locked = lock;
+      updated.lockType = lock ? LockType.BIOMETRIC : LockType.NONE;
+      if (this.srv.updateHost(updated)) { changed++; }
+    });
+    this.refreshHostSnapshotAfterMutation();
+    promptAction.showToast({ message: (lock ? '已上锁 ' : '已解锁 ') + changed.toString() + ' 台', duration: 1800 });
+  }
+  /** Exports the given hosts (all when empty) as JSON without any secret. */
+  private async exportHostsToFile(refs: string[]): Promise<void> {
+    const store: HostOrganizationStore = HostOrganizationStore.getInstance();
+    const records: HostExportRecord[] = this.orgRows(this.hostViewRevision)
+      .filter((row: OrgHostRow): boolean => refs.length === 0 || refs.indexOf(row.ref) >= 0)
+      .map((row: OrgHostRow): HostExportRecord => {
+        const membership: HostMembership = store.membership(row.ref);
+        return { id: row.ref, protocol: row.protocol, host: row.address, port: row.port, username: row.username,
+          label: row.label, groupId: membership.groupId, tags: membership.tags.slice() };
+      });
+    if (records.length === 0) { promptAction.showToast({ message: '没有可导出的主机', duration: 1800 }); return; }
+    const code = await HostExportFileService.save(hostExportFileName(), exportHosts(records, store.listGroups()));
+    if (code === 'cancelled') { return; }
+    promptAction.showToast({ message: code === 'ok' ? '已导出 ' + records.length.toString() + ' 台主机（不含密码与私钥）' :
+      '导出失败，请重试', duration: 2200 });
+  }
+  private async importHostsFromFile(): Promise<void> {
+    const result: HostImportFileResult = await HostExportFileService.open();
+    if (result.code === 'cancelled') { return; }
+    const document: HostExportDocument | null = result.code === 'ok' ? parseHostExport(result.text) : null;
+    if (document === null) {
+      promptAction.showToast({ message: result.code === 'too_large' ? '文件太大' : '不是 RemoteDesk 导出的主机文件', duration: 2200 });
+      return;
+    }
+    this.hostImportDocument = document;
+    this.openSheetSafely((): void => { if (this.pageActive) { this.showHostImportSheet = true; } });
+  }
+  /** Opens the normal add form pre-filled from one imported record; credentials are entered there. */
+  private addImportedHost(record: HostExportRecord): void {
+    this.showHostImportSheet = false;
+    setTimeout((): void => {
+      if (!this.pageActive || this.appInBackground || this.showAddSheet) { return; }
+      this.resetForm();
+      if (record.protocol === 'ssh') {
+        this.proConnectionShareBasicFields = { label: record.label, address: record.host,
+          port: record.port > 0 ? record.port : 22, username: record.username };
+        this.modernAddProtocol = 'ssh'; this.addSheetShowsModernPicker = false;
+      } else {
+        if (record.protocol === 'vnc') { this.prepareVncAddFlow(); }
+        this.proto = record.protocol; this.label = record.label; this.hostAddr = record.host;
+        this.portVal = record.port > 0 ? record.port : (record.protocol === 'vnc' ? 5900 : 3389);
+        if (record.protocol === 'rdp') { this.rdpPortVal = this.portVal; }
+        this.modernAddProtocol = ''; this.addSheetShowsModernPicker = false;
+      }
+      this.openSheetSafely((): void => { if (this.pageActive && !this.appInBackground) { this.showAddSheet = true; } });
+    }, 360);
+  }
+  /** Hosts with a live session, offered by 保存当前会话. */
+  private activeSessionRefs(_revision: number): string[] {
+    const refs: string[] = [];
+    const active: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (active !== null && active.protocolConnected) {
+      const ref: string = active.protocol === RemoteProtocol.vnc && !active.hostId.startsWith('vnc:') ?
+        'vnc:' + active.hostId : active.hostId;
+      if (this.hosts.some((host: RemoteHost): boolean => host.id === ref)) { refs.push(ref); }
+    }
+    SshSessionStore.getInstance().contexts().forEach((context: SshSessionContext): void => {
+      if (context.state === 'Ready' && refs.indexOf(context.hostId) < 0 &&
+        this.hosts.some((host: RemoteHost): boolean => host.id === context.hostId)) { refs.push(context.hostId); }
+    });
+    return refs;
+  }
+
+  // ---------- Pro 工作区与布局 ----------
+  /**
+   * Opens a workspace entry by entry through the normal connect flow (lock, preflight and credentials all apply).
+   * Each entry is marked 已打开 once its session page takes over; the next one starts when the list returns.
+   */
+  private openProWorkspace(workspace: Workspace): void {
+    if (!ProEntries.visible('pro.workspaces')) { return; }
+    // One or two remote AI conversations: one page, side by side (1:1) for two, each with its own connection.
+    const aiTargets = workspace.entries.slice().sort((left: WorkspaceEntry, right: WorkspaceEntry): number => left.order - right.order)
+      .map((entry: WorkspaceEntry): AiPairTarget | null => entry.protocol === 'ai' ? aiPairTarget(entry.hostRef) : null);
+    if (aiTargets.length >= 1 && aiTargets.length <= 2 && aiTargets.every((target: AiPairTarget | null): boolean => target !== null)) {
+      const firstTarget = aiTargets[0] as AiPairTarget;
+      const params: Record<string, string> = { 'hostId': firstTarget.hostId, 'sessionId': firstTarget.sessionId };
+      if (aiTargets.length === 2) {
+        const secondTarget = aiTargets[1] as AiPairTarget;
+        params['hostId2'] = secondTarget.hostId; params['sessionId2'] = secondTarget.sessionId;
+      }
+      void router.pushUrl({ url: 'pages/RemoteAiWorkspace', params: params });
+      return;
+    }
+    if (this.proWorkspaceRun !== null && !workspaceRunFinished(this.proWorkspaceRun as WorkspaceRun) &&
+      (this.proWorkspaceRun as WorkspaceRun).workspaceId !== workspace.id) {
+      promptAction.showToast({ message: '已结束上一个工作区的打开进度', duration: 1600 });
+    }
+    const labels: Record<string, string> = {};
+    this.orgRows(this.hostViewRevision).forEach((row: OrgHostRow): void => { labels[row.ref] = row.label; });
+    const limit: number = workspaceEntryLimit(this.workspaceDeviceKind());
+    if (workspace.entries.length > limit) {
+      promptAction.showToast({ message: '平板上每个工作区最多打开 ' + limit.toString() + ' 台主机，已打开前 ' +
+        limit.toString() + ' 台', duration: 2400 });
+    }
+    this.workspaceLockCleared.clear();
+    this.workspaceRunCredentials.clear();
+    this.proWorkspaceRun = workspaceRunFor(workspace, labels, Date.now(), limit);
+    if (this.workspaceDeviceKind() === 'pc') {
+      const rows: WorkspacePrepRow[] = this.workspacePrepRowsFor(this.proWorkspaceRun as WorkspaceRun);
+      if (rows.some((row: WorkspacePrepRow): boolean => row.locked || row.needsRdpCredential)) {
+        this.workspacePrepRows = rows;
+        this.openSheetSafely((): void => { if (this.pageActive) { this.showWorkspacePrep = true; } });
+        return;
+      }
+    }
+    this.advanceProWorkspaceRun(true);
+  }
+
+  /** What each queued entry of a PC run needs from the user, so 连接准备 can ask it all at once. */
+  private workspacePrepRowsFor(run: WorkspaceRun): WorkspacePrepRow[] {
+    const rows: WorkspacePrepRow[] = [];
+    run.items.forEach((item: WorkspaceRunItem): void => {
+      if (item.state !== 'queued') { return; }
+      const host: RemoteHost | undefined = this.hosts.find((candidate: RemoteHost): boolean => candidate.id === item.hostRef);
+      if (host === undefined) { return; }
+      const rdpConnectTime: boolean = host.protocol === 'rdp' && normalizeRdpAuthMode(host.rdpAuthMode) === 'password' &&
+        normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) === 'connect_time';
+      const mayAsk: string = host.protocol === 'rustdesk' ? '连接时仍需确认被控端或输入设备密码' :
+        host.protocol === 'ssh' ? '首次连接或未保存凭据时会请你确认指纹或登录' :
+        host.protocol === 'vnc' ? '证书变化或未保存密码时会请你确认' : '';
+      rows.push({ ref: item.hostRef, label: item.label, protocol: item.protocol, locked: host.locked,
+        needsRdpCredential: rdpConnectTime, mayAsk });
+    });
+    return rows;
+  }
+
+  /** 开始连接 in 连接准备: one biometric check for every locked host, then the run proceeds untouched. */
+  private async startPreparedWorkspace(credentials: WorkspacePrepCredential[]): Promise<void> {
+    this.workspacePrepStarting = true;
+    this.showWorkspacePrep = false;
+    const locked: string[] = this.workspacePrepRows.filter((row: WorkspacePrepRow): boolean => row.locked)
+      .map((row: WorkspacePrepRow): string => row.ref);
+    if (locked.length > 0) {
+      const gate: LockGateResult = await showLockGate(locked.length.toString() + ' 台主机', 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        promptAction.showToast({ message: message !== '' ? message : '未通过验证，工作区未打开', duration: 2000 });
+        this.endProWorkspaceRun();
+        return;
+      }
+      locked.forEach((ref: string): void => { this.workspaceLockCleared.add(ref); });
+    }
+    credentials.forEach((credential: WorkspacePrepCredential): void => {
+      this.workspaceRunCredentials.set(credential.ref, credential);
+    });
+    this.advanceProWorkspaceRun(true);
+  }
+
+  private workspaceSplitRoute(params: Record<string, Object>): boolean {
+    const handoff: WorkspaceHandoff = WorkspaceHandoff.getInstance();
+    const hostId: string = ((params['hostId'] as string) || '').trim();
+    const vncHostId: string = ((params['vncHostId'] as string) || '').trim();
+    return (hostId !== '' && handoff.hasSplit(hostId)) || (vncHostId !== '' && handoff.hasSplit(vncHostId));
+  }
+
+  private takeWorkspaceLockClearance(hostId: string): boolean {
+    if (this.proWorkspaceRun === null || !this.workspaceLockCleared.has(hostId)) { return false; }
+    this.workspaceLockCleared.delete(hostId);
+    return true;
+  }
+
+  @Builder workspacePrepSheet() {
+    Column() {
+      Scroll() {
+        WorkspaceLaunchPrepPanel({
+          name: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).name,
+          rows: this.workspacePrepRows,
+          onStart: (credentials: WorkspacePrepCredential[]): void => { void this.startPreparedWorkspace(credentials); },
+          onCancel: (): void => { this.showWorkspacePrep = false; this.endProWorkspaceRun(); }
+        })
+      }.constraintSize({ maxHeight: Math.round(this.pageViewportHeight * 0.85) }).scrollBar(BarState.Off)
+      .align(Alignment.Top)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
+  }
+  private endProWorkspaceRun(): void {
+    if (this.proWorkspaceRunTimer >= 0) { clearTimeout(this.proWorkspaceRunTimer); this.proWorkspaceRunTimer = -1; }
+    if (this.proWorkspaceRun !== null) {
+      (this.proWorkspaceRun as WorkspaceRun).items.forEach((item: WorkspaceRunItem): void => {
+        WorkspaceHandoff.getInstance().clear(item.hostRef);
+      });
+    }
+    this.proWorkspaceRun = null;
+    this.proWorkspacePageHidden = false;
+    this.workspaceLockCleared.clear();
+    this.workspaceRunCredentials.clear();
+  }
+  private workspaceEntryFor(run: WorkspaceRun, hostRef: string): WorkspaceEntry | null {
+    const workspace: Workspace | null = WorkspaceStore.getInstance().get(run.workspaceId);
+    if (workspace === null) { return null; }
+    const entry: WorkspaceEntry | undefined = sortedEntries(workspace.entries)
+      .find((item: WorkspaceEntry): boolean => item.hostRef === hostRef);
+    return entry === undefined ? null : entry;
+  }
+  /** Starts the next queued entry; `explicit` also starts entries set to manual connect. */
+  private advanceProWorkspaceRun(explicit: boolean): void {
+    if (this.proWorkspaceRun === null || !this.pageActive || this.appInBackground) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    if (connectingRunIndex(run) >= 0) { return; }
+    const index: number = nextQueuedRunIndex(run);
+    if (index < 0) {
+      promptAction.showToast({ message: run.name + ' · ' + workspaceRunSummary(run), duration: 2200 });
+      return;
+    }
+    if (!explicit && !run.items[index].autoConnect) { return; }
+    this.connectProWorkspaceItem(index);
+  }
+  private connectProWorkspaceItem(index: number): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    const item: WorkspaceRunItem = run.items[index];
+    if (item.hostRef.startsWith('moonlight:')) {
+      const moonlightId: string = item.hostRef.substring('moonlight:'.length);
+      const view: MoonlightHostLocalView | undefined = this.moonlightHosts.find((candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === moonlightId);
+      if (view === undefined || view.host === null) {
+        this.proWorkspaceRun = setRunItemState(run, index, 'failed', '主机不存在');
+        this.advanceProWorkspaceRun(false);
+        return;
+      }
+      // Moonlight opens its own app catalog; the workspace hands over and continues when the list returns.
+      this.proWorkspaceRun = setRunItemState(run, index, 'connecting', '');
+      this.proWorkspacePageHidden = false;
+      void this.openMoonlightHost(view.host.id);
+      return;
+    }
+    const host: RemoteHost | undefined = this.hosts.find((candidate: RemoteHost): boolean => candidate.id === item.hostRef);
+    if (host === undefined) {
+      this.proWorkspaceRun = setRunItemState(run, index, 'failed', '主机不存在');
+      this.advanceProWorkspaceRun(false);
+      return;
+    }
+    const entry: WorkspaceEntry | null = this.workspaceEntryFor(run, item.hostRef);
+    const handoff: WorkspaceHandoff = WorkspaceHandoff.getInstance();
+    const frame = this.isDesktopDevice && entry !== null && entry.frame !== undefined ? entry.frame : null;
+    const sshView = entry !== null && host.protocol === 'ssh' &&
+      (entry.view.sshPane === 'files' || entry.view.sshDirectory !== '') ? entry.view : null;
+    handoff.stage(host.id, sshView, frame);
+    const vncRecordId: string = this.vncRecordIdForHost(host);
+    if (vncRecordId !== '' && frame !== null) { handoff.stage(vncRecordId, null, frame); }
+    if (this.workspaceDeviceKind() === 'tablet') {
+      // Pad: first entry on the left, second on the right.
+      const side: WorkspaceSplitSide = index === 0 ? 'primary' : 'secondary';
+      handoff.stageSplit(host.id, side);
+      if (vncRecordId !== '') { handoff.stageSplit(vncRecordId, side); }
+    }
+    const credential: WorkspacePrepCredential | undefined = this.workspaceRunCredentials.get(host.id);
+    if (credential !== undefined) {
+      this.workspaceRunCredentials.delete(host.id);
+      ProContinuationCredentialHandoff.getInstance().deposit(host.id, host.userId, { kind: 'password',
+        password: credential.password, privateKeyPem: '', passphrase: '', username: credential.username }, 60000);
+    }
+    this.proWorkspaceRun = setRunItemState(run, index, 'connecting', '');
+    this.proWorkspacePageHidden = false;
+    void this.connectToHost(host);
+  }
+  private retryProWorkspaceItem(index: number): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    const connecting: number = connectingRunIndex(run);
+    if (connecting >= 0 && connecting !== index) {
+      this.proWorkspaceRun = setRunItemState(run, connecting, 'failed', '未完成');
+    }
+    this.connectProWorkspaceItem(index);
+  }
+  private skipProWorkspaceItem(index: number): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    WorkspaceHandoff.getInstance().clear(run.items[index].hostRef);
+    this.proWorkspaceRun = setRunItemState(run, index, 'skipped', '');
+    this.advanceProWorkspaceRun(false);
+  }
+  /** Called when the host list shows again: a session page took over, so the entry it opened is done. */
+  private resumeProWorkspaceRun(): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    const connecting: number = connectingRunIndex(run);
+    if (connecting >= 0 && this.proWorkspacePageHidden) {
+      this.proWorkspaceRun = setRunItemState(run, connecting, 'opened', '');
+    }
+    this.proWorkspacePageHidden = false;
+    if (this.proWorkspaceRunTimer >= 0) { clearTimeout(this.proWorkspaceRunTimer); }
+    // PC returns to the list as soon as a session moves into its own window, so the next one can start at once.
+    this.proWorkspaceRunTimer = setTimeout((): void => {
+      this.proWorkspaceRunTimer = -1;
+      this.advanceProWorkspaceRun(false);
+    }, this.workspaceDeviceKind() === 'pc' ? 250 : 900);
   }
   private font(): string { return AppConfig.fontFamily; }
 
@@ -5903,8 +7820,17 @@ struct HostListPage {
   }
 
   private async doHostBatchDelete(): Promise<void> {
-    const selectedKeys: string[] = Array.from(this.hostSelectedIds);
-    if (selectedKeys.length === 0) { return; }
+    // Only hosts on screen now (a search typed a moment ago may not have trimmed the selection yet).
+    const inView: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
+    const selectedKeys: string[] = Array.from(this.hostSelectedIds).filter((key: string): boolean => inView.has(key));
+    if (selectedKeys.length === 0) {
+      if (this.hostSelectedIds.size > 0) {
+        promptAction.showToast({ message: '选中的主机已不在当前列表中', duration: 1800 });
+      }
+      return;
+    }
+    let aiLease: AiAccountLease | null = null;
+    try { aiLease = AiAccess.getInstance().capture(); } catch (_error) {}
     const remoteHosts: RemoteHost[] = [];
     const moonlightViews: MoonlightHostLocalView[] = [];
     for (let index: number = 0; index < selectedKeys.length; index++) {
@@ -5921,25 +7847,6 @@ struct HostListPage {
           (candidate: MoonlightHostLocalView): boolean =>
             candidate.host !== null && candidate.host.id === moonlightId);
         if (view !== undefined && view.host !== null) { moonlightViews.push(view); }
-      }
-    }
-    for (let index: number = 0; index < remoteHosts.length; index++) {
-      if (!remoteHosts[index].locked) { continue; }
-      const gate: LockGateResult = await showLockGate(remoteHosts[index].label, 'biometric');
-      if (!gate.ok) {
-        const message: string = lockGateErrorMessage(gate);
-        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
-        return;
-      }
-    }
-    for (let index: number = 0; index < moonlightViews.length; index++) {
-      const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
-      if (host.locked !== true) { continue; }
-      const gate: LockGateResult = await showLockGate(host.displayName, 'biometric');
-      if (!gate.ok) {
-        const message: string = lockGateErrorMessage(gate);
-        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
-        return;
       }
     }
     const moonlightLease: AccountSessionLease | null = moonlightViews.length === 0
@@ -5964,6 +7871,18 @@ struct HostListPage {
         moonlightPreviews.push(preview);
       }
     }
+    // The dialog names and counts only what will be deleted (a Moonlight host that failed its check stays).
+    const actionableMoonlight: MoonlightHost[] = moonlightViews
+      .filter((view: MoonlightHostLocalView): boolean => view.host !== null &&
+        !preflightFailedKeys.has(unifiedMoonlightHostCardKey((view.host as MoonlightHost).id)))
+      .map((view: MoonlightHostLocalView): MoonlightHost => view.host as MoonlightHost);
+    // Locked hosts are verified once, after the confirmation (not one prompt each before it).
+    const lockedCount: number = remoteHosts.filter((host: RemoteHost): boolean => host.locked).length +
+      actionableMoonlight.filter((host: MoonlightHost): boolean => host.locked === true).length;
+    const names: string[] = remoteHosts.map((host: RemoteHost): string => hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname));
+    actionableMoonlight.forEach((host: MoonlightHost): void => { names.push(host.displayName); });
     const actionableCount: number = remoteHosts.length +
       moonlightPreviews.length;
     if (actionableCount === 0) {
@@ -5978,8 +7897,10 @@ struct HostListPage {
         ' 个主机状态已变化，将保留选择。' : '';
     const dialogResult: Object = await promptAction.showDialog({
       title: '批量删除',
-      message: '确定要删除当前可处理的 ' + actionableCount.toString() +
-        ' 个主机吗？Moonlight 主机还会清理配对信任、应用配置和目录缓存。' +
+      message: '确定要删除当前可处理的 ' + actionableCount.toString() + ' 个主机吗？' +
+        hostBatchDeleteNameList(names) +
+        (moonlightPreviews.length > 0 ? 'Moonlight 主机还会清理配对信任、应用配置和目录缓存。' : '') +
+        (lockedCount > 0 ? '其中 ' + lockedCount.toString() + ' 台已锁定，删除前需要验证身份。' : '') +
         isolatedFailureText,
       buttons: [
         { text: '取消', color: this.pal().text2 },
@@ -5988,6 +7909,15 @@ struct HostListPage {
     });
     const selected: Record<string, number> = dialogResult as Record<string, number>;
     if (selected['index'] !== 1 || !this.pageActive) { return; }
+    if (lockedCount > 0) {
+      const gate: LockGateResult = await showLockGate('删除 ' + lockedCount.toString() + ' 台已锁定的主机', 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+      if (!this.pageActive) { return; }
+    }
     let moonlightLeaseValid: boolean = moonlightPreviews.length === 0;
     if (moonlightLease !== null && moonlightPreviews.length > 0) {
       const currentLease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
@@ -6006,7 +7936,12 @@ struct HostListPage {
     for (let index: number = 0; index < remoteHosts.length; index++) {
       const host: RemoteHost = remoteHosts[index];
       const vncId: string = this.vncRecordIdForHost(host);
-      if (vncId !== '') {
+      if (host.protocol === 'ai') {
+        try {
+          if (aiLease === null) { throw new Error('AI_ACCOUNT_CHANGED'); }
+          await AiLocalStore.getInstance().removeHost(aiLease, aiHostId(host));
+        } catch (_error) { failedKeys.add(remoteHostCardKey(host.id)); }
+      } else if (vncId !== '') {
         if (!this.vncHosts.remove(vncId)) { failedKeys.add(remoteHostCardKey(host.id)); }
       } else {
         regularIds.push(host.id);
@@ -6119,6 +8054,12 @@ struct HostListPage {
       'hostManualSortOrder', JSON.stringify(this.hostManualOrder)));
   }
 
+  private hostCardProtocolColor(host: RemoteHost): string {
+    if (host.protocol === 'ssh') { return this.pal().editColor; }
+    if (host.protocol === 'rdp' || host.protocol === 'ai') { return this.accentColor; }
+    return this.pal().success;
+  }
+
   @Builder hostDragPreviewBuilder(host: RemoteHost) {
     Row() {
       Column() {
@@ -6127,8 +8068,7 @@ struct HostListPage {
           .width(24).height(24).fillColor(Color.White)
       }
       .width(42).height(42).borderRadius(21)
-      .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
-        (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+      .backgroundColor(this.hostCardProtocolColor(host))
       .justifyContent(FlexAlign.Center)
       .margin({ right: 10 })
 
@@ -6146,11 +8086,75 @@ struct HostListPage {
   }
 
   private onSearchChange(value: string): void {
+    // Typing replaces 中继 → 查看主机's search (the echo of that search keeps it).
+    if (value !== this.relaySearchFromRelayPage) { this.relaySearchFromRelayPage = ''; }
     this.searchText = value;
     if (this.searchTimer !== -1) { clearTimeout(this.searchTimer); }
     this.searchTimer = setTimeout(() => {
       this.refreshFilteredHostView();
+      this.openGroupWithSearchMatches();
     }, 300);
+  }
+
+  /** Categorized page: a search opens a category that has matches, so the results are not hidden in a closed one. */
+  private openGroupWithSearchMatches(): void {
+    if (!this.groupedHostCardsActive() || this.searchText.trim() === '') { return; }
+    const cards: HostGroupCardModel[] = this.hostGroupCardsSnapshot();
+    const moonlightMatches: boolean = this.visibleMoonlightHosts().length > 0;
+    const hasMatches = (type: string): boolean => type === 'moonlight' ? moonlightMatches :
+      cards.some((card: HostGroupCardModel): boolean => card.type === type && card.hosts.length > 0);
+    if (this.expandedHostGroup !== '' && hasMatches(this.expandedHostGroup)) { return; }
+    // In the order the groups are shown: RDP, RustDesk, SSH, VNC, Moonlight, then the rest (远程 AI).
+    const shown: string[] = ['rdp', 'rustdesk', 'ssh', 'vnc', 'moonlight'];
+    const order: string[] = shown.concat(cards.map((card: HostGroupCardModel): string => card.type)
+      .filter((type: string): boolean => shown.indexOf(type) < 0));
+    const first: string | undefined = order.find((type: string): boolean => hasMatches(type));
+    if (first !== undefined) { this.expandedHostGroup = first; }
+  }
+
+  /** A search or filter narrows the list (an empty list then means no matches, not no hosts). */
+  private hostSearchOrFilterActive(): boolean {
+    // The group strip filters only the flat list without Pro (see visibleHostsForCurrentMode).
+    const workspaceFilterApplied: boolean =
+      this.workspaceGroupId !== '' && !this.groupedHostCardsActive() && !this.proOrgVisible;
+    return this.searchText.trim() !== '' || workspaceFilterApplied ||
+      (this.proOrgVisible && this.hostOrgFilterKey !== '' && this.hostOrgFilterKey !== 'all');
+  }
+
+  /** PC protocol tabs: the protocol the current tab lists ('' when it lists every protocol). */
+  private desktopTabProtocol(): string {
+    if (!this.isDesktopDevice || this.breakpoint !== 'xl' || this.groupedHostCardsActive()) { return ''; }
+    return this.activeFilterProto !== '' ? this.activeFilterProto : hostListProtocolForTab(this.curTab);
+  }
+
+  /** After an add or edit: say so, and when a search or filter hides the host, clear them so it is in view. */
+  private announceSavedHost(hostId: string, message: string): void {
+    const visible: boolean = this.filteredHosts.some((host: RemoteHost): boolean =>
+      host.id === hostId || this.vncRecordIdForHost(host) === hostId);
+    const saved: RemoteHost | undefined = this.hosts.find((host: RemoteHost): boolean =>
+      host.id === hostId || this.vncRecordIdForHost(host) === hostId);
+    const tabProtocol: string = this.desktopTabProtocol();
+    if (!visible && saved !== undefined && tabProtocol !== '' && saved.protocol !== tabProtocol) {
+      // On another protocol's tab: clearing the search would not bring it into view, so say where it is.
+      const group: HostGroupType | null = hostGroupTypeForHost(saved);
+      const where: string = group !== null ? hostGroupTitle(group) : saved.protocol.toUpperCase();
+      promptAction.showToast({ message: message + '（在「' + where + '」页）', duration: 2400 });
+      return;
+    }
+    if (!visible && this.hostSearchOrFilterActive()) {
+      this.clearHostSearchAndFilters();
+      promptAction.showToast({ message: message + '；已清除搜索和筛选，方便看到它', duration: 2400 });
+      return;
+    }
+    promptAction.showToast({ message: message, duration: 1600 });
+  }
+
+  private clearHostSearchAndFilters(): void {
+    this.searchText = '';
+    this.relaySearchFromRelayPage = '';
+    this.workspaceGroupId = '';
+    if (this.proOrgVisible) { this.hostOrgFilterKey = 'all'; }
+    this.refreshFilteredHostView();
   }
 
   private beginConnectionAttempt(hostId: string): number {
@@ -6211,6 +8215,29 @@ struct HostListPage {
    */
   private openSessionDestination(url: string, params: Record<string, Object>,
     authorizationKind: RemoteSessionWindowAuthorizationKind): void {
+    if (this.proContinuationAttemptId !== '' &&
+        (url === 'pages/SshTerminal' || url === 'pages/RemoteDesktop') &&
+        this.proContinuationAttemptId === ProContinuationService.getInstance().incomingId()) {
+      const continuedHostId: string = (params['hostId'] as string) || '';
+      const continuedHost: RemoteHost | null = this.srv.getHost(continuedHostId) ??
+        resolveProContinuationHost('vnc', continuedHostId);
+      if (continuedHost !== null &&
+          ((url === 'pages/SshTerminal' && continuedHost.protocol === 'ssh') ||
+            (url === 'pages/RemoteDesktop' &&
+              (continuedHost.protocol === 'rdp' || proReconnectOnlyProtocol(continuedHost.protocol)))) &&
+          ProContinuationService.getInstance().restoreView(this.proContinuationAttemptId, continuedHost) !== null) {
+        params['proConnectionTransferId'] = this.proContinuationAttemptId;
+      }
+    }
+    this.proContinuationAttemptId = '';
+    if (this.proConnectionShareAttemptId !== '' && url === 'pages/SshTerminal') {
+      const sharedHost = this.srv.getHost((params['hostId'] as string) || '');
+      if (sharedHost !== undefined && ProConnectionShareReceiver.getInstance().restoreView(
+        this.proConnectionShareAttemptId, sharedHost) !== null) {
+        params['proConnectionShareId'] = this.proConnectionShareAttemptId;
+      }
+    }
+    this.proConnectionShareAttemptId = '';
     const rawRdpAttemptGeneration: Object | undefined =
       params['rdpConnectionAttemptGeneration'];
     const rdpAttemptGeneration: number = typeof rawRdpAttemptGeneration === 'number' &&
@@ -6218,9 +8245,12 @@ struct HostListPage {
       ? rawRdpAttemptGeneration : 0;
     const rdpCredentialOwnerScopeId: string =
       ((params['rdpCredentialOwnerScopeId'] as string) || '').trim();
-    if (!this.isDesktopDevice) {
+    // A Pad workspace session uses the same authenticated window hand-off as PC so it can open in split screen.
+    const workspaceSplit: boolean = !this.isDesktopDevice && this.workspaceSplitRoute(params);
+    if (!this.isDesktopDevice && !workspaceSplit) {
       const routeHostId: string = ((params['hostId'] as string) || '').trim();
       void router.pushUrl({ url, params }).catch((_err: Error): void => {
+        SshAuthenticatedHandoff.getInstance().discard((params['sshAuthenticatedHandoff'] as string) || '');
         if (url === 'pages/RemoteDesktop' && routeHostId !== '') {
           const routeHost: RemoteHost | undefined = this.srv.getHost(routeHostId);
           if (routeHost === undefined || routeHost.protocol === 'rdp') {
@@ -6268,6 +8298,7 @@ struct HostListPage {
     // handoff can be staged. Preserve that original result so the existing
     // session page cannot ask for the same biometric twice.
     routeParams['authenticated'] = true;
+    if (workspaceSplit) { routeParams['workspaceSplitWindow'] = true; }
     if (protocol === 'rdp' || protocol === 'vnc' || protocol === 'ssh') {
       // Certificate/host-key preflight is not the remote protocol's login
       // commit. Keep the original RemoteDesktop/SshTerminal authentication UI
@@ -6276,6 +8307,7 @@ struct HostListPage {
       routeParams['pcWindowAfterAuthentication'] = true;
       routeParams['pcWindowPreflightKind'] = authorizationKind;
       void router.pushUrl({ url, params: routeParams }).catch((_err: Error): void => {
+        SshAuthenticatedHandoff.getInstance().discard((routeParams['sshAuthenticatedHandoff'] as string) || '');
         if (protocol === 'rdp') {
           this.abortRdpSessionDestination(
             hostId, rdpCredentialOwnerScopeId,
@@ -6442,7 +8474,60 @@ struct HostListPage {
     });
   }
 
-  private async connectToHost(host: RemoteHost): Promise<void> {
+  // Tapping the system continuation entry is the user's consent: accept each incoming transfer once,
+  // whichever tab is open. A hot start delivers the Want before foreground, so wait for it briefly.
+  // No card: a failure is shown once as a toast and the transfer is dropped; continue again from the source.
+  private async autoAcceptProContinuation(id: string, attempt: number): Promise<void> {
+    const service = ProContinuationService.getInstance();
+    if (service.incomingId() !== id || !service.snapshot().incomingCanAccept) { return; }
+    // A cold start delivers the Want before foreground and before the Pro entitlement is restored.
+    if (!this.pageActive || this.appInBackground || !ProEntries.proActive()) {
+      if (attempt < 40) { setTimeout((): void => { void this.autoAcceptProContinuation(id, attempt + 1); }, 250); return; }
+      if (!this.pageActive || this.appInBackground) { return; }
+    }
+    const host = await service.accept(getContext(this) as common.UIAbilityContext);
+    if (host === null) {
+      if (service.incomingId() !== id) { return; }
+      const reason = service.snapshot().incomingMessage;
+      promptAction.showToast({ message: reason.length > 0 ? reason : '接续失败，请在源设备重新接续', duration: 3000 });
+      service.cancelIncoming(id);
+      return;
+    }
+    if (service.incomingId() !== id || !this.pageActive || this.appInBackground) { service.cancelIncoming(id); return; }
+    await this.connectToProContinuationHost(host, id);
+  }
+
+  // Every continuation stays live until the destination page observes the
+  // protocol-specific native-ready boundary and sends its receipt. A route
+  // push or a preflight sheet closing is only navigation, never readiness.
+  private async connectToProContinuationHost(host: RemoteHost, id: string): Promise<void> {
+    await this.connectToHost(host, id);
+  }
+
+  /**
+   * Why a picture session could not start ('' if not for that reason): the device's picture-session limit is reached
+   * (several may be open at once on PC and tablet), or on a one-session phone another session holds the media path.
+   */
+  private videoSessionBusyMessage(hostId: string, sid: number): string {
+    const active: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
+    const holder: RemoteHost | undefined = active === null ? undefined :
+      this.hosts.find((candidate: RemoteHost): boolean => candidate.id === active.hostId);
+    const label: string = holder === undefined ? '' : holder.label;
+    const limit: number = ExtensionLoader.pictureSessionLimit();
+    if (sid === REMOTE_PICTURE_SESSION_LIMIT_CODE) {
+      return remotePictureSessionLimitMessage(limit, active, hostId, label);
+    }
+    return limit <= 1 ? remoteVideoSessionBusyMessage(active, hostId, label) : '';
+  }
+
+  private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
+    if (host.protocol === 'ai') { await this.openAiHost(aiHostId(host)); return; }
+    // Every explicit new attempt replaces the previous local continuation route token.
+    this.proContinuationAttemptId = continuationId;
+    if (continuationId === '') { ProContinuationService.getInstance().cancelIncoming(); }
+    this.proConnectionShareAttemptId = shareId;
+    if (shareId === '') { ProConnectionShareReceiver.getInstance().cancel(); }
+
     if (!this.pageActive || this.appInBackground) {
       this.clearPendingVncCredentialForRemoteHost(host);
       return;
@@ -6491,7 +8576,8 @@ struct HostListPage {
       }
       return;
     }
-    if (host.locked) {
+    // A PC workspace run may already have verified this host in its single up-front check.
+    if (host.locked && !this.takeWorkspaceLockClearance(host.id)) {
       const r = await showLockGate(host.label, 'biometric');
       if (protocolNeedsArbitration &&
         !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
@@ -6516,30 +8602,8 @@ struct HostListPage {
       return;
     }
     if (host.protocol === 'ssh') {
-      const storedProxyProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(host.id);
-      if (storedProxyProfile !== null) {
-        const proxyPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(host, storedProxyProfile);
-        if (!proxyPlan.valid) {
-          promptAction.showToast({ message: proxyPlan.message, duration: 2400 });
-          return;
-        }
-        if (proxyPlan.route.type === 'ssh_jump' &&
-          !sshProxyRuntimeHasStrictJumpBindings(proxyPlan)) {
-          promptAction.showToast({
-            message: 'ProxyJump 每一跳都必须填写 SHA256 host-key 指纹', duration: 2600
-          });
-          return;
-        }
-        // A durable profile is authoritative for every route kind. The
-        // terminal owns the native pre-auth host-key broker and can therefore
-        // verify the exact canonical path without falling back to flat fields.
-        const sshParams: Record<string, Object> = {};
-        sshParams['hostId'] = host.id;
-        sshParams['authenticated'] = true;
-        this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
-        return;
-      }
-      // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
+      // Preserve canonical routes and dynamic authentication while keeping
+      // the host list visible until the native login has actually succeeded.
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
       this.prepareRdpCredentialOrCertificate(host, connectionGeneration);
@@ -6561,6 +8625,12 @@ struct HostListPage {
         proManaged: relay !== undefined && connectionContext.requiresAccount
       });
       if (rustDeskError !== '') {
+        // Rejected before the preflight panel opens; still leave evidence so a
+        // capture never shows zero RustDesk events for an attempted connect.
+        this.recordRustDeskPreflightEvent('failed', 0, -26);
+        // 'validation' never opened an attempt, so it cannot close another
+        // one; the address class still says why a direct input was rejected.
+        this.recordRustDeskRouteStage(host, 'failed', 'validation', 0, 0);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: rustDeskError, duration: 2600 });
         return;
@@ -6571,6 +8641,8 @@ struct HostListPage {
         // Fail closed if a future policy ever removes this host from the
         // preflight owner. A desktop window may only receive an already-live,
         // authenticated RustDesk session through the atomic handoff below.
+        this.recordRustDeskPreflightEvent('failed', 0, -27);
+        this.recordRustDeskRouteStage(host, 'failed', 'validation', 0, 0);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: 'RustDesk 鉴权流程不可用，未打开独立窗口', duration: 2400 });
       }
@@ -6619,6 +8691,14 @@ struct HostListPage {
       return;
     }
     RdpSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+    // A continuation whose source opted into 随接续传输 skips the prompt for this connection only.
+    const handed = ProContinuationCredentialHandoff.getInstance().take(host.id, host.userId);
+    if (handed !== null && handed.kind === 'password' && (handed.username ?? '') !== '' &&
+      RdpSessionCredentialHandoff.getInstance().put(host.userId, host.id, handed.username ?? '', handed.password,
+        routeIdentity, scope.ownerScopeId.trim(), scope.generation, attemptGeneration)) {
+      this.openRdpCertificatePreflight(host, attemptGeneration);
+      return;
+    }
     this.rdpSessionCredentialHostId = host.id;
     this.rdpSessionCredentialHostLabel = host.label;
     this.rdpSessionCredentialUsername = '';
@@ -6792,6 +8872,7 @@ struct HostListPage {
     this.rdpCertificateOwnerScopeId = host.userId;
     this.rdpCertificateHostLabel = host.host;
     this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
+    this.rdpCertificateProgress = '';
     this.rdpCertificateWarning = '';
     this.rdpCertificateInfo = null;
     this.rdpGatewayCertificateInfo = null;
@@ -6805,6 +8886,18 @@ struct HostListPage {
     this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
     this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = false;
     this.rdpGatewayPreflightOneTimeRouteIdentity = '';
+    if (rdpCertificatePreflightSkipAllowed(
+      this.rdpSkipCertificatePreflight, this.rdpCertificateRouteMode(host))) {
+      this.showRdpCertificatePreflight = false;
+      hilog.info(0x0001, 'HostList',
+        'RDP certificate preflight skipped; live certificate verification retained');
+      // Keep FreeRDP's native resolver path when the user explicitly skips
+      // the independent probe. There is no proven candidate to bind here,
+      // and forcing the first A/AAAA result would remove its own family
+      // fallback. The live certificate callback remains authoritative.
+      this.doRdpCertificateRoute(host, undefined, false, true);
+      return;
+    }
     this.showRdpCertificatePreflight = shouldShowRdpCertificateProbeSheetBeforeProbe(
       host.rdpCertificateTrustMode,
       host.rdpCertificateFingerprintSha256,
@@ -6965,8 +9058,99 @@ struct HostListPage {
     };
   }
 
+  private async probeRdpCertificateWithDnsFallback(
+    host: RemoteHost,
+    generation: number = 0
+  ): Promise<RdpCertificateDnsProbeResult> {
+    const probeIsCurrent = (): boolean => generation <= 0 ||
+      this.isCurrentRdpCertificateProbe(host, generation);
+    const targetServerName: string = host.customHostname.trim() !== ''
+      ? host.customHostname : host.host;
+    this.rdpCertificateProgress = '正在连接并读取证书';
+    let info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+      host.host,
+      host.port,
+      targetServerName
+    );
+    const endpointMode: string = this.rdpCertificateRouteMode(host);
+    if (!rdpDnsFallbackShouldEnumerate(host.host, endpointMode)) {
+      return { info, transportHost: '' };
+    }
+    // The probe reached the RDP service: the live connection uses the very
+    // address the probe verified, so FreeRDP cannot pick another answer.
+    const reached: string = normalizeRdpDnsCandidate(info.connectedAddress ?? '');
+    if (reached !== '' && (info.ok || rdpDnsFallbackProbeCanReuseTransport(info.errorCode))) {
+      return { info, transportHost: reached };
+    }
+    if (!rdpDnsFallbackNeedsResolution(info.errorCode)) {
+      return { info, transportHost: '' };
+    }
+    // The name did not resolve or nothing answered there: ask the way mstsc
+    // would — DNS through HarmonyOS, the network's search suffixes, then the
+    // local network (mDNS / LLMNR / NetBIOS) for a computer name.
+    const resolution: RdpNameResolution = await resolveRdpHostCandidates(host.host,
+      (name: string): Promise<string[]> => this.loader.resolveLocalHostName(name),
+      (stage: RdpNameResolutionVia): void => {
+        if (probeIsCurrent()) {
+          this.rdpCertificateProgress = stage === 'local' ? '正在局域网中查找这台电脑' :
+            stage === 'dns-suffix' ? '正在按网络的域名后缀查找' : '正在解析地址';
+        }
+      });
+    if (!probeIsCurrent()) {
+      return { info, transportHost: '' };
+    }
+    const candidates: string[] = resolution.addresses;
+    if (candidates.length === 0) {
+      hilog.warn(0x0001, 'HostList',
+        'RDP name resolution returned no numeric candidate host=' + maskHost(host.host));
+      return { info, transportHost: '' };
+    }
+
+    hilog.info(0x0001, 'HostList',
+      'RDP name resolution candidates host=' + maskHost(host.host) +
+      ' count=' + candidates.length.toString() + ' via=' + resolution.via);
+    let lastCandidateInfo: RdpCertificateInfo = info;
+    let lastCandidateTransportHost: string = '';
+    for (let index = 0; index < candidates.length; index++) {
+      if (!probeIsCurrent()) {
+        return { info, transportHost: '' };
+      }
+      this.rdpCertificateProgress = candidates.length > 1 ?
+        '正在尝试第 ' + (index + 1).toString() + '/' + candidates.length.toString() + ' 个地址' :
+        '已找到地址，正在读取证书';
+      const candidate: string = candidates[index];
+      const candidateInfo: RdpCertificateInfo =
+        await this.loader.probeRdpCertificateAsync(candidate, host.port, targetServerName);
+      if (!probeIsCurrent()) {
+        return { info, transportHost: '' };
+      }
+      if (candidateInfo.ok && candidateInfo.fingerprintSha256.length > 0) {
+        hilog.info(0x0001, 'HostList',
+          'RDP name resolution probe succeeded host=' + maskHost(host.host) +
+            ' candidate=' + maskHost(candidate));
+        return { info: candidateInfo, transportHost: candidate };
+      }
+      // Once a candidate answered, a TCP/TLS/negotiation result is more
+      // actionable than the original resolver error. Keep the last such
+      // observation for the certificate sheet; a candidate that reached the
+      // service is still reusable after an explicit Continue Once decision.
+      if (rdpDnsFallbackProbeCanReuseTransport(candidateInfo.errorCode)) {
+        lastCandidateInfo = candidateInfo;
+        lastCandidateTransportHost = candidate;
+      }
+    }
+    if (lastCandidateTransportHost !== '') {
+      hilog.info(0x0001, 'HostList',
+        'RDP name resolution selected reachable candidate host=' + maskHost(host.host) +
+          ' candidate=' + maskHost(lastCandidateTransportHost) +
+          ' originalProbeCode=' + info.errorCode.toString());
+    }
+    return { info: lastCandidateInfo, transportHost: lastCandidateTransportHost };
+  }
+
   private rdpCertificateResultFromDirectProbe(host: RemoteHost,
-    info: RdpCertificateInfo, generation: number): RdpPreflightResult {
+    info: RdpCertificateInfo, generation: number,
+    transportHost: string = ''): RdpPreflightResult {
     return {
       ok: info.ok && info.fingerprintSha256.length > 0,
       preflightStatus: info.ok ? 'completed' :
@@ -6987,6 +9171,7 @@ struct HostListPage {
       requiresGatewayAuth: false,
       requiresUserDecision: info.ok || rdpCertificatePreflightAllowsRealConnection(
         info.preflightStatus, info.errorCode),
+      transportHost: transportHost,
       gatewayCertificate: {
         present: false, rootTrusted: false, hostMismatch: false, flags: 0,
         host: host.gatewayHost, port: host.gatewayPort, stage: 'gateway',
@@ -6999,7 +9184,7 @@ struct HostListPage {
         rootTrusted: info.rootTrusted,
         hostMismatch: info.hostMismatch,
         flags: info.flags,
-        host: info.host,
+        host: host.host,
         port: info.port,
         stage: 'target',
         serverName: host.customHostname || host.host,
@@ -7068,6 +9253,7 @@ struct HostListPage {
     if (this.rdpCertificateClosing) {
       return;
     }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_CANCEL);
     const hostId: string = this.rdpCertificateHostId;
     const host: RemoteHost | undefined = this.srv.getHost(hostId);
     const ownerScopeId: string = host === undefined ?
@@ -7181,6 +9367,7 @@ struct HostListPage {
       const generation: number = nextRdpCertificateProbeGeneration(this.rdpCertificateProbeGeneration);
       this.rdpCertificateProbeGeneration = generation;
       this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
+      this.rdpCertificateProgress = '';
       this.rdpCertificateError = '';
       this.doRdpCertificateProbe(host, generation);
     }
@@ -7231,6 +9418,35 @@ struct HostListPage {
     const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
     return rdpCertificateRouteIsCurrent(result.routeIdentity, expectedRoute) &&
       liveHost !== undefined && rdpRouteIdentity(liveHost) === expectedRoute;
+  }
+
+  private rdpCertificateBypassHintVisible(): boolean {
+    const host: RemoteHost | undefined = this.getRdpCertificateHost();
+    const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
+    return host !== undefined && result !== null &&
+      rdpCertificatePreflightBypassHintAllowed(
+        this.rdpSkipCertificatePreflight,
+        this.rdpCertificateRouteMode(host),
+        result.preflightStatus,
+        result.errorCode,
+        result.targetCertificate.present);
+  }
+
+  private doRdpCertificatePreflightBypassOnce(): void {
+    const host: RemoteHost | undefined = this.getRdpCertificateHost();
+    const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
+    if (host === undefined || result === null || !this.rdpCertificateBypassHintVisible()) {
+      return;
+    }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_BYPASS);
+    if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
+      this.rejectStaleRdpCertificateResult();
+      return;
+    }
+    // Skip only this independent probe. The route is still bound to the
+    // current host/attempt and RemoteDesktop keeps the live certificate
+    // callback enabled for the actual FreeRDP handshake.
+    this.doRdpCertificateRoute(host, undefined, false, true);
   }
 
   private rdpGatewayConfirmationPending(result: RdpPreflightResult | null =
@@ -7385,12 +9601,10 @@ struct HostListPage {
         // Apply the gateway view only after the full result has passed the
         // generation and route-identity checks below.
       } else {
-        info = await this.loader.probeRdpCertificateAsync(
-          host.host,
-          host.port,
-          host.customHostname
-        );
-        routeResult = this.rdpCertificateResultFromDirectProbe(host, info, generation);
+        const directProbe = await this.probeRdpCertificateWithDnsFallback(host, generation);
+        info = directProbe.info;
+        routeResult = this.rdpCertificateResultFromDirectProbe(
+          host, info, generation, directProbe.transportHost);
       }
       if (!this.renewRdpSessionCredentialForHost(host)) {
         this.rejectExpiredRdpSessionCredential(host);
@@ -7508,6 +9722,11 @@ struct HostListPage {
         savedAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
         savedAllowHostMismatch: host.rdpCertificateAllowHostMismatch
       });
+      // A host that only completes legacy TLS stops here until its user agreed to it, even with a trusted pin.
+      if (this.rdpCertificateState === RdpCertificatePreflightState.TRUSTED_MATCH &&
+        rdpLegacyTlsNeedsDecision(probeView.riskFlags ?? [], this.rdpLegacyTlsConsented(host, probeRouteIdentity))) {
+        this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+      }
       const oneTimeGatewayTrust: boolean =
         this.rdpGatewayPreflightOneTimeFingerprint.length > 0 &&
         rdpCertificateRouteIsCurrent(
@@ -7758,6 +9977,7 @@ struct HostListPage {
       this.rdpCertificateProbeGeneration);
     this.rdpCertificateProbeGeneration = generation;
     this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
+    this.rdpCertificateProgress = '';
     this.rdpCertificateInfo = null;
     this.rdpCertificateRouteResult = null;
     this.rdpCertificateError = '';
@@ -7772,6 +9992,7 @@ struct HostListPage {
       return;
     }
     if (!this.rdpCertificateRouteResult) { return; }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_CONTINUE_ONCE);
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
       this.continueAfterRdpGatewayCertificateDecision(
@@ -7797,12 +10018,68 @@ struct HostListPage {
     this.doRdpCertificateRoute(routed, result, true);
   }
 
+  /** A deleted host takes its lowered security choices with it. */
+  private forgetRdpSecurityDowngrades(host: RemoteHost): void {
+    if (host.protocol !== 'rdp') { return; }
+    try {
+      RdpLegacyTlsConsentStore.getInstance().revokeHost(getContext(this) as common.UIAbilityContext, host.id);
+    } catch (_error) { /* nothing stored */ }
+    this.refreshRdpSecurityDowngradeHosts();
+  }
+
+  /** Re-read how many hosts have their own lowered security choice (shown in the Windows RDP settings). */
+  private refreshRdpSecurityDowngradeHosts(): void {
+    try {
+      this.rdpSecurityDowngradeHosts = RdpLegacyTlsConsentStore.getInstance().hostCount(
+        getContext(this) as common.UIAbilityContext);
+    } catch (_error) {
+      this.rdpSecurityDowngradeHosts = 0;
+    }
+  }
+
+  /** The AI's 恢复各电脑的默认 RDP 安全设置: the same confirmation as the settings row, or why there is nothing to do. */
+  private restoreRdpSecurityForAssistant(): void {
+    this.refreshRdpSecurityDowngradeHosts();
+    if (this.rdpSecurityDowngradeHosts <= 0) {
+      promptAction.showToast({ message: '没有电脑单独改用旧版 TLS 或 TLS 登录，已经是默认安全设置', duration: 2600 });
+      return;
+    }
+    this.confirmRestoreRdpSecurityDowngrades();
+  }
+
+  private confirmRestoreRdpSecurityDowngrades(): void {
+    promptAction.showDialog({
+      title: '恢复默认安全设置？',
+      message: '这些电脑以后会重新要求 TLS 1.2 以上和网络级身份验证（NLA）；只支持旧系统的电脑会在连接时重新询问。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '全部恢复', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) { return; }
+      RdpLegacyTlsConsentStore.getInstance().revokeAll(getContext(this) as common.UIAbilityContext);
+      this.refreshRdpSecurityDowngradeHosts();
+      promptAction.showToast({ message: '已恢复默认安全设置', duration: 2000 });
+    }).catch((_error: Error): void => {});
+  }
+
+  private rdpLegacyTlsConsented(host: RemoteHost, routeIdentity: string): boolean {
+    try {
+      return RdpLegacyTlsConsentStore.getInstance().allowed(getContext(this) as common.UIAbilityContext,
+        host.id, routeIdentity);
+    } catch (_error) {
+      return false;
+    }
+  }
+
   private doRdpCertificateTrust(host: RemoteHost): void {
     if (!this.renewRdpSessionCredentialForHost(host)) {
       this.rejectExpiredRdpSessionCredential(host);
       return;
     }
     if (!this.rdpCertificateRouteResult) { return; }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_TRUST);
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
       this.continueAfterRdpGatewayCertificateDecision(
@@ -7822,6 +10099,12 @@ struct HostListPage {
       result,
       RdpCertificatePreflightDecision.TRUST
     );
+    // Trusting a host the sheet showed as legacy TLS also agrees to legacy TLS for this route.
+    if ((result.targetRiskFlags || []).indexOf('LEGACY_TLS') >= 0 ||
+      (this.rdpCertificateInfo?.riskFlags ?? []).indexOf('LEGACY_TLS') >= 0) {
+      RdpLegacyTlsConsentStore.getInstance().allow(getContext(this) as common.UIAbilityContext,
+        host.id, result.routeIdentity);
+    }
     if (!this.srv.updateHost(updated)) {
       // Saving a pin can fail independently of connection viability. Leave
       // the user at the decision point rather than converting it into a
@@ -7838,7 +10121,7 @@ struct HostListPage {
   }
 
   private doRdpCertificateRoute(host: RemoteHost, oneTimeResult?: RdpPreflightResult,
-    userApprovedAdvisory: boolean = false): void {
+    userApprovedAdvisory: boolean = false, skipPreflight: boolean = false): void {
     if (this.rdpCertificateClosing) {
       return;
     }
@@ -7856,6 +10139,10 @@ struct HostListPage {
     params['hostId'] = host.id;
     params['rdpCredentialOwnerScopeId'] = host.userId;
     params['rdpConnectionAttemptGeneration'] = this.rdpCertificateAttemptGeneration;
+    if (rdpCertificatePreflightSkipAllowed(skipPreflight, this.rdpCertificateRouteMode(host))) {
+      params['rdpVerifyCertificateOnConnect'] = true;
+      params['rdpVerifyCertificateRouteIdentity'] = rdpRouteIdentity(host);
+    }
     if (diagnosticResult) {
       const target = diagnosticResult.targetCertificate;
       const gateway = diagnosticResult.gatewayCertificate;
@@ -7868,6 +10155,17 @@ struct HostListPage {
           diagnosticResult.preflightStatus, diagnosticResult.errorCode,
           diagnosticResult.riskFlags || []);
       params['rdpCertificateOneTimeRouteIdentity'] = diagnosticResult.routeIdentity;
+      const transportHost: string = (diagnosticResult.transportHost || '').trim();
+      if (transportHost !== '' &&
+          (diagnosticResult.endpointMode === 'direct_rdp' ||
+            diagnosticResult.endpointMode === 'transparent_tcp_rdp')) {
+        // The candidate is bound to the same route and connection-attempt
+        // generation as the certificate decision. RemoteDesktop validates
+        // both before using it and keeps it in memory only.
+        params['rdpTransportHost'] = transportHost;
+        params['rdpTransportRouteIdentity'] = diagnosticResult.routeIdentity;
+        params['rdpTransportAttemptGeneration'] = this.rdpCertificateAttemptGeneration;
+      }
       params['rdpCertificatePreflightStatus'] = diagnosticResult.preflightStatus;
       params['rdpCertificatePreflightRiskFlags'] = diagnosticResult.riskFlags;
       params['rdpGatewayCertificatePreflightRiskFlags'] = diagnosticResult.gatewayRiskFlags;
@@ -7879,6 +10177,9 @@ struct HostListPage {
       params['rdpAllowStandardSecurityOnce'] = shouldEnableStandardRdpSecurityOnce(
         userApprovedAdvisory, targetRiskFlags.length > 0
           ? targetRiskFlags : diagnosticResult.riskFlags);
+      params['rdpAllowLegacyTls'] = shouldAllowRdpLegacyTls(
+        targetRiskFlags.length > 0 ? targetRiskFlags : (diagnosticResult.riskFlags || []),
+        userApprovedAdvisory, this.rdpLegacyTlsConsented(host, diagnosticResult.routeIdentity));
       if (target.present && target.fingerprintSha256.length > 0) {
         params['rdpCertificateOneTimeFingerprintSha256'] = target.fingerprintSha256;
         params['rdpCertificateOneTimeAllowUntrustedRoot'] = !target.rootTrusted;
@@ -8272,6 +10573,10 @@ struct HostListPage {
     const vncHostId: string = this.vncCertificateHostId;
     if (vncHostId === '') { this.releaseConnectionAttempt(hostId); return; }
     const params: Record<string, Object> = {};
+    // Keep the projected HostSync record addressable for continuation
+    // validation. `vncHostId` is the VNC owner id; `hostId` is the synced
+    // RemoteHost projection used by ProConnectionEnvelope.
+    params['hostId'] = hostId;
     params['vncHostId'] = vncHostId;
     const host: VncHostView | null = this.vncHosts.find(vncHostId);
     const endpoint: VncTlsEndpointResolution | null = this.vncCertificateEndpoint;
@@ -8449,6 +10754,13 @@ struct HostListPage {
     this.vncCredentialRetryHostId = '';
     this.vncCredentialRetryReplaceSavedHostId = '';
     const state: VncCredentialPreflightState = this.vncHosts.passwordStateFor(host.id).state;
+    // A continuation whose source opted into 随接续传输: this connection only, never stored.
+    const handed = forcePrompt ? null :
+      ProContinuationCredentialHandoff.getInstance().take(vncHostUiId(host.id), host.userId);
+    if (handed !== null && handed.kind === 'password') {
+      VncSessionCredentialHandoff.getInstance().put(host.userId, host.id, handed.password,
+        this.vncCredentialEndpointBinding, this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration);
+    }
     const transientAvailable: boolean = VncSessionCredentialHandoff.getInstance().bind(
       host.userId, host.id, this.vncCredentialEndpointBinding,
       this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration);
@@ -8668,11 +10980,18 @@ struct HostListPage {
         this.showSshPreflight = true;
       });
     }, true);
-    this.doSshPreflightProbe(host, generation);
   }
 
   /** T-210: 关闭 preflight */
   private doSshPreflightCancel(closeSheet: boolean = true): void {
+    // Programmatic success dismissal also invokes onWillDismiss. Its receipt
+    // must survive until onDisappear routes the already-authenticated session.
+    if (this.sshPreflightClosing) { return; }
+    if (this.sshPreflightPendingRouteParams !== null) {
+      SshAuthenticatedHandoff.getInstance().discard(
+        (this.sshPreflightPendingRouteParams['sshAuthenticatedHandoff'] as string) || '');
+      this.sshPreflightPendingRouteParams = null;
+    }
     const hostId: string = this.sshPreflightHostId;
     this.cancelSshPreflightOperation();
     this.sshPreflightGeneration = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
@@ -8713,6 +11032,11 @@ struct HostListPage {
     this.sshPreflightError = '';
     if (routeParams !== null) {
       setTimeout((): void => {
+        if (!this.pageActive || this.appInBackground) {
+          SshAuthenticatedHandoff.getInstance().discard(
+            (routeParams['sshAuthenticatedHandoff'] as string) || '');
+          return;
+        }
         this.openSessionDestination('pages/SshTerminal', routeParams, 'ssh_preflight_complete');
       }, 0);
       return;
@@ -9447,9 +11771,8 @@ struct HostListPage {
             (this.rdpCertificateRouteMode(host) !== 'microsoft_rd_gateway' ||
               result.gatewayCertificate.present);
         } else {
-          const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
-            host.host, host.port, host.customHostname);
-          ok = info.ok;
+          const directProbe = await this.probeRdpCertificateWithDnsFallback(host);
+          ok = directProbe.info.ok;
         }
       } else if (host.protocol === 'vnc') {
         const vncHostId: string = this.vncRecordIdForHost(host);
@@ -9715,8 +12038,15 @@ struct HostListPage {
     this.vncPlaintextHandoff.clear(userId, 'vnc-cert:' + normalizedHostId);
   }
 
-  private async toggleLock(host: RemoteHost): Promise<void> {
-    const r = await showLockGate(host.label, 'biometric');
+  private async toggleLock(cardHost: RemoteHost): Promise<void> {
+    if (cardHost.protocol === 'ai') { return; }
+    // The card's copy can be stale (an edit synced meanwhile): lock the host as stored now.
+    const host: RemoteHost = this.srv.getHost(cardHost.id) ?? cardHost;
+    // What the user asked for, decided before the verification (a sync during it does not flip the request).
+    const nextLocked: boolean = !host.locked;
+    const r = await showLockGate(hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname), 'biometric');
     if (!r.ok) {
       const msg: string = lockGateErrorMessage(r);
       if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
@@ -9724,7 +12054,6 @@ struct HostListPage {
     }
     const vncHostId: string = this.vncRecordIdForHost(host);
     if (vncHostId !== '') {
-      const nextLocked: boolean = !host.locked;
       if (!this.vncHosts.updateLock(vncHostId, nextLocked,
         nextLocked ? LockType.BIOMETRIC : LockType.NONE)) {
         promptAction.showToast({ message: '保存 VNC 主机状态失败', duration: 2000 });
@@ -9734,8 +12063,9 @@ struct HostListPage {
       promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
-    const updated: RemoteHost = host.runtimeClone();
-    updated.locked = !host.locked;
+    // The host as stored after the verification: changes synced meanwhile are kept, only the lock changes.
+    const updated: RemoteHost = (this.srv.getHost(host.id) ?? host).runtimeClone();
+    updated.locked = nextLocked;
     updated.lockType = updated.locked ? LockType.BIOMETRIC : LockType.NONE;
     if (!this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '保存主机状态失败', duration: 2000 });
@@ -10095,6 +12425,7 @@ struct HostListPage {
       codec: rustDeskCodecConfigValue(this.rustdeskCodec),
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
+      rdExplicitPhone: explicitPhoneImplementationReady() && hasExplicitRustDeskPhoneChoice(host),
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
       rdConnectionStrategy: rustDeskConnectionStrategyForHost(direct),
       rdDirectPort: endpoint.port,
@@ -10295,6 +12626,8 @@ struct HostListPage {
   private cancelRustDeskProTwoFactor(): void {
     const disconnectIdentity: NativeDisconnectIdentity | null =
       this.rustDeskProDisconnectIdentity;
+    this.recordRustDeskPreflightEvent('cancelled', this.rustDeskProPreflightGeneration, -100,
+      disconnectIdentity === null ? 0 : disconnectIdentity.sessionId);
     this.rustDeskProPreflightGeneration += 1;
     if (disconnectIdentity !== null) {
       this.submitRustDeskProExactDisconnect(disconnectIdentity);
@@ -10329,16 +12662,44 @@ struct HostListPage {
     this.rustDeskProTwoFactorSubmitting = true;
   }
 
+  /** Keep RustDesk preflight failures searchable without exporting free text. */
+  private recordRustDeskPreflightEvent(outcome: 'started' | 'succeeded' | 'failed' | 'cancelled',
+    generation: number, code: number = 0, sessionId: number = 0): void {
+    try {
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_preflight', outcome,
+        sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+    } catch (_err) {}
+  }
+
+  private rustDeskPreflightDiagnosticCode(detail: string): number {
+    const marker: string = 'E-RUSTDESK-PREFLIGHT-';
+    const start: number = detail.indexOf(marker);
+    if (start >= 0) {
+      const tail: string = detail.substring(start + marker.length);
+      let digits: string = '';
+      for (let index: number = 0; index < tail.length; index++) {
+        const ch: string = tail[index];
+        if (ch < '0' || ch > '9') { break; }
+        digits += ch;
+      }
+      const parsed: number = Number(digits);
+      if (Number.isSafeInteger(parsed) && parsed > 0) { return -parsed; }
+    }
+    return -1;
+  }
+
   private async confirmRustDeskProPreflight(): Promise<void> {
     const stored: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
     if (!stored || this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) { return; }
     if (this.rustDeskProSecretProjectionInvalidated) {
+      this.failRustDeskPreflightValidation(stored, -21);
       this.rustDeskProPreflightError =
         'RustDesk 认证绑定已变化；请关闭后重新打开连接面板再继续';
       return;
     }
     const bindingError: string = this.rustDeskProBindingError(stored);
     if (bindingError !== '') {
+      this.failRustDeskPreflightValidation(stored, -20);
       this.rustDeskProPreflightError = bindingError;
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       return;
@@ -10358,27 +12719,37 @@ struct HostListPage {
     if (this.rustDeskProAuthMode === 'password' && keepsStoredPassword &&
       keepsSamePasswordMode && this.rustDeskProPasswordConfigured &&
       stored.password === '' && this.rustDeskProPassword === '') {
+      this.failRustDeskPreflightValidation(stored, -22);
       this.rustDeskProPreflightError = '设备密码仍在加密仓库中；请先解锁并重新打开连接面板。';
       return;
     }
     if (this.rustDeskProAuthMode === 'password' && passwordForConnection.trim().length === 0) {
+      this.failRustDeskPreflightValidation(stored, -23);
       this.rustDeskProPreflightError = '请输入远程 RustDesk 设备密码。';
       return;
     }
     if (this.rustDeskProAuthMode === 'request_approval' && stored.rustdeskDirectEnabled) {
+      this.failRustDeskPreflightValidation(stored, -24);
       this.rustDeskProPreflightError = '直连模式只能使用设备密码。';
       return;
     }
     if (this.rustDeskProAuthMode === 'request_approval' && stored.passwordConfigured &&
       stored.password === '') {
+      this.failRustDeskPreflightValidation(stored, -25);
       this.rustDeskProPreflightError =
         '已保存设备密码处于加密仓库中；请先解锁再切换为请求批准。';
       return;
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
+    const preflightStartedAtMs: number = Date.now();
+    this.recordRustDeskPreflightEvent('started', generation);
+    this.recordRustDeskRouteStage(stored, 'started', 'unknown', 0, 0);
     const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
       getContext(this) as common.Context);
     if (!accountScopeReady) {
+      this.recordRustDeskPreflightEvent('failed', generation, -10);
+      this.recordRustDeskRouteStage(stored, 'failed', 'unknown', 0,
+        Date.now() - preflightStartedAtMs);
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       this.rustDeskProPreflightError = '账号数据域初始化失败，无法安全保留后台会话。';
       return;
@@ -10449,7 +12820,11 @@ struct HostListPage {
           '账号状态已变化，请重新发起连接。');
       }
       const sid: number = this.loader.connect(sessionConfig);
-      if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
+      if (sid <= 0) {
+        const busy: string = this.videoSessionBusyMessage(host.id, sid);
+        throw new Error(busy !== '' ? busy + ' [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']' :
+          '无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']');
+      }
       preflightDisconnectIdentity = this.loader.captureDisconnectIdentity(sid);
       if (preflightDisconnectIdentity === null) {
         throw new Error('RustDesk 会话所有权回执不可用，已停止预鉴权流程。');
@@ -10459,12 +12834,18 @@ struct HostListPage {
       const startedAt: number = Date.now();
       while (Date.now() - startedAt < timeoutMs) {
         if (generation !== this.rustDeskProPreflightGeneration) {
+          this.recordRustDeskPreflightEvent('cancelled', generation, -100, sid);
+          this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled', sid,
+            Date.now() - preflightStartedAtMs);
           this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
         const activeConnectionScope = AccountSessionCoordinator.getInstance().currentScope();
         if (activeConnectionScope.ownerScopeId !== connectionScope.ownerScopeId ||
           activeConnectionScope.generation !== connectionScope.generation) {
+          this.recordRustDeskPreflightEvent('cancelled', generation, -101, sid);
+          this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled', sid,
+            Date.now() - preflightStartedAtMs);
           this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
@@ -10513,6 +12894,9 @@ struct HostListPage {
           this.lastSheetDismissAtMs = Date.now();
           this.showRustDeskProPreflight = false;
           this.showRemoteHostSheet = false;
+          this.recordRustDeskPreflightEvent('succeeded', generation, 2, sid);
+          this.recordRustDeskRouteStage(host, 'succeeded', 'connected', sid,
+            Date.now() - preflightStartedAtMs);
           if (remoteSessionExactDisconnectIdentityEquals(
             this.rustDeskProDisconnectIdentity, preflightDisconnectIdentity)) {
             this.rustDeskProDisconnectIdentity = null;
@@ -10538,10 +12922,22 @@ struct HostListPage {
       if (preflightDisconnectIdentity !== null) {
         this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
       }
-      if (generation !== this.rustDeskProPreflightGeneration) { return; }
+      if (generation !== this.rustDeskProPreflightGeneration) {
+        this.recordRustDeskPreflightEvent('cancelled', generation, -100,
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+        this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled',
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId,
+          Date.now() - preflightStartedAtMs);
+        return;
+      }
       const failureScope = AccountSessionCoordinator.getInstance().currentScope();
       if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
         failureScope.generation !== connectionScope.generation) {
+        this.recordRustDeskPreflightEvent('cancelled', generation, -101,
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+        this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled',
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId,
+          Date.now() - preflightStartedAtMs);
         return;
       }
       this.rustDeskProTwoFactorActive = false;
@@ -10554,6 +12950,14 @@ struct HostListPage {
       this.rustDeskProTwoFactorSelectedEntryId = '';
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       const detail: string = err instanceof Error ? err.message : JSON.stringify(err);
+      this.recordRustDeskPreflightEvent('failed', generation,
+        this.rustDeskPreflightDiagnosticCode(detail),
+        preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+      const directStage: RustDeskDirectStage = host.rustdeskDirectEnabled ?
+        rustDeskDirectFailureStage(detail) : 'unknown';
+      this.recordRustDeskRouteStage(host, 'failed', directStage,
+        preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId,
+        Date.now() - preflightStartedAtMs);
       let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
       if (kind === 'unknown' && host.rustdeskAuthMode === 'request_approval' &&
         detail.indexOf('等待远端批准超时') >= 0) {
@@ -10574,7 +12978,38 @@ struct HostListPage {
         ? rustDeskNativeErrorDetail(detail)
         : rustDeskProNativeErrorMessage(
           kind, host.rustdeskAuthMode, controlPlaneProfile);
+      // Direct-IP failures name the failed layer (address, TCP, login,
+      // video) instead of a generic code, with overlay-network hints.
+      const directMessage: string = host.rustdeskDirectEnabled ?
+        rustDeskDirectFailureMessage(directStage, host.rustdeskDirectPort) : '';
+      if (directMessage !== '') {
+        this.rustDeskProPreflightError = directMessage;
+      }
     }
+  }
+
+  /** A preflight rejected by local validation before any native attempt. */
+  private failRustDeskPreflightValidation(host: RemoteHost, code: number): void {
+    // Generation 0: no native attempt was opened, so this must not correlate
+    // with an earlier attempt's started/failed pair.
+    this.recordRustDeskPreflightEvent('failed', 0, code);
+    this.recordRustDeskRouteStage(host, 'failed', 'validation', 0, 0);
+  }
+
+  /** Address-free RustDesk route evidence: source, stage and address class. */
+  private recordRustDeskRouteStage(host: RemoteHost, outcome: DiagnosticOutcome,
+    stage: RustDeskDirectStage, sessionId: number, elapsedMs: number): void {
+    try {
+      const direct: boolean = host.rustdeskDirectEnabled;
+      recordRustDeskDirectStage(outcome, sessionId,
+        rustDeskDirectSourceCode(rustDeskDirectEndpointSource(host)),
+        rustDeskDirectStageCode(stage),
+        rustDeskDirectAddressClassCode(direct ?
+          rustDeskDirectAddressClass(host.rustdeskDirectHost, host.rustdeskDirectPort) : 'not_applicable'),
+        elapsedMs,
+        direct ? diagnosticNetworkFactsForEndpoints(host.rustdeskDirectHost, host.rustdeskDirectPort) :
+          emptyDiagnosticNetworkFacts());
+    } catch (_err) {}
   }
 
   private sshProxyEditorValueForHost(host: RemoteHost): SshProxyEditorValue {
@@ -10606,6 +13041,19 @@ struct HostListPage {
 
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
+    this.classicEditorBaseline = '';
+    if (host.protocol === 'ai') {
+      if (!AiAccess.getInstance().proVisible()) {
+        promptAction.showToast({ message: '退款或撤销后，Pro 远程 AI 已暂停', duration: 2200 });
+        return;
+      }
+      if (!this.pageActive || this.appInBackground) { return; }
+      this.aiEditingHost = AiHostService.getInstance().find(aiHostId(host));
+      if (this.aiEditingHost === null) { return; }
+      this.aiSheetGeneration++; this.aiConnectHandoff++; this.aiSheetAccount = AiAccess.getInstance().capture();
+      this.proto = 'ai'; this.modernAddProtocol = 'ai'; this.addSheetShowsModernPicker = false;
+      this.openSheetSafely((): void => { this.showAddSheet = true; }); return;
+    }
     if (!this.pageActive || this.appInBackground) { return; }
     const vncHostId: string = this.vncRecordIdForHost(host);
     if (vncHostId !== '') {
@@ -10687,6 +13135,7 @@ struct HostListPage {
     this.sheetRustdeskTargetDevice = proPlatformKnown ?
       (isRustDeskMobilePlatform(latestHost.rustdeskProPlatform) ? 'phone' : 'computer') :
       normalizeRustDeskTargetDevice(latestHost.rustdeskTargetDevice);
+    this.sheetRustdeskPhoneChoiceVersion = hasExplicitRustDeskPhoneChoice(latestHost) ? 1 : 0;
     this.sheetRustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
       latestHost.protocol, this.sheetRustdeskTargetDevice, latestHost.rustdeskAdaptiveOrientation,
       latestHost.sourceType, latestHost.rustdeskProManaged, latestHost.rustdeskProPlatform);
@@ -10743,7 +13192,7 @@ struct HostListPage {
     this.vncHostRepeaterMode = host === null ? defaults.repeaterMode : host.repeaterMode;
     this.vncHostGatewayId = host === null ? defaults.defaultGatewayId : host.gatewayId;
     this.vncHostPasswordConfigured = host === null ? false : host.passwordConfigured;
-    this.vncHostRememberPassword = host === null ? false : host.rememberPassword;
+    this.vncHostRememberPassword = host === null ? true : host.rememberPassword;
     this.vncHostViewOnly = host === null ? defaults.viewOnly : host.viewOnly;
     this.vncHostDisplayOverrideEnabled = host === null ? false : host.displayOverrideEnabled;
     this.vncHostScalingMode = host === null ? defaults.scalingMode : host.scalingMode;
@@ -10790,17 +13239,25 @@ struct HostListPage {
         Button('控制电脑').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
           .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ?
             this.accentColor : this.pal().surface)
-          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? Color.White : this.pal().text2)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => {
             this.sheetRustdeskTargetDevice = 'computer';
+            this.sheetRustdeskPhoneChoiceVersion = 0;
             this.sheetRustdeskAdaptiveOrientation = false;
           })
         Button('控制手机').layoutWeight(1).height(34).fontSize(11).borderRadius(8).margin({ left: 6 })
           .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
             this.accentColor : this.pal().surface)
-          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.sheetRustdeskTargetDevice = 'phone'; })
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+          .onClick((): void => {
+            this.sheetRustdeskTargetDevice = 'phone';
+            this.sheetRustdeskPhoneChoiceVersion = 1;
+          })
       }.width('100%').margin({ bottom: 6 })
+      if (this.sheetRustdeskTargetDevice === 'phone' && this.sheetRustdeskPhoneChoiceVersion !== 1) {
+        Text('请重新点选“控制手机”，保存后启用手机操作')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 6 })
+      }
     }
     Row() {
       Column() {
@@ -10820,6 +13277,7 @@ struct HostListPage {
   }
 
   private hostPlatformText(host: RemoteHost): string {
+    if (host.protocol === 'ai') { return host.username; }
     if (host.rustdeskProManaged && host.rustdeskProPlatform.trim() !== '') {
       return host.rustdeskProPlatform.trim();
     }
@@ -10828,6 +13286,7 @@ struct HostListPage {
 
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
+    if (host.protocol === 'ai') { void this.removeAiHost(host); return; }
     const vncHostId: string = this.vncRecordIdForHost(host);
     let removed: boolean = false;
     if (vncHostId !== '') {
@@ -10836,6 +13295,7 @@ struct HostListPage {
       removed = this.srv.removeHost(host.id);
     }
     if (removed) {
+      this.forgetRdpSecurityDowngrades(host);
       const key: string = remoteHostCardKey(host.id);
       this.hostManualOrder = this.hostManualOrder.filter(
         (stored: string): boolean => stored !== key && stored !== host.id);
@@ -10849,42 +13309,77 @@ struct HostListPage {
   }
 
   // PC大屏模式 + 滑动删除共用: 锁验证 + 确认弹窗 + 动画移除
-  private async doDeleteHost(host: RemoteHost): Promise<void> {
-    if (host.locked) {
-      const r = await showLockGate(host.label, 'biometric');
-      if (!r.ok) {
-        const msg: string = lockGateErrorMessage(r);
-        if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
-        return;
-      }
+  /** Whether the host is locked as stored now (the card's copy may be older). */
+  private hostStoredLocked(host: RemoteHost): boolean {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      const vnc: VncHostView | null = this.vncHosts.find(vncHostId);
+      return vnc !== null ? vnc.locked : host.locked;
     }
+    return (this.srv.getHost(host.id) ?? host).locked;
+  }
+
+  private async doDeleteHost(host: RemoteHost): Promise<void> {
+    const name: string = hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname);
     promptAction.showDialog({
       title: '确认删除',
-      message: '确定要删除主机 "' + host.label + '" 吗？此操作不可恢复。',
+      message: '确定要删除主机「' + name + '」吗？此操作不可恢复。' + (host.locked ? '这台主机已锁定，删除前需要验证身份。' : ''),
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
       ]
-    }).then((result: Object): void => {
+    }).then(async (result: Object): Promise<void> => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
+        if (!this.pageActive) { return; }
+        // A sync may have locked it while the dialog was open: the stored state decides.
+        if (this.hostStoredLocked(host) || host.locked) {
+          const gate: LockGateResult = await showLockGate(name, 'biometric');
+          if (!gate.ok) {
+            const msg: string = lockGateErrorMessage(gate);
+            if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+            return;
+          }
+          if (!this.pageActive) { return; }
+        }
+        if (host.protocol === 'ai') { void this.removeAiHost(host); return; }
         const vncHostId: string = this.vncRecordIdForHost(host);
         const removed: boolean = vncHostId !== ''
           ? this.vncHosts.remove(vncHostId)
           : this.srv.removeHost(host.id);
         if (removed) {
+          this.forgetRdpSecurityDowngrades(host);
           const key: string = remoteHostCardKey(host.id);
           this.hostManualOrder = this.hostManualOrder.filter(
             (stored: string): boolean => stored !== key && stored !== host.id);
           this.persistHostManualOrder();
           this.refreshHostSnapshotAfterMutation();
+          promptAction.showToast({ message: '已删除「' + name + '」', duration: 1600 });
         } else {
           promptAction.showToast({
             message: this.mutationFailureMessage('删除主机失败，请稍后重试'), duration: 2400
           });
         }
       }
-    });
+    }).catch((): void => {});
+  }
+
+  /** Reads loginRefreshKey so the account sheet's buttons follow a login or logout. */
+  private accountLoggedIn(): boolean {
+    return this.loginRefreshKey >= 0 && this.auth.isLoggedIn();
+  }
+
+  private confirmLogout(): void {
+    promptAction.showDialog({
+      title: '退出华为账号？',
+      message: '退出后会结束进行中的连接并回到登录页。账号下的主机和设置不会删除，重新登录后可继续使用。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '退出登录', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] === 1) { void this.doLogout(); }
+    }).catch((_err: Error): void => { });
   }
 
   private async doLogout(): Promise<void> {
@@ -11165,6 +13660,29 @@ struct HostListPage {
       this.remotePinchZoomPreferences(), update));
   }
 
+  private remotePortraitDisplayPreferences(): RemotePortraitDisplayPreferences {
+    return {
+      rdp: { enabled: this.rdpPortraitDisplayEnabled, mode: this.rdpPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' },
+      rustdesk: { enabled: this.rustdeskPortraitDisplayEnabled, mode: this.rustdeskPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' },
+      vnc: { enabled: this.vncPortraitDisplayEnabled, mode: this.vncPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' },
+      moonlight: { enabled: this.moonlightPortraitDisplayEnabled, mode: this.moonlightPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' }
+    };
+  }
+
+  private saveRemotePortraitDisplayPreferenceUpdate(
+    update: RemotePortraitDisplayPreferenceUpdate
+  ): boolean {
+    return RemotePortraitDisplayStore.getInstance().savePatch(
+      getContext(this) as common.Context, update);
+  }
+
+  private saveRemotePortraitSidebarHeightMode(mode: RemotePortraitSidebarHeightMode): boolean {
+    const normalized: RemotePortraitSidebarHeightMode =
+      normalizeRemotePortraitSidebarHeightMode(mode);
+    return RemotePortraitDisplayStore.getInstance().setSidebarHeightMode(
+      getContext(this) as common.Context, normalized);
+  }
+
   private restoreRemoteWheelPreferences(
     prefs: preferences.Preferences
   ): RemoteWheelPreferences {
@@ -11210,7 +13728,8 @@ struct HostListPage {
     };
   }
 
-  private saveRemoteWheelPreferences(values: RemoteWheelPreferences): boolean {
+  private saveRemoteWheelPreferences(values: RemoteWheelPreferences,
+    rustDeskExplicitlyUpdated: boolean = false): boolean {
     try {
       const prefs: preferences.Preferences = preferences.getPreferencesSync(
         getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -11231,6 +13750,10 @@ struct HostListPage {
       const versionPresent: boolean = prefs.hasSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY);
       const previousVersion: number = prefs.getSync(
         REMOTE_WHEEL_PREFERENCE_VERSION_KEY, 0) as number;
+      const wheelModePresent: boolean = prefs.hasSync(
+        RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY);
+      const previousWheelMode: boolean = prefs.getSync(
+        RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, true) as boolean;
       try {
         prefs.putSync(RDP_REVERSE_WHEEL_KEY, values.rdp);
         prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, values.rustdesk);
@@ -11238,6 +13761,9 @@ struct HostListPage {
         prefs.putSync(VNC_REVERSE_WHEEL_KEY, values.vnc);
         prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, values.moonlight);
         prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, REMOTE_WHEEL_PREFERENCE_VERSION);
+        if (rustDeskExplicitlyUpdated) {
+          prefs.putSync(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, false);
+        }
         prefs.flushSync();
       } catch (_writeError) {
         try {
@@ -11253,6 +13779,11 @@ struct HostListPage {
             prefs, MOONLIGHT_REVERSE_WHEEL_KEY, present.moonlight, previous.moonlight);
           this.restoreRemoteWheelPreferenceValue(
             prefs, REMOTE_WHEEL_PREFERENCE_VERSION_KEY, versionPresent, previousVersion);
+          if (rustDeskExplicitlyUpdated) {
+            this.restoreRemoteWheelPreferenceValue(
+              prefs, RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY,
+              wheelModePresent, previousWheelMode);
+          }
           prefs.flushSync();
         } catch (_rollbackError) { /* The UI state still retains the last confirmed values. */ }
         return false;
@@ -11262,9 +13793,29 @@ struct HostListPage {
     }
     this.rdpReverseWheel = values.rdp;
     this.rustdeskReverseWheel = values.rustdesk;
+    if (rustDeskExplicitlyUpdated) { this.rustdeskWheelDirectionFollowsKeyboard = false; }
     this.sshReverseWheel = values.ssh;
     this.vncReverseWheel = values.vnc;
     this.moonlightReverseWheel = values.moonlight;
+    return true;
+  }
+
+  private remoteWheelSpeeds(): RemoteWheelSpeeds {
+    return { rdp: this.rdpWheelSpeed, rustdesk: this.rustdeskWheelSpeed, ssh: this.sshWheelSpeed,
+      vnc: this.vncWheelSpeed, moonlight: this.moonlightWheelSpeed };
+  }
+
+  /** 远程滚轮 › 速度: kept on this device like the direction (input feel depends on the device); sessions read it live. */
+  private saveRemoteWheelSpeed(protocol: RemoteWheelProtocol, speed: number): boolean {
+    const value: number = normalizeRemoteWheelSpeed(speed, protocol);
+    const key: string = remoteWheelSpeedKey(protocol);
+    if (!this.persistPreferenceValue(key, value)) { return false; }
+    if (protocol === 'rdp') { this.rdpWheelSpeed = value; }
+    else if (protocol === 'rustdesk') { this.rustdeskWheelSpeed = value; }
+    else if (protocol === 'ssh') { this.sshWheelSpeed = value; }
+    else if (protocol === 'vnc') { this.vncWheelSpeed = value; }
+    else { this.moonlightWheelSpeed = value; }
+    AppStorage.setOrCreate(key, value);
     return true;
   }
 
@@ -11284,12 +13835,12 @@ struct HostListPage {
   private saveProtocolReverseWheel(protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight',
     reversed: boolean): boolean {
     return this.saveRemoteWheelPreferences(withRemoteWheelPreference(
-      this.remoteWheelPreferences(), protocol, reversed));
+      this.remoteWheelPreferences(), protocol, reversed), protocol === 'rustdesk');
   }
 
   private saveRemoteWheelPreferenceUpdate(update: RemoteWheelPreferenceUpdate): boolean {
     return this.saveRemoteWheelPreferences(applyRemoteWheelPreferenceUpdate(
-      this.remoteWheelPreferences(), update));
+      this.remoteWheelPreferences(), update), update.touched.rustdesk);
   }
 
   private reportPreferencePersistence(localSaved: boolean,
@@ -11413,6 +13964,16 @@ struct HostListPage {
     this.fabAddStyle = style === 'classic' ? 'classic' : 'modern';
     // CloudSyncSettingsPolicy intentionally still whitelists this legacy key.
     this.persistPref('hostAddMode', this.fabAddStyle);
+  }
+
+  /** 全新视觉 is opt-in; it changes only how the settings look, never what they do. */
+  private saveSettingsVisualStyle(modern: boolean): void {
+    this.settingsVisualStyle = modern ? SETTINGS_VISUAL_STYLE_MODERN : SETTINGS_VISUAL_STYLE_CLASSIC;
+    this.persistPref(SETTINGS_VISUAL_STYLE_KEY, this.settingsVisualStyle);
+  }
+
+  private settingsModern(): boolean {
+    return settingsVisualIsModern(this.settingsVisualStyle);
   }
 
   private saveVirtualMouseStyle(style: string): void {
@@ -11955,6 +14516,7 @@ struct HostListPage {
       this.remotePinchZoomPreferences();
     if (!this.saveRemotePinchZoomPreferences(values, on)) {
       promptAction.showToast({ message: 'RustDesk 触控缩放设置保存失败，请重试', duration: 2200 });
+      this.settingsSwitchEpoch++;
     }
   }
 
@@ -11965,8 +14527,130 @@ struct HostListPage {
     this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
   }
 
+  private refreshProDebugState(): void {
+    if (!DEBUG) { return; }
+    const snapshot: ProRuntimeSnapshot = ProAppRuntime.getInstance().runtime.snapshot();
+    this.proDebugMode = snapshot.mode;
+    this.proRealStateText = snapshot.realState === 'active' ? 'Pro 已激活' :
+      snapshot.realState === 'verificationRequired' ? '权益待验证' :
+      snapshot.realState === 'revoked' ? '权益已撤销' : '免费版';
+  }
+
+  private setProDebugMode(mode: string): void {
+    if (!DEBUG) { return; }
+    ProAppRuntime.getInstance().runtime.setDebugMode(mode as ProDebugMode);
+    this.refreshProDebugState();
+  }
+
+  @Builder proDebugModeChip(label: string, mode: string) {
+    Text(label).fontSize(12).maxLines(1).textAlign(TextAlign.Center)
+      .fontColor(this.proDebugMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+      .fontWeight(this.proDebugMode === mode ? FontWeight.Medium : FontWeight.Normal)
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .backgroundColor(this.proDebugMode === mode ? this.accentColor : Color.Transparent)
+      .borderRadius(8)
+      .onClick((): void => { this.setProDebugMode(mode); })
+  }
+
+  /** Debug builds only: choose the Pro state for testing; the override lasts until the app restarts. */
+  @Builder proDebugStateRow() {
+    Column({ space: 10 }) {
+      Row() {
+        SymbolGlyph($r('sys.symbol.star')).fontSize(22).fontColor([this.pal().text3])
+          .width(22).height(22).margin({ left: 9, right: 13 })
+        Column() {
+          Text('Pro 状态 · 调试').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('真实权益：' + this.proRealStateText + ' · 模拟仅本次运行有效')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      }.width('100%')
+      Row({ space: 4 }) {
+        this.proDebugModeChip('跟随真实', 'real')
+        this.proDebugModeChip('模拟开启', 'pro')
+        this.proDebugModeChip('模拟关闭', 'free')
+      }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
+      .margin({ left: 44 })
+    }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 16, right: 16, top: 14, bottom: 14 })
+  }
+
+  private rdpAdvancedDisplayContext(): ProAccessContext {
+    const context: ProAccessContext = ProAppRuntime.getInstance().context('rdp');
+    context.capabilities = ['rdp.displayControl'];
+    return context;
+  }
+
+  private canUseRdpAdvancedDisplay(): boolean {
+    const decision = ProAppRuntime.getInstance().runtime.decision(
+      PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
+    if (decision.executable) { return true; }
+    promptAction.showToast({
+      message: decision.reason === 'purchaseRequired' ? 'RDP 自定义显示需要 Pro' :
+        decision.reason === 'planned' ? 'RDP 高级显示仍在灰度，当前只开放标准预设' : '当前设备暂不支持 RDP 高级显示',
+      duration: 2200
+    });
+    return false;
+  }
+
+  private saveRdpCustomResolution(widthText: string, heightText: string): void {
+    if (!this.canUseRdpAdvancedDisplay()) { return; }
+    let checked = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
+    if (!checked.accepted && checked.reason === '宽度必须为偶数') {
+      checked = validateRemoteDisplayGeometry(checked.width, checked.height);
+      if (checked.accepted) {
+        promptAction.showToast({ message: 'Windows 要求宽度为偶数，已调整为 ' + checked.width.toString(), duration: 1800 });
+      }
+    }
+    if (!checked.accepted) {
+      promptAction.showToast({ message: '宽和高请输入 200–8192 的整数', duration: 1800 });
+      return;
+    }
+    this.rdpCustomWidth = checked.width;
+    this.rdpCustomHeight = checked.height;
+    this.rdpCustomWidthDraft = checked.width.toString();
+    this.rdpCustomHeightDraft = checked.height.toString();
+    this.rdpDesktopResolutionId = 'custom';
+    this.rdpDesktopPreset = legacyRdpPresetForResolutionId('custom');
+    this.persistPref('rdpCustomWidth', checked.width);
+    this.persistPref('rdpCustomHeight', checked.height);
+    this.persistPref('rdpDesktopResolutionId', 'custom');
+    this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
+  }
+
   private saveRdpRemoteUiScale(value: string): void {
     this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(value);
+    this.persistPref('rdpRemoteUiScale', this.rdpRemoteUiScale);
+    this.rdpDesktopScaleMode = value === 'auto' ? 'auto' : 'preset';
+    this.rdpDesktopScalePercent = value === 'auto' ? 100 : normalizeRdpDesktopScalePercent(Number(value));
+    this.rdpDeviceScaleMode = value === 'auto' ? 'auto' : 'fixed';
+    this.rdpDeviceScalePercent = value === 'auto' ? 100 : normalizeRdpDeviceScalePercent(Number(value));
+    this.rdpDesktopScaleDraft = this.rdpDesktopScalePercent.toString();
+    this.persistPref('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    this.persistPref('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+    this.persistPref('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+    this.persistPref('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+  }
+
+  private saveRdpDesktopScalePercent(valueText: string): void {
+    const value: number = Number(valueText);
+    if (!Number.isFinite(value) || value < 100 || value > 500) {
+      promptAction.showToast({ message: 'Windows 界面缩放请输入 100–500%', duration: 1800 });
+      return;
+    }
+    const normalized: number = normalizeRdpDesktopScalePercent(value);
+    const isFreePreset: boolean = normalized === 100 || normalized === 140 || normalized === 180;
+    if (!isFreePreset && !this.canUseRdpAdvancedDisplay()) { return; }
+    this.rdpDesktopScalePercent = normalized;
+    this.rdpDesktopScaleMode = isFreePreset ? 'preset' : 'custom';
+    this.rdpDeviceScalePercent = isFreePreset ? normalizeRdpDeviceScalePercent(normalized) : 100;
+    this.rdpDeviceScaleMode = isFreePreset ? 'fixed' : 'auto';
+    this.rdpRemoteUiScale = isFreePreset ? normalized.toString() : 'auto';
+    this.rdpDesktopScaleDraft = normalized.toString();
+    this.persistPref('rdpDesktopScalePercent', normalized);
+    this.persistPref('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    this.persistPref('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+    this.persistPref('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
     this.persistPref('rdpRemoteUiScale', this.rdpRemoteUiScale);
   }
 
@@ -12008,6 +14692,27 @@ struct HostListPage {
     this.persistPref('rdpShowDiagnostics', this.rdpShowDiagnostics);
   }
 
+  private saveRdpSkipCertificatePreflight(on: boolean): void {
+    if (!on) {
+      this.rdpSkipCertificatePreflight = false;
+      this.persistPref('rdpSkipCertificatePreflight', false);
+      return;
+    }
+    promptAction.showDialog({
+      title: '跳过连接前证书预检？',
+      message: '仅跳过独立的连接前探测，直连 RDP 仍会在真实握手时验证证书链、主机名、指纹（如已保存）和有效期。此开关不能绕过证书安全校验；RD Gateway 不受影响。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '仍然启用', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { this.settingsSwitchEpoch++; return; }
+      this.rdpSkipCertificatePreflight = true;
+      this.persistPref('rdpSkipCertificatePreflight', true);
+    }).catch((_err: Error): void => { this.settingsSwitchEpoch++; });
+  }
+
   private saveRdpTlsWithoutNla(on: boolean): void {
     if (!on) {
       this.rdpTlsWithoutNla = false;
@@ -12023,15 +14728,16 @@ struct HostListPage {
       ]
     }).then((result: Object): void => {
       const value: Record<string, number> = result as Record<string, number>;
-      if (value['index'] !== 1) { return; }
+      if (value['index'] !== 1) { this.settingsSwitchEpoch++; return; }
       this.rdpTlsWithoutNla = true;
       this.persistPref('rdpTlsWithoutNla', true);
-    }).catch((_err: Error): void => { });
+    }).catch((_err: Error): void => { this.settingsSwitchEpoch++; });
   }
 
   private saveRdpDriveEnabled(on: boolean): void {
     if (on && !RDP_DRIVE_REDIRECTION_ENABLED) {
       this.rdpDriveEnabled = false;
+      this.settingsSwitchEpoch++;
       this.persistPref('rdpDriveEnabled', false);
       promptAction.showToast({
         message: 'RDP 文件共享盘暂时停用，优先保证连接稳定',
@@ -12124,6 +14830,45 @@ struct HostListPage {
     return out.length > 0 ? out : 'RemoteDesktop';
   }
 
+  private commitRdpDriveNameDraft(): void {
+    if (!this.rdpDriveNameEditing) { return; }
+    this.rdpDriveNameEditing = false;
+    const next: string = this.normalizeRdpDriveName(this.rdpDriveNameDraft);
+    if (next !== this.rdpDriveName) { this.saveRdpDriveName(next); }
+  }
+
+  private remoteDisplayScaleDraftValid(): boolean {
+    const value: number = Number(this.remoteDisplayScaleDraft.trim());
+    return this.remoteDisplayScaleDraft.trim() !== '' && Number.isInteger(value) && value >= 50 && value <= 300;
+  }
+
+  /** The typed text cannot become 50–300 by typing more digits (so 1 on the way to 150 shows no warning). */
+  private remoteDisplayScaleDraftHopeless(): boolean {
+    const text: string = this.remoteDisplayScaleDraft.trim();
+    if (text === '') { return false; }
+    if (!/^\d+$/.test(text)) { return true; }
+    const value: number = Number(text);
+    if (value > 300) { return true; }
+    return value < 50 && value * 10 > 300;
+  }
+
+  /** Saves a typed custom scale once it is confirmed; an out-of-range value keeps the saved one and says so. */
+  private commitRemoteDisplayScaleDraft(): void {
+    if (!this.remoteDisplayScaleEditing) { return; }
+    const valid: boolean = this.remoteDisplayScaleDraftValid();
+    this.remoteDisplayScaleEditing = false;
+    if (!valid) {
+      promptAction.showToast({
+        message: '自定义比例需为 50–300 之间的整数，仍使用 ' + this.remoteDisplayCustomScalePercent.toString() + '%',
+        duration: 2400
+      });
+      return;
+    }
+    if (Number(this.remoteDisplayScaleDraft.trim()) !== this.remoteDisplayCustomScalePercent) {
+      this.saveRemoteDisplayCustomScalePercent(this.remoteDisplayScaleDraft.trim());
+    }
+  }
+
   private saveRdpDriveName(name: string): void {
     this.rdpDriveName = this.normalizeRdpDriveName(name);
     this.persistPref('rdpDriveName', this.rdpDriveName);
@@ -12187,7 +14932,31 @@ struct HostListPage {
   @Builder
   remoteHostSheetBuilder() {
     if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
-      this.sshPreflightPanel();
+      SshConnectionPreflightSheet({
+        hostId: this.sshPreflightHostId,
+        hostLabel: this.sshPreflightHostLabel,
+        viewportHeight: this.pageViewportHeight,
+        theme: this.theme,
+        accent: this.accentColor,
+        isActive: (): boolean => this.pageActive && !this.appInBackground &&
+          this.showSshPreflight && !this.sshPreflightClosing,
+        onCancel: (): void => { this.doSshPreflightCancel(); },
+        onAuthenticated: (token: string): void => {
+          if (!this.pageActive || this.appInBackground || this.sshPreflightClosing) {
+            SshAuthenticatedHandoff.getInstance().discard(token);
+            return;
+          }
+          const routeParams: Record<string, Object> = {};
+          routeParams['hostId'] = this.sshPreflightHostId;
+          routeParams['authenticated'] = true;
+          routeParams['sshAuthenticatedHandoff'] = token;
+          this.sshPreflightPendingRouteParams = routeParams;
+          this.sshPreflightClosingHostId = this.sshPreflightHostId;
+          this.sshPreflightClosing = true;
+          this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_SSH_PREFLIGHT);
+          this.showRemoteHostSheet = false;
+        }
+      })
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
       this.rdpCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CREDENTIAL) {
@@ -12457,6 +15226,28 @@ struct HostListPage {
 
   build() {
     Stack() {
+      // Page-level host for the PC workspace 连接准备 sheet.
+      Column().width(0).height(0)
+        .bindSheet($$this.showWorkspacePrep, this.workspacePrepSheet(), {
+          height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg,
+          onWillDismiss: (action: DismissSheetAction): void => { action.dismiss(); },
+          onDisappear: (): void => {
+            // Dismissed without 开始连接: nothing was started, so the run ends.
+            if (this.proWorkspaceRun !== null && connectingRunIndex(this.proWorkspaceRun as WorkspaceRun) < 0 &&
+              nextQueuedRunIndex(this.proWorkspaceRun as WorkspaceRun) >= 0 && this.workspaceRunCredentials.size === 0 &&
+              this.workspaceLockCleared.size === 0 && !this.workspacePrepStarting) {
+              this.endProWorkspaceRun();
+            }
+            this.workspacePrepStarting = false;
+          }
+        })
+      // Page-level host for the Pro workspace editor (see workspaceEditorSheet).
+      Column().width(0).height(0)
+        .bindSheet($$this.showWorkspaceEditor, this.workspaceEditorSheet(), {
+          height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg
+        })
       Column().width('100%').height('100%').backgroundColor(this.pal().bg)
       // 所有连接/安全弹窗共用一个 bindSheet 宿主。面板内容由 mode 路由，
       // 关闭和路由统一在宿主 onDisappear 后完成，避免多个 native Sheet 同时退场。
@@ -12488,6 +15279,7 @@ struct HostListPage {
         .hitTestBehavior(this.showSettingsLeafSheet ? HitTestMode.Default : HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
         height: this.settingsLeafSheetHeight(),
+        width: this.settingsLeafSheetWidth(),
         preferType: this.settingsLeafUsesBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.settingsLeafUsesBottomSheet(),
         keyboardAvoidMode: this.settingsLeafKeyboardAvoidMode(),
@@ -12532,6 +15324,10 @@ struct HostListPage {
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
                 this.sidebarMoonlightTab()
+                if (this.aiProVisible) { this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8) }
+                if (this.proWorkspacesVisible) {
+                  this.sidebarTab('工作区 · Pro', $r('sys.symbol.rectangle_on_rectangle'), DESKTOP_WORKSPACE_TAB)
+                }
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -12545,7 +15341,8 @@ struct HostListPage {
 
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
-              if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) { this.hostContent() }
+              if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB || this.curTab === 8) { this.hostContent() }
+              else if (this.curTab === DESKTOP_WORKSPACE_TAB) { this.workspaceBoardContent() }
               else if (this.curTab === 6) { this.relayContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
@@ -12568,7 +15365,7 @@ struct HostListPage {
               .tabBar(this.tabSettingsIcon)
           }
           .barOverlap(true)
-          .priorityGesture(PanGesture({ direction: PanDirection.Horizontal, distance: 10 }))
+          .scrollable(false)
           .barPosition(BarPosition.End).vertical(false).barHeight(64)
           .barFloatingStyle({
             // 交给 HDS 根据 Tab 数量、容器宽度和断点计算官方宽度/侧距。
@@ -12598,6 +15395,8 @@ struct HostListPage {
         }
       }.width('100%').height('100%')
 
+      // AiIsland and AiVoiceIsland live in the AI top layer (above sheets and dialogs): syncAiLayers.
+
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
       // host does not pay the first WebView/vendor-script cold-start cost.
       if (this.sshCount > 0) {
@@ -12607,57 +15406,22 @@ struct HostListPage {
           .hitTestBehavior(HitTestMode.None);
       }
 
+
+
       // FAB — 智感握姿悬浮加号按钮
       // 官方推荐: 对齐驱动 (justifyContent) 而非 translate, .animation() 保证弹簧动画可靠触发
       Row() {
         Button() {
           SymbolGlyph($r('sys.symbol.plus'))
             .fontSize(28)
-            .fontColor([Color.White])
+            .fontColor([appUiOnAccentText(this.accentColor)])
         }
         .width(hostListFabSizeVp(this.breakpoint))
         .height(hostListFabSizeVp(this.breakpoint))
         .borderRadius(hostListFabSizeVp(this.breakpoint) / 2).padding(0)
         .backgroundColor(this.accentColor)
-        .onClick(() => {
-          if (this.isDesktopDevice && this.breakpoint === 'xl') {
-            // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
-            if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) {
-              this.resetForm();
-              const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
-              this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
-              const modernPicker: boolean =
-                this.curTab === DESKTOP_MOONLIGHT_TAB ||
-                resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
-              this.addSheetShowsModernPicker = modernPicker;
-              if (modernPicker) { this.probeMoonlightCapabilityForPicker(); }
-              this.modernAddProtocol = '';
-              if (shouldPrepareClassicVncEditor(nextProto, modernPicker)) {
-                this.prepareClassicVncEditor(null);
-              }
-              this.openSheetSafely((): void => { this.showAddSheet = true; });
-            } else if (this.curTab === 4) {
-              this.kvAddTrigger++;
-            } else if (this.curTab === 5) {
-              this.keyVaultInnerTab = 1;
-              this.kvAddTrigger++;
-            } else if (this.curTab === 6) {
-              this.relayAddTrigger++;
-            }
-          } else {
-            // 手机/平板/PC小窗: 主机/密钥/中继/设置
-            if (this.curTab === 0) {
-              this.resetForm();
-              this.addSheetShowsModernPicker =
-                resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
-              if (this.addSheetShowsModernPicker) { this.probeMoonlightCapabilityForPicker(); }
-              this.modernAddProtocol = '';
-              this.openSheetSafely((): void => { this.showAddSheet = true; });
-            }
-            if (this.curTab === 1) { this.kvAddTrigger++; }
-            if (this.curTab === 2) { this.relayAddTrigger++; }
-          }
-        })
+        .accessibilityText('添加')
+        .onClick(() => { this.onFabAddClick(); })
         .bindSheet($$this.showAddSheet, this.hostAddSheetContent(), {
           height: this.hostAddSheetHeight(),
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
@@ -12666,19 +15430,61 @@ struct HostListPage {
           backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
+          onAppear: (): void => {
+            // The classic editor as it opened (an edit's values are loaded by now); a form kept across the 2FA
+            // binding still has its first baseline.
+            if (this.classicEditorBaseline === '') { this.classicEditorBaseline = this.classicEditorSnapshot(); }
+          },
+          onWillDismiss: (action: DismissSheetAction): void => {
+            // requestAddSheetClose (a save, or a close already confirmed) also arrives here: it goes straight through.
+            if (this.addSheetClosing || !this.hostAddHasUnsavedInput()) {
+              action.dismiss();
+              return;
+            }
+            this.confirmDiscardHostAdd((): void => {
+              this.addSheetClosing = true;
+              action.dismiss();
+            });
+          },
+          onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+            // Stay up while the question is asked; otherwise no bounce before the one exit animation.
+            if (!this.addSheetClosing && this.hostAddHasUnsavedInput()) { action.springBack(); }
+          },
           onDisappear: () => {
             this.handleAddSheetDisappear();
           }
         })
+        // PC large screen (the sidebar layout): the AI beside 「+」 at the bottom left, as a capsule that says what it
+        // is — the AI orb (which keeps its states: thinking, capturing, hold to talk) and 「AI 助理」. A smaller PC
+        // window keeps it at the top right of the title, as on a Pad.
+        if (this.pcAiBesideFab() && this.hostAiOrbAvailable()) {
+          Row({ space: 8 }) {
+            DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+              onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+            Text('AI 助理').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+              .fontFamily(this.font())
+          }
+          .height(hostListFabSizeVp(this.breakpoint))
+          .padding({ left: 10, right: 20 })
+          .borderRadius(hostListFabSizeVp(this.breakpoint) / 2)
+          .backgroundColor(this.pal().card)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+          .shadow({ radius: 14, color: '#26000000', offsetY: 4 })
+          .margin({ left: 16 })
+          .stateStyles({ pressed: { .opacity(0.8) }, normal: { .opacity(1) } })
+          .accessibilityText('AI 助理')
+          .onClick((): void => { this.openDiagnosticAiSection(1); })
+        }
       }
       .width('100%')
       .padding({ left: this.fabEdgePadding(), right: this.fabEdgePadding() })
       .justifyContent(shouldUseGripFabAlignment(this.isDesktopDevice, this.breakpoint) ? this.getFabAlignment() : FlexAlign.Start)
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
-      .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 :
-        -hostListFabLiftVp(this.breakpoint)) })
-      .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
+      .translate({ y: ((!this.isDesktopDevice && this.curTab === 3) || (this.hostSelectionMode && this.proOrgVisible) ?
+        120 : -hostListFabLiftVp(this.breakpoint)) })
+      .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ||
+        (this.hostSelectionMode && this.proOrgVisible) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
 
       if (this.sheetReleaseFenceActive) {
@@ -12698,9 +15504,13 @@ struct HostListPage {
         Math.abs(nextHeight - this.pageViewportHeight) >= 1) {
         this.pageViewportHeight = nextHeight;
       }
+      const nextWidth: number = nextArea.width as number;
+      if (Number.isFinite(nextWidth) && nextWidth > 0 && Math.abs(nextWidth - this.pageViewportWidth) >= 1) {
+        this.pageViewportWidth = nextWidth;
+      }
     })
     .bindSheet($$this.showSettingsPanel, this.settingsContent(), {
-      height: this.breakpoint === 'xl' ? 760 : SheetSize.FIT_CONTENT,
+      height: this.breakpoint === 'xl' ? settingsLeafSheetFitHeight(760, this.pageViewportHeight) : SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
       backgroundColor: this.pal().sheetBg,
@@ -12725,7 +15535,7 @@ struct HostListPage {
         Text('远程主机').fontSize(11).fontColor(this.curTab === 0 ? this.accentColor : this.pal().text3)
           .margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('远程主机')
   }
   @Builder tabKeyVaultIcon() {
     Column() {
@@ -12736,7 +15546,7 @@ struct HostListPage {
         Text('密钥保险库').fontSize(11).fontColor(this.curTab === 1 ? this.accentColor : this.pal().text3)
           .margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('密钥保险库')
   }
   @Builder tabRelayIcon() {
     Column() {
@@ -12746,7 +15556,7 @@ struct HostListPage {
       if (this.breakpoint === 'xl') {
         Text('中继').fontSize(11).fontColor(this.curTab === 2 ? this.accentColor : this.pal().text3).margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('中继')
   }
   @Builder tabSettingsIcon() {
     Column() {
@@ -12757,7 +15567,7 @@ struct HostListPage {
         Text('设置').fontSize(11).fontColor(this.curTab === 3 ? this.accentColor : this.pal().text3)
           .margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('设置')
   }
 
   // ==================== 主机列表 ====================
@@ -12778,7 +15588,7 @@ struct HostListPage {
       this.curTab = index;
       if (this.isDesktopDevice) {
         const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-        this.hostPageTitle = titles[index] || '';
+        this.hostPageTitle = index === 8 ? '远程 AI · Pro' : index === DESKTOP_WORKSPACE_TAB ? '工作区' : titles[index] || '';
         if (index === 4) { this.keyVaultInnerTab = 0; }
         if (index === 5) { this.keyVaultInnerTab = 1; }
       }
@@ -12844,6 +15654,7 @@ struct HostListPage {
     .borderRadius(12).margin({ left: 12, right: 12, bottom: 16 })
     .onClick(() => {
       this.showSettingsPanel = false;
+      this.settingsValuesRevision++;
       this.openSheetSafely((): void => { this.showSettingsPanel = true; });
     })
   }
@@ -12865,25 +15676,63 @@ struct HostListPage {
   }
 
   @Builder HostWorkspaceFilterBar() {
-    Column() {
-      Row() {
-        ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
-          Text(groupId).fontSize(12)
-            .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
+    // The strip keeps its classic size and spacing; it gained 全部 and scrolls sideways when the groups overflow.
+    if (groupIdsForHosts(this.hosts).length > 0) {
+      Scroll() {
+        Row() {
+          Text('全部').fontSize(12)
+            .fontColor(this.workspaceGroupId === '' ? this.accentColor : this.pal().text2)
             .margin({ right: 12 })
             .onClick((): void => {
-              this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
+              this.workspaceGroupId = '';
               this.refreshWorkspaceView();
             })
-        }, (groupId: string): string => groupId)
+          ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
+            Text(groupId).fontSize(12)
+              .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
+              .margin({ right: 12 })
+              .onClick((): void => {
+                this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
+                this.refreshWorkspaceView();
+              })
+          }, (groupId: string): string => groupId)
+        }
+        .padding({ left: 4, right: 4 })
       }
-      .width('100%').padding({ left: 4, right: 4 })
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off)
+      .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 6 })
+      .align(Alignment.Start)
+    } else {
+      Column().width('100%').height(10)
     }
-    .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 6 })
   }
 
   @Builder HostGroupChip(host: RemoteHost) {
-    if (host.groupId.length > 0) {
+    if (this.proOrgVisible) {
+      if (this.orgGroupFor(host.id, this.hostOrgRevision) !== null ||
+        this.orgMembership(host.id, this.hostOrgRevision).tags.length > 0) {
+        Row({ space: 4 }) {
+          if (this.orgGroupFor(host.id, this.hostOrgRevision) !== null) {
+            Row({ space: 3 }) {
+              Circle().width(6).height(6).fill((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color)
+              Text((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).name).fontSize(10)
+                .fontColor((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color).maxLines(1)
+                .constraintSize({ maxWidth: 88 }).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.pal().surface)
+          }
+          ForEach(this.orgMembership(host.id, this.hostOrgRevision).tags.slice(0, 2), (tag: string): void => {
+            Text('#' + tag).fontSize(10).fontColor(this.pal().text2).maxLines(1)
+              .constraintSize({ maxWidth: 72 }).textOverflow({ overflow: TextOverflow.Ellipsis })
+              .padding({ left: 5, right: 5, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.pal().surface)
+          }, (tag: string): string => tag)
+          if (this.orgMembership(host.id, this.hostOrgRevision).tags.length > 2) {
+            Text('+' + (this.orgMembership(host.id, this.hostOrgRevision).tags.length - 2).toString()).fontSize(10)
+              .fontColor(this.pal().text3)
+          }
+        }
+      }
+    } else if (host.groupId.length > 0) {
       Text(host.groupId)
         .fontSize(11).fontColor(this.accentColor)
         .padding({ left: 6, right: 6, top: 2, bottom: 2 })
@@ -12901,7 +15750,9 @@ struct HostListPage {
   private hostGroupCardsSnapshot(): HostGroupCardModel[] {
     const displayHosts: RemoteHost[] = this.filteredHosts.map((host: RemoteHost): RemoteHost =>
       this.hostWithPresenceOverride(host));
-    return buildHostGroupCards(displayHosts, Date.now(), this.activeRemoteHostId);
+    const cards: HostGroupCardModel[] = buildHostGroupCards(displayHosts, Date.now(), this.activeRemoteHostId);
+    const visibleProTypes: HostGroupType[] = this.aiProVisible ? ['ai'] : [];
+    return filterHostGroupCardsByProVisibility(cards, visibleProTypes);
   }
 
   private hostWithPresenceOverride(host: RemoteHost): RemoteHost {
@@ -13007,7 +15858,15 @@ struct HostListPage {
   }
 
   private hostGroupSummaryText(card: HostGroupCardModel): string {
-    if (card.hosts.length === 0) { return '暂无主机'; }
+    if (card.hosts.length === 0) { return this.hostSearchOrFilterActive() ? '无匹配' : '暂无主机'; }
+    if (card.type === 'ai') {
+      // The AI hosts' own engines (their projection names the backend), e.g. Codex / Pi.
+      const names: string[] = [];
+      card.hosts.forEach((host: RemoteHost): void => {
+        if (host.username !== '' && names.indexOf(host.username) < 0) { names.push(host.username); }
+      });
+      return names.length > 0 ? names.join(' / ') : 'Codex / DSH / Pi';
+    }
     if (card.type === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
     }
@@ -13046,6 +15905,7 @@ struct HostListPage {
   }
 
   private hostGroupStatusLine(host: RemoteHost): string {
+    if (host.protocol === 'ai') { return '局域网配置'; }
     if (host.protocol === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
     }
@@ -13067,6 +15927,7 @@ struct HostListPage {
 
   private hostGroupIconForHost(host: RemoteHost): Resource {
     const type: HostGroupType | null = hostGroupTypeForHost(host);
+    if (type === 'ai') { return protocolIcon('ai'); }
     if (type === 'rustdesk') { return protocolIcon('rustdesk'); }
     if (type === 'ssh') { return protocolIcon('ssh'); }
     if (type === 'vnc') { return protocolIcon('vnc'); }
@@ -13114,8 +15975,19 @@ struct HostListPage {
     return this.pal().text2;
   }
 
+  /** 全新视觉 on PC: the card under the mouse reads as a target. */
+  private onHostCardHover(key: string, hovering: boolean): void {
+    if (!this.settingsModern() || !this.isDesktopDevice) { return; }
+    if (hovering) { this.hoveredHostCardKey = key; }
+    else if (this.hoveredHostCardKey === key) { this.hoveredHostCardKey = ''; }
+  }
+
+  private hostCardBackground(key: string): ResourceColor {
+    return this.settingsModern() && this.hoveredHostCardKey === key ? this.pal().surface : this.pal().card;
+  }
+
   private hostGroupCanProbe(host: RemoteHost): boolean {
-    return !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled);
+    return host.protocol !== 'ai' && !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled);
   }
 
   private toggleHostGroup(type: HostGroupType): void {
@@ -13144,6 +16016,7 @@ struct HostListPage {
             .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+        if (card.type === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
           .fontColor([this.pal().text3])
           .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
@@ -13191,7 +16064,12 @@ struct HostListPage {
 
   @Builder hostGroupedProtocolDetails(host: RemoteHost) {
     Row() {
-      if (host.protocol === 'rustdesk') {
+      if (host.protocol === 'ai') {
+        Text(host.username === 'DSH' ? 'DSH' : 'Codex').fontSize(11).fontColor(this.pal().text3).width(42)
+        Text(this.protectedHostCardValue(host, formatEndpointFieldsHostPort(host.host, host.port)))
+          .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
+          .fontFamily(this.font()).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      } else if (host.protocol === 'rustdesk') {
         Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host, hostIdentifier(host)))
           .fontSize(this.breakpoint === 'sm' ? 15 : 16)
@@ -13255,6 +16133,17 @@ struct HostListPage {
             .fontSize(this.breakpoint === 'sm' ? 15 : 16)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (host.protocol === 'ai') { ProBadge().margin({ left: 6 }).alignSelf(ItemAlign.Center) }
+          if (this.proOrgVisible && this.orgGroupFor(host.id, this.hostOrgRevision) !== null) {
+            Row({ space: 3 }) {
+              Circle().width(6).height(6)
+                .fill((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color)
+              Text((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).name).fontSize(10)
+                .fontColor((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color).maxLines(1)
+                .constraintSize({ maxWidth: 72 }).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.pal().surface)
+            .margin({ left: 6 }).flexShrink(0)
+          }
         }.width('100%')
         if (this.hostGroupStatusLine(host) !== '') {
           Text(this.hostGroupStatusLine(host))
@@ -13289,8 +16178,14 @@ struct HostListPage {
             .width(this.breakpoint === 'sm' ? 38 : 40)
             .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
             .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
-            .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
-            .onClick((): void => { void this.probeHostConnectivity(host); })
+            .enabled(this.hostSelectionMode || !this.hostPresenceProbeBusyIds.has(host.id))
+            // While selecting, the card's buttons select it (like the edit, lock and delete buttons below).
+            .opacity(this.hostSelectionMode ? 0.4 : 1)
+            .onClick((): void => {
+              if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+                !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+              void this.probeHostConnectivity(host);
+            })
           } else {
             Blank()
               .width(this.breakpoint === 'sm' ? 38 : 40)
@@ -13302,26 +16197,40 @@ struct HostListPage {
             SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
           }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
+          .accessibilityText('编辑').onClick((): void => {
+            if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+              !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+            void this.editHost(host);
+          })
           Button() {
             SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
               .fontSize(16).fontColor([this.pal().text2])
           }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .margin({ left: 8 }).accessibilityText(host.locked ? '解锁' : '上锁')
-          .onClick((): void => { void this.toggleLock(host); })
+          .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
+          .onClick((): void => {
+            if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+              !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+            void this.toggleLock(host);
+          })
           Button() {
             SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
           }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .margin({ left: 8 }).accessibilityText('删除')
-          .onClick((): void => { void this.doDeleteHost(host); })
-        }.margin({ top: 7 })
+          .onClick((): void => {
+            if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+              !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+            void this.doDeleteHost(host);
+          })
+        }.margin({ top: 7 }).opacity(this.hostSelectionMode ? 0.4 : 1)
       }.alignItems(HorizontalAlign.End).margin({ left: 10 })
     }
     .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
     .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .bindContextMenu(this.hostContextMenuBuilder(host), ResponseType.RightClick)
     // Grouped cards intentionally have no swipe actions. Long press remains
     // the explicit entry point for multi-select.
     .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
@@ -13368,10 +16277,14 @@ struct HostListPage {
       if (card.hosts.length === 0) {
         Column() {
           SymbolGlyph(protocolIcon(card.type)).fontSize(32).fontColor([this.pal().text3])
-          Text('暂无 ' + hostGroupTitle(card.type) + ' 主机').fontSize(13).fontColor(this.pal().text2)
+          // While searching, an empty group means no match, not no hosts.
+          Text((this.hostSearchOrFilterActive() ? '没有匹配的 ' : '暂无 ') + hostGroupTitle(card.type) + ' 主机')
+            .fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 4 })
+          if (!this.hostSearchOrFilterActive()) {
+            Text('点击「+」添加主机').fontSize(11).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 4 })
+          }
         }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
@@ -13516,10 +16429,13 @@ struct HostListPage {
       if (this.visibleMoonlightHosts().length === 0) {
         Column() {
           MoonlightBrandIcon({ iconSize: 32, tint: this.pal().text3 })
-          Text('暂无 Moonlight 主机').fontSize(13).fontColor(this.pal().text2)
+          Text(this.hostSearchOrFilterActive() ? '没有匹配的 Moonlight 主机' : '暂无 Moonlight 主机')
+            .fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 4 })
+          if (!this.hostSearchOrFilterActive()) {
+            Text('点击「+」添加主机').fontSize(11).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 4 })
+          }
         }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
@@ -13554,15 +16470,116 @@ struct HostListPage {
     }.width('100%').margin({ bottom: 10 })
   }
 
-  @Builder moonlightGroupedDesktopRow() {
+  // Tablet/PC rows pair two cards; the remote-AI card shares Moonlight's row so every group
+  // card keeps the same width and grid position.
+  @Builder moonlightGroupedDesktopRow(withAi: boolean) {
     Column() {
       Row() {
         this.moonlightGroupTypeCard()
         Blank().width(10)
-        Blank().layoutWeight(1)
+        if (withAi) {
+          this.hostGroupTypeCard(this.hostGroupCardForType('ai'))
+        } else {
+          Blank().layoutWeight(1)
+        }
       }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
       this.moonlightGroupedDetailPanel()
+      if (withAi) { this.hostGroupedDetailPanel(this.hostGroupCardForType('ai')) }
     }.width('100%').margin({ bottom: 10 })
+  }
+
+  private workspaceDeviceKind(): WorkspaceDeviceKind {
+    return workspaceDeviceKind(this.isDesktopDevice, this.padDeviceForWorkspace);
+  }
+
+  private onWorkspaceDeviceChange(): void { this.refreshAppIconEntry(); }
+
+  private toggleWorkspaceGroup(): void {
+    animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      this.expandedHostGroup = this.expandedHostGroup === 'workspace' ? '' : 'workspace';
+    });
+  }
+
+  @Builder workspaceGroupCard() {
+    WorkspaceGroupCard({
+      runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+      expanded: this.expandedHostGroup === 'workspace',
+      compact: this.breakpoint === 'sm',
+      cardHeight: this.hostGroupCardHeight(),
+      onToggle: (): void => { this.toggleWorkspaceGroup(); }
+    })
+  }
+
+  /** The workspace list under the expanded 工作区 card (or on the PC sidebar page with more columns). */
+  @Builder workspacePanel(columns: number) {
+    WorkspacePanel({
+      rows: this.orgRows(this.hostViewRevision),
+      activeRefs: this.activeSessionRefs(this.hostViewRevision),
+      runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+      columns: columns,
+      onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); },
+      onEdit: (workspace: Workspace): void => { this.openWorkspaceEditor(workspace); }
+    })
+  }
+
+  /** PC 工作区 page 「+」: the add sheet opens straight at the new-workspace flow. */
+  private openWorkspaceAddSheet(): void {
+    if (!this.pageActive || !this.proWorkspacesVisible) { return; }
+    this.resetForm();
+    this.modernAddProtocol = 'workspace';
+    this.addSheetShowsModernPicker = false;
+    this.openSheetSafely((): void => { this.showAddSheet = true; });
+  }
+
+  private openWorkspaceEditor(workspace: Workspace): void {
+    this.workspaceEditorTarget = workspace;
+    this.openSheetSafely((): void => { if (this.pageActive) { this.showWorkspaceEditor = true; } });
+  }
+
+  /** Workspace editor sheet, hosted on the page root so list refreshes cannot dismiss it. */
+  @Builder workspaceEditorSheet() {
+    Column() {
+      Scroll() {
+        Column() {
+          ProWorkspaceEditorPanel({
+            workspace: this.workspaceEditorTarget,
+            extraRows: this.orgRows(this.hostViewRevision).filter((row: OrgHostRow): boolean => row.protocol === 'moonlight'),
+            onClose: (): void => { this.showWorkspaceEditor = false; }
+          })
+        }.padding({ left: 16, right: 16, top: 18, bottom: 28 })
+      }.constraintSize({ maxHeight: Math.round(this.pageViewportHeight * 0.85) }).scrollBar(BarState.Off).align(Alignment.Top)
+      .edgeEffect(EdgeEffect.Spring)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
+  }
+
+  /** PC sidebar 工作区 page (large-screen mode). */
+  @Builder workspaceBoardContent() {
+    Stack() {
+      Scroll() {
+        Column({ space: 16 }) {
+          Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
+          Column({ space: 4 }) {
+            Text('工作区').fontSize(27).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+            Text('一键依次打开常用会话，并按保存的布局摆放独立窗口').fontSize(13).fontColor(this.pal().text3)
+              .fontFamily(this.font())
+          }.alignItems(HorizontalAlign.Start).width('100%')
+          this.workspacePanel(this.windowW - 300 >= 1100 ? 3 : 2)
+          Column().height(140)
+        }.width('100%').padding({ left: 28, right: 28 })
+      }.width('100%').height('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+      if (this.proWorkspaceRun !== null) {
+        Column() {
+          WorkspaceRunPanel({
+            run: this.proWorkspaceRun as WorkspaceRun,
+            onNext: (): void => { this.advanceProWorkspaceRun(true); },
+            onRetry: (index: number): void => { this.retryProWorkspaceItem(index); },
+            onSkip: (index: number): void => { this.skipProWorkspaceItem(index); },
+            onClose: (): void => { this.endProWorkspaceRun(); }
+          })
+        }.width('100%').constraintSize({ maxWidth: 560 }).padding(20)
+        .position({ x: 0, y: '100%' }).markAnchor({ x: 0, y: '100%' })
+      }
+    }.width('100%').height('100%')
   }
 
   @Builder hostGroupedContent() {
@@ -13573,10 +16590,35 @@ struct HostListPage {
         this.hostGroupedPhoneGroup('ssh')
         this.hostGroupedPhoneGroup('vnc')
         this.moonlightGroupedPhoneGroup()
+        if (isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : [])) {
+          this.hostGroupedPhoneGroup('ai')
+        }
+        // 工作区 sits below the remote-AI module and expands in place like the protocol cards.
+        if (this.proWorkspacesVisible) {
+          Column() {
+            this.workspaceGroupCard()
+            if (this.expandedHostGroup === 'workspace') {
+              Column() { this.workspacePanel(1) }.width('100%').margin({ top: 10 })
+            }
+          }.width('100%').margin({ bottom: 10 })
+        }
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
-        this.moonlightGroupedDesktopRow()
+        this.moonlightGroupedDesktopRow(isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : []))
+        // Keep the two-column grid: 工作区 takes the left half of its own row under remote AI.
+        if (this.proWorkspacesVisible) {
+          Column() {
+            Row() {
+              Column() { this.workspaceGroupCard() }.layoutWeight(1)
+              Blank().width(10)
+              Blank().layoutWeight(1)
+            }.width('100%').alignItems(VerticalAlign.Top)
+            if (this.expandedHostGroup === 'workspace') {
+              Column() { this.workspacePanel(1) }.width('100%').margin({ top: 10 })
+            }
+          }.width('100%').margin({ bottom: 10 })
+        }
       }
     }
     .width('100%').padding({ top: 8 })
@@ -13640,11 +16682,12 @@ struct HostListPage {
             SymbolGlyph($r('sys.symbol.line_3_horizontal'))
               .fontSize(20).fontColor([this.pal().text3]).margin({ left: 8 })
           }
-          if (!this.hostSelectionMode && this.isDesktopDevice) {
+          if (!this.hostSelectionMode && (this.isDesktopDevice || this.settingsModern())) {
             Button() {
               Text('⋯').fontSize(18).fontColor(this.pal().text)
             }
-            .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .accessibilityText('更多操作')
             .bindPopup(this.hostActionPopupId === unifiedMoonlightHostCardKey(view.host.id), {
               builder: this.moonlightActionMenuBuilder(view),
               placement: Placement.BottomRight,
@@ -13665,8 +16708,13 @@ struct HostListPage {
       }
       .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
-      .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(14).backgroundColor(this.hostCardBackground(unifiedMoonlightHostCardKey(view.host.id)))
+      .backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .onHover((hovering: boolean): void => {
+        this.onHostCardHover(unifiedMoonlightHostCardKey(view.host?.id || ''), hovering);
+      })
+      .bindContextMenu(this.moonlightContextMenuBuilder(view), ResponseType.RightClick)
     }
   }
 
@@ -13761,6 +16809,7 @@ struct HostListPage {
       .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
       .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .bindContextMenu(this.moonlightContextMenuBuilder(view), ResponseType.RightClick)
       .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
         if (!this.hostSelectionMode) {
           this.beginHostSelection(unifiedMoonlightHostCardKey(view.host?.id || ''), false);
@@ -13825,7 +16874,8 @@ struct HostListPage {
         .accessibilityText('编辑')
         .onClick((): void => { void this.openMoonlightEditSheet(view); })
         Button() {
-          SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(17).fontColor([Color.White])
+          SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock')).fontSize(17)
+            .fontColor([view.host.locked === true ? Color.White : appUiOnAccentText(this.accentColor)])
         }
         .width(48).height(48).borderRadius(12)
         .backgroundColor(view.host.locked === true ? this.pal().success : this.accentColor)
@@ -13871,7 +16921,7 @@ struct HostListPage {
         Text('Moonlight 主机已不存在').fontSize(16).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text)
         Button('关闭').width('100%').height(42).margin({ top: 16 }).borderRadius(11)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.closeMoonlightHostSheet(); })
       }.width('100%').padding(22).backgroundColor(this.pal().sheetBg)
     } else {
@@ -13931,7 +16981,7 @@ struct HostListPage {
 
       Row({ space: 8 }) {
         Button('应用目录').layoutWeight(1).height(42).borderRadius(11)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.closeMoonlightHostSheet(true, false); })
         Button('设置').layoutWeight(1).height(42).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
@@ -14037,12 +17087,12 @@ struct HostListPage {
             Button('Sunshine').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.moonlightEditHostType === 'sunshine' ?
                 this.accentColor : this.pal().surface)
-              .fontColor(this.moonlightEditHostType === 'sunshine' ? Color.White : this.pal().text2)
+              .fontColor(this.moonlightEditHostType === 'sunshine' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .onClick((): void => { this.moonlightEditHostType = 'sunshine'; })
             Button('GameStream').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.moonlightEditHostType === 'gamestream' ?
                 this.accentColor : this.pal().surface)
-              .fontColor(this.moonlightEditHostType === 'gamestream' ? Color.White : this.pal().text2)
+              .fontColor(this.moonlightEditHostType === 'gamestream' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .onClick((): void => { this.moonlightEditHostType = 'gamestream'; })
           }.width('100%')
 
@@ -14094,7 +17144,7 @@ struct HostListPage {
             this.showRemoteHostSheet = false;
           })
         Button('保存').layoutWeight(1).height(42).borderRadius(11)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .enabled(this.moonlightEditName.trim().length > 0 &&
             this.moonlightEditName.trim().length <= 128 && this.moonlightEditAddress.trim().length > 0)
           .onClick((): void => { this.saveMoonlightEdit(); })
@@ -14144,7 +17194,7 @@ struct HostListPage {
               Text(this.moonlightDirectoryCode === 'ok' || this.moonlightDirectoryCode === 'cache_read_failed'
                 ? '还没有 Moonlight 主机' : '本地主机数据暂不可用')
                 .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 16 })
-              Text('点击底部 + 添加主机，自动发现局域网中的 Sunshine / GameStream')
+              Text('点击「+」添加主机，可自动发现局域网中的 Sunshine / GameStream 主机')
                 .fontSize(12).fontColor(this.pal().text3).margin({ top: 7 }).textAlign(TextAlign.Center)
             }.width('100%').height(360).justifyContent(FlexAlign.Center)
           }
@@ -14180,15 +17230,18 @@ struct HostListPage {
             })
         }
         Column() {
+          if (host.protocol === 'ai') {
+            SymbolGlyph(protocolIcon('ai')).fontSize(this.breakpoint === 'sm' ? 24 : 26).fontColor([Color.White])
+          } else {
           Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
             (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
             .width(this.breakpoint === 'sm' ? 24 : 26)
             .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
+          }
         }
         .width(this.breakpoint === 'sm' ? 42 : 46).height(this.breakpoint === 'sm' ? 42 : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
-          (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+        .backgroundColor(this.hostCardProtocolColor(host))
         .justifyContent(FlexAlign.Center).margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => { this.handleHostCardClick(host); })
 
@@ -14203,19 +17256,25 @@ struct HostListPage {
             if (host.protocol === 'ssh' &&
               displayConnectionHealth(host.lastHealth, host.lastLatency).length > 0) {
               Text(displayConnectionHealth(host.lastHealth, host.lastLatency))
-                .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+                .fontSize(this.settingsModern() ? 12 : 10).fontColor(this.pal().text3).fontFamily(this.font())
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
             }
             if (host.locked) {
+              // 全新视觉: a lock is a state, not an error: the theme colour instead of red.
               SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(this.breakpoint === 'sm' ? 14 : 18)
-                .fontColor([this.pal().danger]).margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
+                .fontColor([this.settingsModern() ? this.accentColor : this.pal().danger])
+                .margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
             }
+            if (host.protocol === 'ai') { ProBadge().margin({ left: 6 }).alignSelf(ItemAlign.Center) }
           }.width('100%')
           if (!host.locked) {
             Text(this.hostPlatformText(host) + '  ·  ' + this.protectedHostCardValue(host,
               host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
-                host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
+                host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port,
+                host.rustdeskDirectEnabled ? null :
+                  (this.srv.getAllRelays().find((relay: RustDeskRelayConfig): boolean =>
+                    relay.id === host.rustdeskRelayId) ?? null)) :
               host.protocol === 'ssh' ? formatUserAtHost(host.username, host.host, host.port) :
                 formatEndpointFieldsHostPort(host.host, host.port)))
               .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
@@ -14229,7 +17288,7 @@ struct HostListPage {
           Row() {
             this.HostGroupChip(host)
             if (host.groupId.length > 0) { Blank().width(6) }
-            if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
+            if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk' && host.protocol !== 'ai') {
               this.HostConnectionHealth(host)
             }
           }.margin({ top: 2 })
@@ -14241,7 +17300,7 @@ struct HostListPage {
             Row() {
               ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
                 host.rustdeskProManaged || host.sourceType === 'rustdesk_pro'), (badge: string): void => {
-                Text(badge).fontSize(10)
+                Text(badge).fontSize(this.settingsModern() ? 12 : 10)
                   .fontColor(badge === 'Pro' ? this.accentColor :
                     (badge === '直连' ? this.pal().success : this.pal().text2))
                   .fontFamily(this.font()).padding({ left: 6, right: 6, top: 2, bottom: 2 })
@@ -14249,7 +17308,7 @@ struct HostListPage {
               })
             }.justifyContent(FlexAlign.End)
             if (!host.rustdeskDirectEnabled && this.rustdeskPresenceDetectionEnabled) {
-              Text(this.rustDeskPresenceStatusText(host)).fontSize(this.breakpoint === 'sm' ? 11 : 12)
+              Text(this.rustDeskPresenceStatusText(host)).fontSize(this.breakpoint === 'sm' && !this.settingsModern() ? 11 : 12)
                 .fontColor(this.rustDeskPresenceStatusColor(host)).fontFamily(this.font()).margin({ top: 3 })
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             }
@@ -14258,10 +17317,11 @@ struct HostListPage {
             SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(20)
               .fontColor([this.pal().text3]).margin({ left: 8 })
           }
-          if (!this.hostSelectionMode && this.isDesktopDevice) {
+          // PC, and every device in 全新视觉: the ⋯ menu on the card (swiping still works on phones and tablets).
+          if (!this.hostSelectionMode && (this.isDesktopDevice || this.settingsModern())) {
             Row() {
               if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled &&
-                this.breakpoint === 'xl') {
+                this.isDesktopDevice && this.breakpoint === 'xl') {
                 Button() {
                   if (this.hostPresenceProbeBusyIds.has(host.id)) {
                     LoadingProgress().width(18).height(18).color(this.accentColor)
@@ -14273,9 +17333,11 @@ struct HostListPage {
                   .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
                   .onClick((): void => { void this.probeHostConnectivity(host); })
               }
-              Button() { Text('⋯').fontSize(18).fontColor(this.pal().text) }
-                .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
-                .margin({ left: 4 })
+              Button() {
+                Text('⋯').fontSize(18).fontColor(this.pal().text)
+              }
+                .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+                .margin({ left: 4 }).accessibilityText('更多操作')
                 .bindPopup(this.hostActionPopupId === remoteHostCardKey(host.id), {
                   builder: this.hostActionMenuBuilder(host), placement: Placement.BottomRight,
                   enableArrow: true, popupColor: this.pal().card, width: this.hostActionPopupWidth(host),
@@ -14291,11 +17353,16 @@ struct HostListPage {
             }
           }
         }.alignItems(HorizontalAlign.End).margin({ left: 6 })
+          .alignSelf(ItemAlign.Center)
       }
       .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
-      .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(14).backgroundColor(this.hostCardBackground(remoteHostCardKey(host.id)))
+      .backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .onHover((hovering: boolean): void => { this.onHostCardHover(remoteHostCardKey(host.id), hovering); })
+      // A mouse right-click offers the ⋯ actions (or select / deselect while selecting).
+      .bindContextMenu(this.hostContextMenuBuilder(host), ResponseType.RightClick)
     }
     .swipeAction((this.hostSelectionMode || (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
       start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
@@ -14311,6 +17378,7 @@ struct HostListPage {
     ))
     .onDragStart((_event: DragEvent): DragItemInfo => {
       const key: string = remoteHostCardKey(host.id);
+      if (!this.hostSelectionMode && this.isDesktopDevice) { return {}; }
       if (!this.hostSelectionMode) {
         // Let the platform's native drag recognizer own the initial long
         // press. Entering selection here keeps that same pointer sequence
@@ -14351,6 +17419,7 @@ struct HostListPage {
         ))
         .onDragStart((_event: DragEvent): DragItemInfo => {
           const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+          if (!this.hostSelectionMode && this.isDesktopDevice) { return {}; }
           if (!this.hostSelectionMode) {
             this.beginHostSelection(key, true, true);
           } else if (!this.hostReorderEnabled) {
@@ -14379,18 +17448,145 @@ struct HostListPage {
     }
   }
 
+  /** 全新视觉 on Pad and PC: the host list keeps a readable column instead of stretching across the window. */
+  private hostListMaxWidth(): Length {
+    // Full width on every device: a capped column left a narrow strip with wide empty margins on a landscape Pad.
+    return '100%';
+  }
+
+  @Builder hostSearchLeadingIcon() {
+    if (this.settingsModern()) {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ left: 14, right: 8 })
+    } else {
+      Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
+    }
+  }
+
+  /** Clears the search: 全新视觉 has a 44vp icon button, the classic look its ✕. */
+  @Builder hostSearchClearButton() {
+    if (this.settingsModern()) {
+      Button() { SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(18).fontColor([this.pal().text3]) }
+        .width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+        .accessibilityText('清除搜索')
+        .onClick((): void => {
+          this.searchText = '';
+          this.refreshFilteredHostView();
+        })
+    } else {
+      Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
+        .accessibilityText('清除搜索')
+        .onClick(() => {
+          this.searchText = '';
+          this.refreshFilteredHostView();
+        })
+    }
+  }
+
+  /** 全新视觉 while selecting: the bar sits under the search field (the host list builds both). */
+  private modernHostSelectionBarShown(): boolean {
+    return this.settingsModern() && this.hostSelectionMode;
+  }
+
+  private allHostsInViewSelected(): boolean {
+    return this.hostSelectedIds.size > 0 && this.hostSelectedIds.size === this.selectionKeysForCurrentView().length;
+  }
+
+  /** 全新视觉: the multi-select bar stays under the search field, with 44vp buttons, instead of scrolling away. */
+  @Builder modernHostSelectionBar() {
+    Row({ space: 8 }) {
+      Button() {
+        Row({ space: 6 }) {
+          SymbolGlyph(this.allHostsInViewSelected() ? $r('sys.symbol.checkmark_square_fill') : $r('sys.symbol.checkmark_square'))
+            .fontSize(18).fontColor([this.accentColor])
+          Text(this.allHostsInViewSelected() ? '取消全选' : '全选').fontSize(14).fontColor(this.accentColor)
+        }
+      }.height(44).padding({ left: 14, right: 14 }).borderRadius(22).backgroundColor(this.pal().surface)
+        .onClick((): void => {
+          if (this.allHostsInViewSelected()) {
+            this.hostSelectedIds = new Set();
+          } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
+        })
+      Text(this.hostReorderEnabled ? '拖动排序' : '已选 ' + this.hostSelectedIds.size.toString())
+        .fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+        .textAlign(TextAlign.Center).maxLines(1)
+      // The Pro batch bar below has its own 删除: no second one here.
+      if (this.hostSelectedIds.size > 0 && !(this.proOrgVisible && !this.hostReorderEnabled)) {
+        Button() {
+          Row({ space: 6 }) {
+            SymbolGlyph($r('sys.symbol.trash')).fontSize(18).fontColor(['#FFFFFF'])
+            Text('删除').fontSize(14).fontColor('#FFFFFF')
+          }
+        }.height(44).padding({ left: 14, right: 14 }).borderRadius(22).backgroundColor(this.pal().danger)
+          .accessibilityText('删除选中的 ' + this.hostSelectedIds.size.toString() + ' 台主机')
+          .onClick((): void => { void this.doHostBatchDelete(); })
+      }
+      if (this.hostReorderEnabled) {
+        Button() {
+          Row({ space: 6 }) {
+            SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([appUiOnAccentText(this.accentColor)])
+            Text('完成').fontSize(14).fontColor(appUiOnAccentText(this.accentColor))
+          }
+        }.height(44).padding({ left: 14, right: 14 }).borderRadius(22).backgroundColor(this.accentColor)
+          .onClick((): void => { this.commitHostReorder(); })
+      }
+      Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
+        .width(44).height(44).borderRadius(22).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText(this.hostReorderEnabled ? '取消排序' : '取消多选')
+        .onClick((): void => { this.cancelHostEdit(); })
+    }
+    .width('100%').padding({ left: 6, right: 6, top: 6, bottom: 6 }).margin({ top: 8 })
+    .borderRadius(28).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
+    .transition(TransitionEffect.translate({ y: -16 }).combine(TransitionEffect.OPACITY)
+      .animation({ duration: 220, curve: Curve.FastOutSlowIn }))
+  }
+
   @Builder hostContent() {
     Column() {
       Stack() {
         List({ space: 8 }) {
-          // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致
-          ListItem() { Column().height(this.hostTopBarHeight() + 8) }
-          if (!this.groupedHostCardsActive()) {
+          // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致 (全新视觉: plus the multi-select bar under the search)
+          ListItem() {
+            Column().height(this.hostTopBarHeight() + 8 + (this.modernHostSelectionBarShown() ? MODERN_HOST_SELECTION_BAR_VP : 0))
+          }
+          if (this.proIncomingConnectionShareVisible) {
+            ListItem() {
+              ProIncomingConnectionShareCard({ onImport: (id: string): void => { this.openProConnectionShareImport(id); } })
+            }
+          }
+          // Classic list: a compact workspace row. The categorized page shows a 工作区 category card instead.
+          if (this.proWorkspacesVisible && !this.groupedHostCardsActive() &&
+            !(this.isDesktopDevice && this.breakpoint === 'xl')) {
+            ListItem() {
+              WorkspaceStrip({
+                rows: this.orgRows(this.hostViewRevision),
+                activeRefs: this.activeSessionRefs(this.hostViewRevision),
+                runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+                onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); }
+              })
+            }.margin({ left: -16, right: -16 })
+          }
+          if (this.proOrgVisible) {
+            ListItem() {
+              HostGroupBar({
+                rows: this.orgRows(this.hostViewRevision),
+                onlineRefs: this.orgPresenceRefs(true, this.hostViewRevision),
+                offlineRefs: this.orgPresenceRefs(false, this.hostViewRevision),
+                filterKey: this.hostOrgFilterKey,
+                onFilter: (key: string): void => { this.setHostOrgFilter(key); },
+                onExport: (): void => { void this.exportHostsToFile([]); },
+                onImport: (): void => { void this.importHostsFromFile(); },
+                onSelectHosts: (refs: string[]): void => { this.selectHostsByRefs(refs); }
+              })
+            }.margin({ left: -16, right: -16 })
+          } else if (!this.groupedHostCardsActive()) {
             ListItem() { this.HostWorkspaceFilterBar() }
           }
 
-        // 批量选择工具栏 (带出入动画)
-        if (this.hostSelectionMode) {
+        // 批量选择工具栏 (带出入动画); 全新视觉 shows it under the search field instead
+        if (this.hostSelectionMode && !this.settingsModern()) {
           ListItem() {
             // desktop: 按钮全部左移 (侧边栏右侧); 手机/平板: 两端分布
             if (this.isDesktopDevice) {
@@ -14405,7 +17601,8 @@ struct HostListPage {
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                   .margin({ left: 12, right: 12 })
-                if (this.hostSelectedIds.size > 0) {
+                // The Pro batch bar below has its own 删除: no second one here.
+                if (this.hostSelectedIds.size > 0 && !(this.proOrgVisible && !this.hostReorderEnabled)) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
                     .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
@@ -14414,7 +17611,7 @@ struct HostListPage {
                 }
                 if (this.hostReorderEnabled) {
                   Button('完成').fontSize(12).height(32).borderRadius(8)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                     .margin({ right: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
@@ -14446,7 +17643,8 @@ struct HostListPage {
                   Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                 }
                 Blank()
-                if (this.hostSelectedIds.size > 0) {
+                // The Pro batch bar below has its own 删除: no second one here.
+                if (this.hostSelectedIds.size > 0 && !(this.proOrgVisible && !this.hostReorderEnabled)) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
                     .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
@@ -14455,7 +17653,7 @@ struct HostListPage {
                 }
                 if (this.hostReorderEnabled) {
                   Button('完成').fontSize(12).height(32).borderRadius(8)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                     .margin({ right: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
@@ -14491,14 +17689,21 @@ struct HostListPage {
         } else if (this.flatHostCardRefs().length === 0) {
           ListItem() {
             Column() {
-              SymbolGlyph($r('sys.symbol.desktop_fill'))
+              SymbolGlyph(this.hostSearchOrFilterActive() ? $r('sys.symbol.magnifyingglass') : $r('sys.symbol.desktop_fill'))
                 .fontSize(48).fontColor([this.pal().text3])
-              Text('还没有远程主机')
+              Text(this.hostSearchOrFilterActive() ? '没有找到匹配的主机' : '还没有远程主机')
                 .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                 .margin({ top: 16 })
-              Text('点击底部 + 添加远程主机')
+              Text(this.hostSearchOrFilterActive() ? '换个关键词，或清除搜索和筛选' : '点击 + 添加远程主机')
                 .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                 .margin({ top: 6 }).lineHeight(20)
+              if (this.hostSearchOrFilterActive()) {
+                Button('清除搜索和筛选').height(this.settingsModern() ? 44 : 40).fontSize(14).borderRadius(10).margin({ top: 16 })
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .onClick((): void => { this.clearHostSearchAndFilters(); })
+              }
+              // No add button of its own: the page's 「+」 is the one way to add (a second one here read as clutter).
+
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
           }
@@ -14513,6 +17718,7 @@ struct HostListPage {
         ListItem() { Column().height(hostListBottomSpacerVp(this.breakpoint)) }
       }
         .width('100%').height('100%')
+        .constraintSize({ maxWidth: this.hostListMaxWidth() })
         .padding({ left: 16, right: 16, top: 0, bottom: 0 })
         .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
@@ -14544,67 +17750,125 @@ struct HostListPage {
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+                // Kept in the layout on every tab (hidden off the host list) so the title row never changes height.
+                if (this.hostAiOrbAvailable()) {
+                  DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+                    onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                    .margin({ right: 12 })
+                    // PC large screen: the AI is at the bottom left beside 「+」; the title keeps the room so its row never moves.
+                    .visibility(this.hostAiOrbShown() && !this.pcAiBesideFab() ? Visibility.Visible : Visibility.Hidden)
+                }
               Row() {
-                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
+                this.hostSearchLeadingIcon()
                 TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                  .backgroundColor(Color.Transparent).height(40)
+                  .backgroundColor(Color.Transparent).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
                   .fontColor(this.pal().text).placeholderColor(this.pal().text3)
                   .fontFamily(this.font()).layoutWeight(1)
                   .onChange((v: string) => { this.onSearchChange(v); })
-                if (this.searchText !== '') {
-                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
-                    .onClick(() => {
-                      this.searchText = '';
-                      this.refreshFilteredHostView();
-                    })
-                }
+                if (this.searchText !== '') { this.hostSearchClearButton() }
               }.width('50%').constraintSize({ maxWidth: 480 })
-                .height(44).borderRadius(22)
-                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .height(SEARCH_CAPSULE_HEIGHT).borderRadius(SEARCH_CAPSULE_RADIUS)
+                .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular)
+                .shadow(searchGlassShadow(this.theme !== 'light'))
                 .alignItems(VerticalAlign.Center)
-                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
               }.width('100%').height(52).padding({ left: 8, right: 8, bottom: 8 })
+              if (this.modernHostSelectionBarShown()) { this.modernHostSelectionBar() }
             }.width('100%').backgroundColor(Color.Transparent)
           } else {
             Column() {
               Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
-                  .fontColor(this.pal().text).fontFamily(this.font())
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+                if (this.hostAiOrbAvailable()) {
+                  DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+                    onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                    .visibility(this.hostAiOrbShown() && !this.pcAiBesideFab() ? Visibility.Visible : Visibility.Hidden)
+                }
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
               Row() {
-                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
+                this.hostSearchLeadingIcon()
                 TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                  .backgroundColor(Color.Transparent).height(40)
+                  .backgroundColor(Color.Transparent).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
                   .fontColor(this.pal().text).placeholderColor(this.pal().text3)
                   .fontFamily(this.font()).layoutWeight(1)
                   .onChange((v: string) => { this.onSearchChange(v); })
-                if (this.searchText !== '') {
-                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
-                    .onClick(() => {
-                      this.searchText = '';
-                      this.refreshFilteredHostView();
-                    })
-                }
+                if (this.searchText !== '') { this.hostSearchClearButton() }
               }.width('92%')
-                .height(44).borderRadius(22)
-                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .height(SEARCH_CAPSULE_HEIGHT).borderRadius(SEARCH_CAPSULE_RADIUS)
+                .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular)
+                .shadow(searchGlassShadow(this.theme !== 'light'))
                 .alignItems(VerticalAlign.Center)
-                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            }.width('100%').backgroundColor(Color.Transparent)
+              if (this.modernHostSelectionBarShown()) {
+                this.modernHostSelectionBar()
+              }
+            }.width('100%').constraintSize({ maxWidth: this.hostListMaxWidth() })
+              .backgroundColor(Color.Transparent)
           }
         }
         .width('100%')
         .padding({ left: 16, right: 16 })
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
+
+        // Pro: workspace open progress and the multi-select batch bar float above the FAB area.
+        if (this.proWorkspaceRun !== null || (this.hostSelectionMode && this.proOrgVisible && !this.hostReorderEnabled)) {
+          Column({ space: 10 }) {
+            if (this.proWorkspaceRun !== null) {
+              WorkspaceRunPanel({
+                run: this.proWorkspaceRun as WorkspaceRun,
+                onNext: (): void => { this.advanceProWorkspaceRun(true); },
+                onRetry: (index: number): void => { this.retryProWorkspaceItem(index); },
+                onSkip: (index: number): void => { this.skipProWorkspaceItem(index); },
+                onClose: (): void => { this.endProWorkspaceRun(); }
+              })
+            }
+            if (this.hostSelectionMode && this.proOrgVisible && !this.hostReorderEnabled) {
+              HostBatchActions({
+                selectedRefs: this.selectedOrgRefs(),
+                rows: this.orgRows(this.hostViewRevision),
+                probing: this.hostBatchProbing,
+                onProbe: (): void => { void this.batchProbeHosts(); },
+                onExport: (): void => { void this.exportHostsToFile(this.selectedOrgRefs()); },
+                onDelete: (): void => { void this.doHostBatchDelete(); },
+                onLock: (lock: boolean): void => { void this.batchSetHostLock(lock); },
+                onChanged: (): void => { this.refreshHostSnapshotAfterMutation(); }
+              })
+            }
+          }
+          .width('100%').constraintSize({ maxWidth: 560 })
+          .padding({ left: 16, right: 16 })
+          .position({ x: 0, y: '100%' })
+          .markAnchor({ x: 0, y: '100%' })
+          .translate({ y: -(this.hostSelectionMode && this.proOrgVisible ? hostListFabLiftVp(this.breakpoint) :
+            hostListFabLiftVp(this.breakpoint) + hostListFabSizeVp(this.breakpoint) + 12) })
+          .transition(TransitionEffect.translate({ y: 80 }).combine(TransitionEffect.OPACITY)
+            .animation({ duration: 250, curve: Curve.FastOutSlowIn }))
+        }
       }
       .width('100%').height('100%')
+      .bindSheet($$this.showHostImportSheet, this.hostImportSheet(), {
+        height: SheetSize.LARGE, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg
+      })
 
     }
     .width('100%').height('100%')
+  }
+
+  @Builder hostImportSheet() {
+    Column() {
+      Scroll() {
+        Column() {
+          HostImportPanel({
+            document: this.hostImportDocument,
+            rows: this.orgRows(this.hostViewRevision),
+            onAdd: (record: HostExportRecord): void => { this.addImportedHost(record); },
+            onClose: (): void => { this.showHostImportSheet = false; }
+          })
+        }.padding({ left: 16, right: 16, top: 18, bottom: 28 })
+      }.layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
   }
 
   private async openSshPublicKeyInstall(host: RemoteHost): Promise<void> {
@@ -14823,7 +18087,8 @@ struct HostListPage {
               ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle'))
               .fontSize(20).fontColor([key.id === this.sshPublicKeyInstallKeyId ? this.accentColor : this.pal().text3])
             Column() {
-              Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType)).fontSize(14).fontColor(this.pal().text)
+              Text(key.label !== '' ? key.label : sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
+                .fontSize(14).fontColor(this.pal().text)
               Text(key.fingerprint !== '' ? key.fingerprint : '未生成指纹').fontSize(10).fontColor(this.pal().text3)
                 .maxLines(1).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
@@ -14863,7 +18128,8 @@ struct HostListPage {
           .padding(10).backgroundColor(this.pal().surface).borderRadius(9).margin({ bottom: 10 })
       }
       Button(this.sshPublicKeyInstallBusy ? '部署中…' : '部署公钥').width('100%').height(44).borderRadius(11)
-        .backgroundColor(this.sshPublicKeyInstallBusy ? this.pal().text3 : this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.sshPublicKeyInstallBusy ? this.pal().text3 : this.accentColor)
+        .fontColor(this.sshPublicKeyInstallBusy ? Color.White : appUiOnAccentText(this.accentColor))
         .enabled(!this.sshPublicKeyInstallBusy && this.keyVault.getAllSshKeys().length > 0)
         .onClick((): void => { void this.doSshPublicKeyInstall(); })
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 }).backgroundColor(this.pal().card)
@@ -14873,9 +18139,7 @@ struct HostListPage {
   private hostActionPopupWidth(host: RemoteHost): number {
     const labels: string[] = ['编辑', host.locked ? '解锁' : '上锁', '多选 / 排序', '删除'];
     if (host.protocol === 'ssh') { labels.push('部署公钥'); }
-    if (!isVncHostProjection(host)) {
-      labels.push(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组');
-    }
+    if (this.settingsModern() && this.hostGroupCanProbe(host)) { labels.push('检测在线状态'); }
     let longestTextVp: number = 0;
     const uiContext = this.getUIContext();
     labels.forEach((label: string): void => {
@@ -14890,6 +18154,52 @@ struct HostListPage {
     return Math.ceil(longestTextVp + 64);
   }
 
+  @Builder hostContextMenuBuilder(host: RemoteHost) {
+    Menu() {
+      if (this.hostSelectionMode) {
+        MenuItem({ content: this.hostSelectedIds.has(remoteHostCardKey(host.id)) ? '取消选择' : '选择' })
+          .onClick((): void => {
+            const key: string = remoteHostCardKey(host.id);
+            this.toggleHostSelect(key, !this.hostSelectedIds.has(key));
+          })
+      } else {
+        MenuItem({ content: '编辑' }).onClick((): void => { this.editHost(host); })
+        if (this.settingsModern() && this.hostGroupCanProbe(host)) {
+          MenuItem({ content: '检测在线状态' }).onClick((): void => { void this.probeHostConnectivity(host); })
+        }
+        if (host.protocol === 'ssh') {
+          MenuItem({ content: '部署公钥' }).onClick((): void => { void this.openSshPublicKeyInstall(host); })
+        }
+        if (host.protocol !== 'ai') {
+          MenuItem({ content: host.locked ? '解锁' : '上锁' }).onClick((): void => { this.toggleLock(host); })
+        }
+        MenuItem({ content: '多选 / 排序' })
+          .onClick((): void => { this.beginHostSelection('', !this.groupedHostCardsActive()); })
+        MenuItem({ content: '删除' }).contentFontColor(this.pal().danger)
+          .onClick((): void => { this.doDeleteHost(host); })
+      }
+    }
+  }
+
+  @Builder moonlightContextMenuBuilder(view: MoonlightHostLocalView) {
+    Menu() {
+      if (this.hostSelectionMode) {
+        MenuItem({ content: this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host?.id || '')) ? '取消选择' : '选择' })
+          .onClick((): void => {
+            const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+            this.toggleHostSelect(key, !this.hostSelectedIds.has(key));
+          })
+      } else {
+        MenuItem({ content: '编辑' }).onClick((): void => { void this.openMoonlightEditSheet(view); })
+        MenuItem({ content: view.host?.locked === true ? '解锁' : '上锁' })
+          .onClick((): void => { void this.toggleMoonlightLock(view); })
+        MenuItem({ content: '多选 / 排序' }).onClick((): void => { this.beginHostSelection('', true); })
+        MenuItem({ content: '删除' }).contentFontColor(this.pal().danger)
+          .onClick((): void => { void this.doDeleteMoonlightHost(view); })
+      }
+    }
+  }
+
   @Builder hostActionMenuBuilder(host: RemoteHost) {
     Column() {
       Row() {
@@ -14901,6 +18211,20 @@ struct HostListPage {
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.editHost(host); })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+
+      if (this.settingsModern() && this.hostGroupCanProbe(host)) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(16).fontColor([this.pal().text])
+          Text('检测在线状态').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
+        }
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .onClick(() => {
+          animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
+          void this.probeHostConnectivity(host);
+        })
+
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      }
 
       if (host.protocol === 'ssh') {
         Row() {
@@ -14922,6 +18246,7 @@ struct HostListPage {
         Text(host.locked ? '解锁' : '上锁').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.toggleLock(host); })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
@@ -14938,25 +18263,6 @@ struct HostListPage {
       })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-
-      if (!isVncHostProjection(host)) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.folder_badge_plus'))
-            .fontSize(16).fontColor([this.pal().text])
-          Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
-            .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
-        }
-        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .onClick(() => {
-          const nextGroup = host.groupId === 'ops' ? '' : 'ops';
-          if (!this.srv.setGroup(host.id, nextGroup)) {
-            promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
-          }
-          animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
-        })
-
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-      }
 
       Row() {
         SymbolGlyph($r('sys.symbol.ohos_trash'))
@@ -14985,26 +18291,29 @@ struct HostListPage {
       }
       .width(48).height(48).borderRadius(12)
       .backgroundColor(this.pal().editColor)
+      .accessibilityText('编辑')
       .onClick(() => { this.editHost(host); })
 
       Button() {
-        SymbolGlyph(host.locked ? $r('sys.symbol.ohos_lock') : $r('sys.symbol.ohos_lock'))
+        SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
           .fontSize(17)
-          .fontColor([Color.White])
+          .fontColor([host.locked ? Color.White : appUiOnAccentText(this.accentColor)])
       }
       .width(48).height(48).borderRadius(12)
       .backgroundColor(host.locked ? this.pal().success : this.accentColor)
       .margin({ left: 4 })
+      .accessibilityText(host.locked ? '解锁' : '上锁')
+      .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
       .onClick(() => { this.toggleLock(host); })
 
       if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled) {
         Button() {
           if (this.hostPresenceProbeBusyIds.has(host.id)) {
-            LoadingProgress().width(22).height(22).color(Color.White)
+            LoadingProgress().width(22).height(22).color(appUiOnAccentText(this.accentColor))
           } else {
             SymbolGlyph($r('sys.symbol.bolt_fill'))
               .fontSize(18)
-              .fontColor([Color.White])
+              .fontColor([appUiOnAccentText(this.accentColor)])
           }
         }
         .width(48).height(48).borderRadius(12)
@@ -15019,11 +18328,12 @@ struct HostListPage {
         Button() {
           SymbolGlyph($r('sys.symbol.key_fill'))
             .fontSize(17)
-            .fontColor([Color.White])
+            .fontColor([appUiOnAccentText(this.accentColor)])
         }
         .width(48).height(48).borderRadius(12)
         .backgroundColor(this.accentColor)
         .margin({ left: 4 })
+        .accessibilityText('部署公钥')
         .onClick(() => { void this.openSshPublicKeyInstall(host); })
       }
     }
@@ -15061,6 +18371,18 @@ struct HostListPage {
     return moonlightSettingsRouteSpec(this.settingsLeafSheetMode) !== null;
   }
 
+  private isAiSettingsLeafSheet(): boolean {
+    return aiSettingsLeafSheetHeight(this.settingsLeafSheetMode) > 0;
+  }
+
+  private aiSettingsSectionForLeaf(): string {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_HOSTS) { return 'hosts'; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_DISPLAY) { return 'display'; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_DATA) { return 'data'; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_INSTALL) { return 'install'; }
+    return '';
+  }
+
   private isVirtualKeyboardSettingsLeafSheet(): boolean {
     return isVirtualKeyboardSettingsMode(this.settingsLeafSheetMode);
   }
@@ -15079,6 +18401,18 @@ struct HostListPage {
   }
 
   private settingsLeafSheetHeight(): SheetSize | number {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) {
+      return Math.min(900, Math.max(360, this.pageViewportHeight - 48));
+    }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
+      return settingsLeafSheetFitHeight(this.breakpoint === 'sm' ? 560 : 600, this.pageViewportHeight);
+    }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PHONE_PASSKEY ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -15095,23 +18429,55 @@ struct HostListPage {
         this.virtualKeyboardCustomEditorVisible);
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (diagnosticHeight > 0) { return diagnosticHeight; }
+    if (diagnosticHeight > 0) { return settingsLeafSheetFitHeight(diagnosticHeight, this.pageViewportHeight); }
+    const diagnosticAiHeight: number = diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (diagnosticAiHeight > 0) {
+      // The three AI leaves have different density. The policy clamps each
+      // content height to the live viewport while their own Scroll handles
+      // long provider/session lists.
+      return diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode, this.diagnosticAiSection,
+        this.pageViewportHeight);
+    }
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }
+    if (secretVisibilityHeight > 0) {
+      return settingsLeafSheetFitHeight(secretVisibilityHeight, this.pageViewportHeight);
+    }
     const wheelDirectionHeight: number =
       remoteWheelDirectionSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (wheelDirectionHeight > 0) { return wheelDirectionHeight; }
+    if (wheelDirectionHeight > 0) {
+      return settingsLeafSheetFitHeight(wheelDirectionHeight, this.pageViewportHeight);
+    }
     const pinchZoomHeight: number =
       remotePinchZoomSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (pinchZoomHeight > 0) { return pinchZoomHeight; }
+    if (pinchZoomHeight > 0) { return settingsLeafSheetFitHeight(pinchZoomHeight, this.pageViewportHeight); }
+    const portraitDisplayHeight: number =
+      remotePortraitDisplaySettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (portraitDisplayHeight > 0) {
+      return settingsLeafSheetFitHeight(portraitDisplayHeight, this.pageViewportHeight);
+    }
     const controlBarHeight: number =
       sessionControlBarSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (controlBarHeight > 0) { return controlBarHeight; }
+    if (controlBarHeight > 0) { return settingsLeafSheetFitHeight(controlBarHeight, this.pageViewportHeight); }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (moonlightHeight > 0) { return moonlightHeight; }
+    if (moonlightHeight > 0) { return settingsLeafSheetFitHeight(moonlightHeight, this.pageViewportHeight); }
+    const aiHeight: number = aiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (aiHeight > 0) {
+      // AI settings surface measures short sections intrinsically and caps
+      // long sections through its own viewport-aware Scroll.
+      return SheetSize.FIT_CONTENT;
+    }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
+    return vncHeight > 0 ? settingsLeafSheetFitHeight(vncHeight, this.pageViewportHeight) : SheetSize.FIT_CONTENT;
+  }
+
+  /**
+   * 全新视觉 on Pad and PC: a centred settings sheet takes the window's width up to 720vp, so the sheets' own
+   * maximum widths apply instead of the system's narrow default. Classic keeps the default.
+   */
+  private settingsLeafSheetWidth(): number | undefined {
+    if (!this.settingsModern() || this.settingsLeafUsesBottomSheet()) { return undefined; }
+    return Math.min(720, Math.max(320, this.pageViewportWidth - 48));
   }
 
   private settingsLeafUsesBottomSheet(): boolean {
@@ -15129,7 +18495,58 @@ struct HostListPage {
   }
 
   @Builder settingsLeafSheet() {
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) {
+      ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) {
+      ProFeatureDetailPanel({
+        featureId: this.selectedProFeatureId,
+        showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
+        onOpenPasskey: (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PHONE_PASSKEY) {
+      PhonePasskeySettingsSheet({
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) {
+      SshSkinSettingsPanel({
+        showClose: true,
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+        },
+        onEditingDirtyChange: (dirty: boolean): void => { this.sshSkinEditorDirty = dirty; }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) {
+      ProBadgeSettingsPanel({
+        showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE) {
+      RdpDisplayProfilePanel({
+        isDesktopDevice: this.isDesktopDevice,
+        showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+        },
+        onDraftDirtyChange: (dirty: boolean): void => { this.rdpDisplayDraftDirty = dirty; },
+        applyHint: '保存后用于下次连接',
+        onResolution: (id: string): void => { this.saveRdpDesktopResolutionId(id); },
+        onCustomResolution: (width: string, height: string): void => { this.saveRdpCustomResolution(width, height); },
+        onRemoteUiScale: (value: string): void => { this.saveRdpRemoteUiScale(value); },
+        onDesktopScalePercent: (value: string): void => { this.saveRdpDesktopScalePercent(value); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
+      ProAppIconPanel({
+        isOpen: (): boolean => this.showSettingsLeafSheet &&
+          this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON,
+        showClose: true,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
       this.accountSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCENT_COLOR) {
       this.colorPickerSheet()
@@ -15154,7 +18571,7 @@ struct HostListPage {
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SECRET_VISIBILITY) {
       SecretVisibilitySettingsSheet({
         initialPolicyJson: this.secretPresentationPolicyJson,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (policy: SecretPresentationPolicy): boolean =>
           this.saveSecretPresentationPolicy(policy)
       })
@@ -15165,9 +18582,12 @@ struct HostListPage {
         initialSsh: this.sshReverseWheel,
         initialVnc: this.vncReverseWheel,
         initialMoonlight: this.moonlightReverseWheel,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        initialSpeeds: this.remoteWheelSpeeds(),
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
-          this.saveRemoteWheelPreferenceUpdate(update)
+          this.saveRemoteWheelPreferenceUpdate(update),
+        onSaveSpeed: (protocol: RemoteWheelProtocol, speed: number): boolean =>
+          this.saveRemoteWheelSpeed(protocol, speed)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM) {
       RemotePinchZoomSettingsSheet({
@@ -15176,9 +18596,28 @@ struct HostListPage {
         initialSsh: this.sshPinchZoomEnabled,
         initialVnc: this.vncPinchZoomEnabled,
         initialMoonlight: this.moonlightPinchZoomEnabled,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemotePinchZoomPreferenceUpdate): boolean =>
           this.saveRemotePinchZoomPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY) {
+      RemotePortraitDisplaySettingsSheet({
+        initialPreferences: this.remotePortraitDisplayPreferences(),
+        initialSidebarHeightMode: this.remotePortraitSidebarHeightMode,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
+        onSave: (update: RemotePortraitDisplayPreferenceUpdate,
+          heightMode: RemotePortraitSidebarHeightMode): boolean => {
+          // The sheet saves one change at a time (a protocol or the sidebar height), so each save is one write and
+          // a failure never leaves half of it stored.
+          const touched = update.touched;
+          if ((touched.rdpEnabled || touched.rdpMode || touched.rustdeskEnabled || touched.rustdeskMode ||
+            touched.vncEnabled || touched.vncMode || touched.moonlightEnabled || touched.moonlightMode) &&
+            !this.saveRemotePortraitDisplayPreferenceUpdate(update)) { return false; }
+          if (normalizeRemotePortraitSidebarHeightMode(heightMode) === this.remotePortraitSidebarHeightMode) {
+            return true;
+          }
+          return this.saveRemotePortraitSidebarHeightMode(heightMode);
+        }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SESSION_CONTROL_BAR) {
       RemoteSessionControlBarSettingsSheet({
@@ -15187,26 +18626,37 @@ struct HostListPage {
         initialVncHidden: this.sessionControlBarHiddenVnc,
         initialMoonlightHidden: this.sessionControlBarHiddenMoonlight,
         quickExitDisabled: this.remoteSessionQuickExitDisabled,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemoteSessionControlBarPreferenceUpdate): boolean =>
           this.saveSessionControlBarPreferenceUpdate(update)
       })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_AI) {
+      DiagnosticAiSettingsSheet({
+        section: this.diagnosticAiSection,
+        initialResumeSessionId: this.diagnosticAiResumeSessionId,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
+        onOpenSession: (sessionId: string): void => { this.openDiagnosticAiSession(sessionId); },
+        onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
       FeedbackSettingsSheet({
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
       })
     } else if (this.isVirtualKeyboardSettingsLeafSheet()) {
       VirtualKeyboardSettingsSheet({
         requestedSection: this.virtualKeyboardSettingsSectionForLeaf(),
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+        },
         onCustomEditorVisibleChange: (visible: boolean): void => {
           this.virtualKeyboardCustomEditorVisible = visible;
-        }
+        },
+        onCustomEditorDirtyChange: (dirty: boolean): void => { this.virtualKeyboardCustomEditorDirty = dirty; }
       })
     } else if (this.isMoonlightSettingsLeafSheet()) {
       MoonlightSettingsSurface({
@@ -15214,16 +18664,23 @@ struct HostListPage {
         requestedSection: this.moonlightSettingsSectionForLeaf(),
         requestedHostId: this.moonlightSettingsLeafHostId,
         onClose: (): void => {
-          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
         },
         onDirtyChanged: (dirty: boolean): void => { this.moonlightSettingsLeafDirty = dirty; }
+      })
+    } else if (this.isAiSettingsLeafSheet()) {
+      AiSettingsSurface({
+        requestedSection: this.aiSettingsSectionForLeaf(),
+        embedded: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
       })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
       VncSettingsSheet({
         mode: this.settingsLeafSheetMode,
         onClose: (): void => {
-          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
         },
         onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
@@ -15272,7 +18729,7 @@ struct HostListPage {
               y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
             .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
         } else {
-          SymbolGlyph(icon)
+          SymbolGlyph(this.settingsModern() ? settingsModernSectionSymbol(section, icon) : icon)
             .fontSize(21)
             .fontColor([this.pal().text])
             .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
@@ -15280,7 +18737,7 @@ struct HostListPage {
               y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
             .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-          SymbolGlyph(icon)
+          SymbolGlyph(this.settingsModern() ? settingsModernSectionSymbol(section, icon) : icon)
             .fontSize(21)
             .fontColor([this.accentColor])
             .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
@@ -15298,17 +18755,23 @@ struct HostListPage {
           .fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text)
           .fontFamily(this.font())
-        Text(subtitle)
-          .fontSize(11)
-          .fontColor(this.pal().text3)
+        // 全新视觉: what the section is set to now, readable (text2, two lines) instead of a list of its contents.
+        Text(this.settingsModern() ? this.settingsSectionSummary(section, subtitle, this.settingsValuesRevision) :
+          subtitle)
+          .fontSize(this.settingsModern() ? 12 : 11)
+          .fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
           .fontFamily(this.font())
-          .maxLines(1)
+          .maxLines(this.settingsModern() ? 2 : 1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
+      if (section === SETTINGS_SECTION_AI || section === SETTINGS_SECTION_PRO ||
+        (section === SETTINGS_SECTION_DIAGNOSTICS && (this.diagnosticAiConfigVisible || this.diagnosticAiAssistantVisible))) {
+        ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center)
+      }
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(18)
         .fontColor([this.pal().text3])
@@ -15316,20 +18779,31 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
     }
     .width('100%')
-    .height(64)
-    .padding({ left: 16, right: 18 })
+    .height(this.settingsModern() ? 'auto' : 64)
+    .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+    .padding({ left: 16, right: 18, top: this.settingsModern() ? 10 : 0, bottom: this.settingsModern() ? 10 : 0 })
     .borderRadius(20)
     .backgroundColor(this.pal().card)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: 12, color: 'rgba(0,0,0,0.035)', offsetY: 3 })
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .onClick((): void => { this.toggleSettingsSection(section); })
+    .accessibilityGroup(true)
+    .accessibilityText(title + '，' + (this.settingsModern() ?
+      this.settingsSectionSummary(section, subtitle, this.settingsValuesRevision) : subtitle) + '，' +
+      (this.settingsSectionExpanded(section) ? '已展开' : '已收起'))
+    .id('settingsHeader_' + section)
+    .onClick((): void => { this.onSettingsSectionHeaderClick(section); })
   }
 
-  @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void) {
+  @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void,
+    imageIcon: boolean = false, liveProStatus: boolean = false) {
     Row() {
       Row() {
-        SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text])
+        if (imageIcon) {
+          Image(icon).width(21).height(21).fillColor(this.pal().text)
+        } else {
+          SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text])
+        }
       }
       .width(34).height(34).borderRadius(10)
       .justifyContent(FlexAlign.Center)
@@ -15342,11 +18816,11 @@ struct HostListPage {
           .fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text)
           .fontFamily(this.font())
-        Text(subtitle)
-          .fontSize(11)
-          .fontColor(this.pal().text3)
+        Text(liveProStatus ? this.proStatusLabel + ' · 全部协议免费连接' : subtitle)
+          .fontSize(this.settingsModern() ? 12 : 11)
+          .fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
           .fontFamily(this.font())
-          .maxLines(1)
+          .maxLines(this.settingsModern() ? 2 : 1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .margin({ top: 2 })
       }
@@ -15369,9 +18843,14 @@ struct HostListPage {
   @Builder settingsContent() {
     Column() {
       // 参照 Melotopia-HMOS: 标题栏覆盖在滚动内容之上, content extend under → blur 可见
-      List() {
+      List({ scroller: this.settingsListScroller }) {
         // --- 顶栏占位 (标题87, 首项Y=95 与KV无切换栏对齐) ---
         ListItem() { Column().height(95) }
+
+        if (this.settingsModern()) {
+          ListItem() { this.settingsSearchField() }
+            .width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 14 })
+        }
 
         // --- 账号卡片 (小卡片, 点击弹出Sheet) ---
         ListItem() {
@@ -15379,15 +18858,13 @@ struct HostListPage {
             // 左侧头像
             if (this.appCloneLocalOnly) {
               Text(this.appCloneIsClone ? '分' : '本').fontSize(18).fontWeight(FontWeight.Bold)
-                .fontColor(Color.White).textAlign(TextAlign.Center)
+                .fontColor(appUiOnAccentText(this.accentColor)).textAlign(TextAlign.Center)
                 .width(40).height(40).borderRadius(20)
                 .backgroundColor(this.accentColor).padding({ top: 8 })
             } else if (this.accountAvatarUrl !== '') {
               Image(this.accountAvatarUrl).width(40).height(40).borderRadius(20)
-            } else if (this.auth.isLoggedIn()) {
-              Text('👤').fontSize(30)
             } else {
-              Text('👤').fontSize(30)
+              this.settingsAccountGlyph()
             }
             // 中间信息列
             Column() {
@@ -15401,6 +18878,10 @@ struct HostListPage {
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
             }
             .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+            // Owned Pro follows the account: shown only while its entitlement is active.
+            if (this.proManagerVisible && !this.appCloneLocalOnly) {
+              ProBadge().margin({ right: 10 })
+            }
             SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(20).fontColor([this.pal().text3])
           }
           .width('100%').height(75).padding({ left: 24, right: 24 }).alignItems(VerticalAlign.Center)
@@ -15411,1183 +18892,40 @@ struct HostListPage {
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         .id('account_card_' + this.loginRefreshKey)
 
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_APPEARANCE, $r('sys.symbol.paintpalette_fill'),
-            '个性化', '主题色、深色模式、壁纸与光晕')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- 个性化卡片 ---
-        ListItem() {
-          Column() {
-            Text('个性化').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('主题色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Column().width(44).height(24).borderRadius(12).backgroundColor(this.accentColor)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); })
-              this.cardDivider()
-              // 深色模式(含跟随系统)
-              Column() {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.moon_fill')).fontSize(22).fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('深色模式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Toggle({ type: ToggleType.Switch, isOn: this.theme === 'dark' })
-                    .selectedColor(this.accentColor)
-                    .onChange((on: boolean) => {
-                      if (this.followSystem) {
-                        hilog.info(0x0000, 'HostListPage',
-                          'manual theme toggle ignored while follow-system is active');
-                        return;
-                      }
-                      this.applyManualTheme(on, 'manual-toggle');
-                    })
-                    .scale({ x: 0.92, y: 0.92 }).enabled(!this.followSystem)
-                }.width('100%').height(60).padding({ left: 16, right: 16 })
-                Row() {
-                  Blank().width(16)
-                  Column().layoutWeight(1).height(0.5).backgroundColor(this.pal().divider)
-                  Blank().width(16)
-                }.width('100%')
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(20)
-                      .fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('跟随系统').fontSize(14).fontWeight(FontWeight.Normal)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Toggle({ type: ToggleType.Switch, isOn: this.followSystem })
-                    .selectedColor(this.accentColor)
-                    .onChange((on: boolean) => {
-                      if (on === this.followSystem) {
-                        hilog.info(0x0000, 'HostListPage',
-                          'follow-system toggle ignored unchanged=' + (on ? 'true' : 'false'));
-                        return;
-                      }
-                      if (on) {
-                        this.applyFollowSystemColorMode();
-                      } else {
-                        this.applyManualTheme(this.theme === 'dark', 'follow-off');
-                      }
-                    })
-                    .scale({ x: 0.88, y: 0.88 })
-                }.width('100%').height(52).padding({ left: 16, right: 16 })
-              }
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.camera_fill')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('壁纸').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Row() {
-                  ForEach(this.wallpaperItems.slice(0, 4), (item: WallpaperItem, idx: number) => {
-                    Column().width(20).height(20).borderRadius(10).backgroundColor(item.color).margin({ left: idx > 0 ? 4 : 0 })
-                      .border({ width: this.wallpaperIdx === idx ? 2 : 0, color: this.accentColor })
-                  })
-                }
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 8 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_WALLPAPER); })
-              this.cardDivider()
-              // 光晕颜色 (沉浸光感悬浮栏渐变遮罩色)
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('光晕颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Column().width(24).height(24).borderRadius(12).backgroundColor(this.haloColor)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_HALO_COLOR); })
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Column() {
-                  Text('环境光调节光效').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('根据环境亮度微调光晕强度').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Toggle({ type: ToggleType.Switch, isOn: this.ambientLightEffectEnabled })
-                  .selectedColor(this.accentColor)
-                  .scale({ x: 0.88, y: 0.88 })
-                  .onChange((on: boolean): void => { this.saveAmbientLightEffectEnabled(on); })
-              }.width('100%').height(62).padding({ left: 16, right: 16 })
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.eye_slash')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Column() {
-                  Text('隐藏主机卡片敏感信息').fontSize(AppTheme.fontSize.body)
-                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('隐藏地址、端口、用户名和 RustDesk ID；自定义主机名称仍显示')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Toggle({ type: ToggleType.Switch, isOn: this.hostCardSensitiveInfoHidden })
-                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-                  .onChange((on: boolean): void => { this.saveHostCardSensitiveInfoHidden(on); })
-              }.width('100%').height(66).padding({ left: 16, right: 16 })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-          .onAreaChange((_old: Area, next: Area): void => {
-            const nextHeight: number = next.height as number;
-            // Ignore the collapse animation and its intermediate frames. A
-            // max-height animation reports those clipped heights here; using
-            // one as the cached natural height is what previously locked this
-            // card at a few dozen vp after the first expansion.
-            if (this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) &&
-              Number.isFinite(nextHeight) && nextHeight >= APPEARANCE_EXPANDED_MIN_HEIGHT &&
-              nextHeight > this.appearanceContentHeight) {
-              this.appearanceContentHeight = nextHeight;
-            }
-          })
+        if (this.settingsModern()) {
+          if (this.settingsSearchQuery.trim() !== '') {
+            this.settingsSearchResults()
+          } else {
+            this.settingsModernSections()
+          }
+        } else {
+          this.settingsSectionAppearance()
+          this.settingsSectionHome()
+          this.settingsSectionCloudSync()
+          this.settingsSectionConnectionLive()
+          this.settingsSectionDisplayInteraction()
+          this.settingsSectionVirtualKeyboard()
+          this.settingsSectionRdp()
+          this.settingsSectionRustDesk()
+          this.settingsSectionSsh()
+          this.settingsSectionVnc()
+          this.settingsSectionMoonlight()
+          this.settingsSectionRemoteAi()
+          this.settingsSectionProDebug()
+          this.settingsSectionPro()
+          this.settingsSectionSecurity()
+          this.settingsSectionTutorial()
+          this.settingsSectionAbout()
+          this.settingsSectionDiagnostics()
+          this.settingsSectionActions()
         }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_APPEARANCE) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_HOME, $r('sys.symbol.list_bullet'),
-            '主页与主机列表', '添加入口、主机分组与 RustDesk 在线检测')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          Column() {
-            Text('主页与主机列表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.rustdeskSwitchRow($r('app.media.icon_laptop'), 'RustDesk 在线检测',
-                this.rustdeskPresenceDetectionEnabled ? '打开主页时自动检测非直连主机；卡片仍可手动检测' : '已关闭自动检测，可在主机卡片上手动检测',
-                this.rustdeskPresenceDetectionEnabled,
-                (on: boolean): void => { this.saveRustDeskPresenceDetection(on); })
-              this.cardDivider()
-              Column() {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.plus_circle_fill')).fontSize(22).fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Column() {
-                    Text('添加 FAB 风格').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                      .fontColor(this.pal().text).fontFamily(this.font())
-                    Text('控制添加主机、SSH 密钥、2FA 和中继服务器的界面风格')
-                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
-                Row() {
-                  Button('全新模式').layoutWeight(1).height(36).fontSize(13)
-                    .fontColor(this.fabAddStyle === 'modern' ? Color.White : this.pal().text2)
-                    .backgroundColor(this.fabAddStyle === 'modern' ? this.accentColor : this.pal().surface)
-                    .borderRadius(10).onClick((): void => { this.saveFabAddStyle('modern'); })
-                  Button('经典模式').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                    .fontColor(this.fabAddStyle === 'classic' ? Color.White : this.pal().text2)
-                    .backgroundColor(this.fabAddStyle === 'classic' ? this.accentColor : this.pal().surface)
-                    .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
-                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
-              }
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Column() {
-                  Text('按主机类型分组').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('手机、Pad 和 PC 小屏按协议显示分类卡；PC 大屏保留侧栏分类')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Toggle({ type: ToggleType.Switch, isOn: this.groupedHostCards })
-                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-                  .onChange((on: boolean): void => { this.saveGroupedHostCards(on); })
-              }.width('100%').height(66).padding({ left: 16, right: 16 })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 520 : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_CLOUD_SYNC, $r('sys.symbol.cloud_fill'),
-            '云同步', this.appCloneLocalOnly ? this.appCloneStatusText :
-              '华为云空间、跨设备数据恢复与手动同步')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          Column() {
-            Text(this.appCloneLocalOnly ? '分身数据' : '云端数据')
-              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              if (this.appCloneLocalOnly) {
-                Row() {
-                  Row() { Text(this.appCloneIsClone ? '分' : '本').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.accentColor) }
-                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card)
-                    .justifyContent(FlexAlign.Center)
-                  Column() {
-                    Text(this.appCloneIsClone ? '应用分身 · 本地模式' : '本地安全模式')
-                      .fontSize(AppTheme.fontSize.body)
-                      .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                    Text('华为账号、云上传与云下载已关闭；本地备份仍可使用')
-                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                }.width('100%').height(72).padding({ left: 14, right: 16 })
-              } else {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
-                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                  Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
-                this.cardDivider()
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
-                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                  Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
-              }
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('可导出脱敏配置或完整备份；VNC trust 只作为候选元数据，本机确认标记不导出').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 })
-                .onClick((): void => { this.openCloudSyncSheet(CLOUD_SYNC_SHEET_BACKUP_CONFIRM); })
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() { Text('从本地恢复').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('校验 v1/v2/v3 文件并安全合并；缺表不会清空新版数据').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.chooseLocalRestore(); })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 390 : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_CONNECTION_LIVE, $r('sys.symbol.gearshape_fill'),
-            '连接实况窗', '主机统计、后台展示和系统实况窗')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- 连接卡片 ---
-        ListItem() {
-          Column() {
-            Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.protocolStatItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
-              this.cardDivider()
-              this.protocolStatItemRow(protocolIcon('rdp'), 'RDP 协议', this.rdpCount + ' 台')
-              this.cardDivider()
-              this.protocolStatItemRow(protocolIcon('rustdesk'), 'RustDesk 协议', this.rustdeskCount + ' 台')
-              this.cardDivider()
-              this.protocolStatItemRow(protocolIcon('ssh'), 'SSH 终端', this.sshCount + ' 台')
-              this.cardDivider()
-              this.protocolStatItemRow(protocolIcon('vnc'), 'VNC 主机', this.vncCount + ' 台')
-              this.cardDivider()
-              this.cardItemRow($r('app.media.icon_lock'), '已锁定', this.lockedCount + ' 台')
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_CONNECTION_LIVE) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        // --- 实况窗卡片 ---
-        ListItem() {
-          Column() {
-            Text('实况窗').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              // 总开关
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '后台连接展示',
-                '应用退到后台时保持远程连接，并显示系统允许的状态入口',
-                this.liveViewEnabled,
-                (on: boolean): void => {
-                  this.liveViewEnabled = on;
-                  this.persistPref('liveViewEnabled', on);
-                }, true)
-              this.cardDivider()
-              // 模式选择: AVSession
-              this.liveViewModeRow('画中画模式',
-                '应用退到后台时优先进入 VIDEO_PLAY 画中画，并同步系统媒体控制胶囊',
-                1)
-              this.cardDivider()
-              // 模式选择: 普通后台通知。第三方远程连接不能直接创建系统实况窗。
-              this.liveViewModeRow('后台通知',
-                '使用系统允许的普通通知展示连接状态和时长，不显示视频画中画',
-                2)
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_CONNECTION_LIVE) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
-            '显示与交互', '本地缩放、滚轮方向、退出保护与会话控制栏')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          Column() {
-            Text('显示与交互').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.remoteDisplayScaleRow()
-              this.cardDivider()
-              this.remoteWheelDirectionRow()
-              this.cardDivider()
-              this.remotePinchZoomRow()
-              this.cardDivider()
-              this.remoteSessionQuickExitRow()
-              this.cardDivider()
-              this.sessionControlBarVisibilityRow()
-              if (!this.isDesktopDevice) {
-                this.cardDivider()
-                Column() {
-                  Row() {
-                    Row() { Text('⌖').fontSize(22).fontColor(this.pal().text) }
-                      .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                    Column() {
-                      Text('触控板鼠标样式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                        .fontColor(this.pal().text).fontFamily(this.font())
-                      Text('手机和平板触控板模式，选择圆环或官方远端鼠标').fontSize(11)
-                        .fontColor(this.pal().text3).fontFamily(this.font())
-                    }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                  }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
-                  Row() {
-                    Button('圆环').layoutWeight(1).height(36).fontSize(13)
-                      .fontColor(this.virtualMouseStyle === 'circle' ? Color.White : this.pal().text2)
-                      .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
-                      .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
-                    Button('官方远端鼠标').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                      .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
-                      .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
-                      .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
-                  }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
-                }
-                this.cardDivider()
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.person_2_fill')).fontSize(22).fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Column() {
-                    Text('握持手感知对齐').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                      .fontColor(this.pal().text).fontFamily(this.font())
-                    Text(this.gripPermissionGranted ? '已启用；根据握持手移动添加按钮' : '启动后自动申请权限，不影响主机列表显示')
-                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                  Text(this.gripPermissionGranted ? '已开启' : '启动申请')
-                    .fontSize(12).fontColor(this.accentColor).fontFamily(this.font()).margin({ right: 8 })
-                }.width('100%').height(62).padding({ left: 16, right: 16 })
-              }
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_DISPLAY_INTERACTION) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_VIRTUAL_KEYBOARD,
-            $r('sys.symbol.keyboard'), '键盘',
-            '输入法、实体键盘、HarmonyOS 快捷键与远端组合键')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          Column() {
-            Text('键盘').fontSize(13).fontWeight(FontWeight.Medium)
-              .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
-                '当前输入法、语言子类型与 HarmonyOS 官方设置',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.keyboard'), '输入行为',
-                '精简键盘、文本发送与候选预编辑规则',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_desktop'), '快捷键平台',
-                'Windows 与 macOS 默认组合键语义',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS); })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '功能键与面板',
-                'F1–F12、导航键、连续发送与面板触控',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.lock_shield_fill'), '屏蔽鸿蒙快捷键',
-                'PC 默认打开；打开后屏蔽并发送远端，关闭后由鸿蒙处理',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',
-                '创建、编辑与删除跨连接复用的快捷键',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); })
-            }.borderRadius(24).backgroundColor(this.pal().card)
-              .backgroundBlurStyle(BlurStyle.Regular)
-              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VIRTUAL_KEYBOARD) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_RDP, protocolIcon('rdp'),
-            'Windows RDP', '分辨率、色深、输入、音频和凭据')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- Windows RDP 个性化卡片 ---
-        ListItem() {
-          Column() {
-            Text('Windows RDP').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.rdpDesktopPresetRow()
-              this.cardDivider()
-              this.rdpRemoteUiScaleRow()
-              this.cardDivider()
-              this.rdpColorDepthRow()
-              this.cardDivider()
-              this.rdpControlModeRow()
-              this.cardDivider()
-              this.rdpAuthIdentityModeRow()
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_info'), 'TLS 兼容登录',
-                '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',
-                this.rdpTlsWithoutNla,
-                (on: boolean): void => { this.saveRdpTlsWithoutNla(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
-                '播放 Windows 远端会话声音', this.rdpAudioEnabled,
-                (on: boolean): void => { this.saveRdpAudioEnabled(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '剪贴板同步',
-                '连接时启用文本剪贴板通道', this.rdpClipboardEnabled,
-                (on: boolean): void => { this.saveRdpClipboardEnabled(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_info'), '性能监视与诊断日志',
-                '连接后显示送显、队列和 GFX 指标，并写入 hilog', this.rdpShowDiagnostics,
-                (on: boolean): void => { this.saveRdpShowDiagnostics(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_folder'), '文件共享盘',
-                RDP_DRIVE_REDIRECTION_ENABLED ? '连接时挂载 \\\\tsclient\\' + this.rdpDriveName : '暂时停用，避免影响 Pad/手机连接',
-                this.rdpDriveEnabled,
-                (on: boolean): void => { this.saveRdpDriveEnabled(on); }, true)
-              this.cardDivider()
-              this.rdpDriveNameRow()
-              this.cardDivider()
-              this.rdpCredentialManagerRow()
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_RDP) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_RUSTDESK, protocolIcon('rustdesk'),
-            'RustDesk', '画质、编码、LAN 发现、隐私和音频')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- RustDesk 个性化卡片 ---
-        ListItem() {
-          Column() {
-            Text('RustDesk').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.rustdeskImageQualityRow()
-              this.cardDivider()
-              this.rustdeskCodecRow()
-              this.cardDivider()
-              this.rustdeskControlModeRow()
-              this.cardDivider()
-              // LAN 发现 — 手动扫描按钮
-              Row() {
-                Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Column() {
-                  Text('LAN 发现').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text(this.lanScanning ? '正在扫描...' : (this.lanScanResults.length > 0 ?
-                    '发现 ' + this.lanScanResults.length + ' 台设备' : '扫描同局域网 RustDesk 设备'))
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Button(this.lanScanning ? '扫描中' : '扫描')
-                  .fontSize(12).fontWeight(FontWeight.Medium)
-                  .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-                  .borderRadius(16).height(30).padding({ left: 12, right: 12 })
-                  .enabled(!this.lanScanning)
-                  .onClick(() => { this.startLanScan(); })
-              }.width('100%').height(64).padding({ left: 16, right: 16 })
-              // 扫描结果
-              if (this.lanScanResults.length > 0) {
-                Column() {
-                  ForEach(this.lanScanResults, (peer: DiscoveredRustDeskPeer) => {
-                    Row() {
-                      Column() {
-                        Text(peer.deviceName).fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
-                        Row() {
-                          Text(peer.peerId).fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
-                          Text(' · ' + peer.host + ':' + peer.port.toString())
-                            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
-                        }.margin({ top: 2 })
-                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                      Button('添加').fontSize(11).fontWeight(FontWeight.Medium)
-                        .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-                        .borderRadius(14).height(26).padding({ left: 10, right: 10 })
-                        .onClick(() => { this.addLanPeer(peer); })
-                    }.width('100%').padding({ left: 8, right: 8, top: 6, bottom: 6 })
-                    .borderRadius(8).backgroundColor(this.pal().surface).margin({ bottom: 6 })
-                  })
-                }.width('100%').padding({ left: 16, right: 16, bottom: 8 })
-              }
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_lock'), '允许隐私模式',
-                '连接时可请求隐藏远端屏幕', this.rustdeskPrivacyMode,
-                (on: boolean): void => { this.saveRustDeskPrivacyMode(on); })
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
-                '接收并播放远端设备声音', this.rustdeskAudioEnabled,
-                (on: boolean): void => { this.saveRustDeskAudioEnabled(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '远端应用双指缩放',
-                '将双指事件发送到 RustDesk 被控端应用；启用后取代本地画布缩放',
-                this.rustdeskRemoteAppTouchScaleEnabled,
-                (on: boolean): void => { this.saveRustDeskRemoteAppTouchScaleEnabled(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '显示连接诊断信息',
-                '连接时显示延迟、帧率、码率、分辨率和编码信息', this.rustdeskShowDiagnostics,
-                (on: boolean): void => { this.saveRustDeskShowDiagnostics(on); }, true)
-              this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '专业性能数据（Pro）',
-                '进一步显示解码、队列和本机 CPU、内存、GPU 负载', this.rustdeskShowProDiagnostics,
-                (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); }, true)
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_RUSTDESK) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_SSH, protocolIcon('ssh'),
-            'SSH 终端', '终端显示、SSH 主机与密钥', true)
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- SSH 终端卡片 ---
-        ListItem() {
-          Column() {
-            Text('SSH 终端').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              Row() {
-                Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
-              this.cardDivider()
-              Row() {
-                Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
-              this.cardDivider()
-              Row() {
-                Row() {
-                  Column() {
-                    SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(9).fontColor([this.pal().text])
-                    SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(9).fontColor([this.pal().text])
-                  }
-                }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端行距').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Text(this.terminalLineSpacingLabel()).fontSize(13).fontColor(this.pal().text2)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
-              this.cardDivider()
-              Row() {
-                Column() {
-                  Text('新 SSH 工作台').fontSize(AppTheme.fontSize.body)
-                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('启用终端搜索、命名 Profile 与后续分屏能力；关闭时沿用现有终端')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
-                Toggle({ type: ToggleType.Switch, isOn: this.sshWorkbenchEnabled })
-                  .selectedColor(this.accentColor)
-                  .onChange((enabled: boolean): void => {
-                    this.saveSshWorkbenchEnabled(enabled);
-                  })
-              }.width('100%').height(66).padding({ right: 16 })
-              this.cardDivider()
-              Row() {
-                Column() {
-                  Text('SSH 系统通知').fontSize(AppTheme.fontSize.body)
-                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('用于后台连接与命令完成提醒；不显示命令、IP、用户名或路径')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
-                Button(this.sshSystemNotificationsEnabled ? '已开启' :
-                  (this.sshNotificationAuthorizationPending ? '请求中' : '开启'))
-                  .height(32).fontSize(12).borderRadius(8)
-                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : '#FFFFFF')
-                  .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : this.accentColor)
-                  .enabled(!this.sshSystemNotificationsEnabled && !this.sshNotificationAuthorizationPending)
-                  .onClick((): void => { this.requestSshNotificationAuthorization(); })
-              }.width('100%').height(68).padding({ right: 16 })
-              this.cardDivider()
-              this.sshInputModeRow()
-              this.cardDivider()
-              Row() {
-                Column() {
-                  Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('显示当前颜色、字号和行距，实时映射终端外观')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
-                Column() {
-                  Text('user@host:$ ls -la').fontSize(Math.max(12, Math.min(32, this.terminalFontSize)))
-                    .lineHeight(this.terminalPreviewLineHeight())
-                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontColor(this.terminalFgColor).fontFamily('monospace').width('100%')
-                  Text('drwxr-xr-x  4 user').fontSize(Math.max(10, Math.min(24, this.terminalFontSize - 4)))
-                    .lineHeight(this.terminalPreviewLineHeight())
-                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontColor(this.terminalFgColor).fontFamily('monospace').width('100%')
-                }.width(this.terminalPreviewWidth()).height(this.terminalPreviewHeight())
-                  .alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
-                  .backgroundColor('#0D0D0D').borderRadius(8)
-              }.width('100%').height(this.terminalPreviewHeight()).padding({ left: 0, right: 16 })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_terminal'), '管理 SSH 主机',
-                this.sshCount.toString() + ' 台主机 · 地址、认证和代理仍按主机配置',
-                (): void => { this.openSshHostListFromSettings(); })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_lock'), 'SSH 密钥保险库',
-                this.keyCount.toString() + ' 个密钥 · 私钥和 passphrase 不进入通用设置',
-                (): void => { this.openSshKeyVaultFromSettings(); })
-              this.cardDivider()
-              Row() {
-                Column() {
-                  Text('主机指纹').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('继续在“数据安全”中管理，暂不迁移 trust 入口')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
-                Button('恢复默认').height(32).fontSize(12).backgroundColor(this.pal().surface)
-                  .fontColor(this.pal().text2).borderRadius(8)
-                  .onClick((): void => { this.resetSshTerminalAppearance(); })
-              }.width('100%').height(62).padding({ left: 0, right: 16 })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SSH) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
-            'VNC', '连接、画面、输入、性能监视和证书信任')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
-        ListItem() {
-          Column() {
-            Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.protocolActionRow($r('sys.symbol.link'), '连接默认值',
-                'TCP 直连、Repeater mode12 与默认端口',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.timer'), '超时与连接行为',
-                '连接、认证与首帧超时，只作用于 VNC',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.lock_shield'), '安全策略与 TLS',
-                '仅安全、可信网络与明文风险策略',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.display'), '显示与画面',
-                '本地缩放、画质、编码、色深和帧率',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.mouse'), '输入与光标',
-                '只读、控制模式、鼠标、触控板和滚轮',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.performance'), '性能监视看板',
-                '连接实况、帧率、送显、停滞与采样频率',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.text_clipboard'), '剪贴板',
-                '单独控制 VNC 文本剪贴板',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.checkmark_shield'), 'Trust / 证书管理',
-                '独立于 RDP 证书和 SSH 主机指纹',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.computer_host_fill'), '管理 VNC 主机',
-                this.vncHosts.list().length.toString() + ' 台 · 不写入 remotehosts',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.cloud_fill'), '管理 VNC Gateway',
-                this.vncGateways.list().length.toString() + ' 个 · 在第三页中继目录管理',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),
-            'Moonlight', '串流画面、音频、控制与本地安全设置', false, true)
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          Column() {
-            Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.protocolActionRow($r('sys.symbol.display'), '画面',
-                '预设、H.264、分辨率、帧率、码率与无画面策略',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.circle'), '音频',
-                '接收音频、后台音频、系统音量与主机播放',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.mouse'), '控制与手柄',
-                '触控、鼠标、键盘、虚拟与实体控制器',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.link'), '网络与安全',
-                '局域网发现、计费网络、重连、加密与兼容',
-                (): void => {
-                  this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY);
-                })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.performance'), '诊断',
-                '性能浮窗、脱敏日志与会话指标',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.lock_shield'), '配对与信任',
-                '证书变化、本地安全身份与重新配对边界',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.cloud_fill'), '数据管理',
-                '停止同步、分别删除云端或本机 Moonlight 数据',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_SECURITY, $r('sys.symbol.lock_shield_fill'),
-            '数据安全', '端到端加密、2FA 隐私和设备信任')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- 数据安全卡片 ---
-        ListItem() {
-          Column() {
-            Text('数据安全').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              // ---- 端到端加密 ----
-              Row() {
-                Row() {
-                  SymbolGlyph($r('sys.symbol.lock_shield_fill'))
-                    .fontSize(22).fontColor([this.cryptoEnabled ? this.accentColor : this.pal().text3])
-                }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Column() {
-                  Text('端到端加密')
-                    .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text(this.cryptoEnabled ? (this.cryptoUnlocked ? '已启用 · 数据已加密保护' : '已锁定 · 需解锁后解密数据') : '未启用 · 主机密码、SSH密钥、2FA将加密后云同步')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-                if (this.cryptoEnabled) {
-                  if (this.cryptoUnlocked) {
-                    Row() {
-                      Text('已启用').fontSize(12).fontColor(this.pal().success).fontWeight(FontWeight.Medium)
-                        .margin({ right: 6 })
-                      Text('关闭').fontSize(11).fontColor(this.pal().text3)
-                        .onClick(() => { this.confirmDisableEncryption(); })
-                      Text('·').fontSize(11).fontColor(this.pal().text3)
-                        .margin({ left: 4, right: 4 })
-                      Text('重置').fontSize(11).fontColor(this.pal().danger)
-                        .onClick(() => { this.confirmResetEncryption(); })
-                    }
-                  } else {
-                    Row() {
-                      Text('已锁定').fontSize(12).fontColor(this.pal().danger).fontWeight(FontWeight.Medium)
-                        .onClick(() => {
-                          this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                            this.cryptoMode = 1;
-                            this.popupSheetMode = 0;
-                          });
-                        })
-                        .margin({ right: 6 })
-                      Text('重置').fontSize(11).fontColor(this.pal().danger)
-                        .onClick(() => { this.confirmResetEncryption(); })
-                    }
-                  }
-                } else {
-                  Button('启用').height(32).fontSize(12)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
-                    .onClick(() => {
-                      this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                        this.cryptoMode = 0;
-                        this.popupSheetMode = 0;
-                      });
-                    })
-                }
-              }.width('100%').height(64).padding({ left: 16, right: 16 })
-
-              this.cardDivider()
-
-              this.cardActionRow($r('app.media.icon_lock'), '密码与秘密回显',
-                this.secretPresentationSummaryText(),
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SECRET_VISIBILITY); })
-
-              this.cardDivider()
-
-              // ---- TOTP 隐私保护 ----
-              Row() {
-                Row() {
-                  SymbolGlyph($r('sys.symbol.lock_fill'))
-                    .fontSize(22).fontColor([this.totpPageLocked ? this.accentColor : this.pal().text3])
-                }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Column() {
-                  Text('TOTP 隐私保护')
-                    .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text(this.totpPageLocked ?
-                    '已开启 · 查看或绑定 2FA 前需要系统身份认证' :
-                    '未开启 · 绑定 RustDesk 2FA 无需额外认证')
-                    .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
-                    .margin({ top: 3 })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Toggle({ type: ToggleType.Switch, isOn: this.totpPageLocked })
-                  .selectedColor(this.accentColor)
-                  .scale({ x: 0.88, y: 0.88 })
-                  .onChange(async (on: boolean) => {
-                    if (on) {
-                      const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
-                      if (r.ok) {
-                        this.totpPageLocked = true;
-                        this.saveTotpLock(true);
-                        promptAction.showToast({ message: '2FA 已锁定', duration: 1500 });
-                      } else {
-                        promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
-                        this.totpPageLocked = false;
-                      }
-                    } else {
-                      const r = await showLockGate('关闭 TOTP 隐私保护，请验证系统身份', 'biometric');
-                      if (r.ok) {
-                        this.totpPageLocked = false;
-                        AppStorage.setOrCreate('totpUnlocked', false);
-                        this.saveTotpLock(false);
-                        promptAction.showToast({ message: '2FA 已解锁', duration: 1500 });
-                      } else {
-                        promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
-                      }
-                    }
-                  })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-
-              this.cardDivider()
-
-              Column() {
-                Row() {
-                  Row() { Text('◎').fontSize(22).fontColor(this.pal().text) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Column() {
-                    Text('2FA 验证器头像').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                      .fontColor(this.pal().text).fontFamily(this.font())
-                    Text('切换真实品牌 Logo 或高对比度首字母')
-                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
-                Row() {
-                  Button('真实 Logo').layoutWeight(1).height(36).fontSize(13)
-                    .fontColor(this.totpLogoMode === 'logo' ? Color.White : this.pal().text2)
-                    .backgroundColor(this.totpLogoMode === 'logo' ? this.accentColor : this.pal().surface)
-                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('logo'); })
-                  Button('首字母').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                    .fontColor(this.totpLogoMode === 'initials' ? Color.White : this.pal().text2)
-                    .backgroundColor(this.totpLogoMode === 'initials' ? this.accentColor : this.pal().surface)
-                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('initials'); })
-                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
-              }
-
-              this.cardDivider()
-
-              this.cardActionRow($r('app.media.icon_terminal'), 'SSH 主机指纹',
-                this.sshTrustedHostsView.length.toString() + ' 条已信任记录',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.popupSheetMode = 2;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_desktop'), 'RDP 证书信任',
-                this.rdpTrustedHostsView.length.toString() + ' 条已信任记录',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.popupSheetMode = POPUP_SHEET_RDP_CERTIFICATES;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_lock'), 'VNC TLS 证书信任',
-                this.vncTrustSummary(),
-                (): void => { this.openVncTrustManagerFromSettings(); })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_lock'), 'RustDesk 认证信任',
-                this.rustDeskHosts().length.toString() + ' 台主机',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.popupSheetMode = POPUP_SHEET_RUSTDESK_AUTH_TRUST;
-                  });
-                })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SECURITY) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_TUTORIAL, $r('sys.symbol.doc_plaintext'),
-            '教程', '快速认识、按设备操作和连接前准备')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- 教程卡片 ---
-        ListItem() {
-          Column() {
-            Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
-                CURRENT_RELEASE_VERSION + ' · 查看全部 ' +
-                  currentReleasePageCount().toString() + ' 项功能与修复',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 4;
-                    this.popupSheetMode = 1;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '快速认识应用', '用 7 页了解协议、设备、安全与数据',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 0;
-                    this.popupSheetMode = 1;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_desktop'), '操作引导中心',
-                '按手机、Pad、PC 和五种协议查看具体步骤',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 5;
-                    this.popupSheetMode = 1;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '连接前准备', 'RDP、RustDesk、SSH、VNC 与 Sunshine',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 3;
-                    this.popupSheetMode = 1;
-                  });
-                })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_TUTORIAL) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_ABOUT, $r('sys.symbol.message'),
-            '关于', '版本、隐私政策和应用信息')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- 关于卡片 ---
-        ListItem() {
-          Column() {
-            Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.cardItemRow($r('app.media.icon_info'), '版本', CURRENT_RELEASE_VERSION + ' · FreeRDP+RustDesk+SSH')
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '关于应用', '开源协议、作者说明和联系方式',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 1;
-                    this.popupSheetMode = 1;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_lock'), '隐私政策', '数据收集、权限和安全说明',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 2;
-                    this.popupSheetMode = 1;
-                  });
-                })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_ABOUT) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
-          this.settingsActionHeader($r('sys.symbol.doc_plaintext'), '日志',
-            '抓取连接、同步与数据模组的脱敏诊断事件',
-            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); })
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          this.settingsActionHeader($r('sys.symbol.message'), '反馈',
-            '邮箱反馈或加入畅联群聊',
-            (): void => { this.openFeedbackSheet(); })
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        ListItem() {
-          this.settingsActionHeader($r('sys.symbol.star_fill'), '评价',
-            SETTINGS_RATING_SUBTITLE,
-            (): void => { this.openAppRatingPage(); })
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-
-        ListItem() { Column().height(120) }
+        // Room above the phone/Pad floating tab bar; the PC settings sheet has no tab bar below it.
+        ListItem() { Column().height(this.isDesktopDevice && this.breakpoint === 'xl' ? 24 : 120) }
       }
-      .width('100%').layoutWeight(1)
+      .width('100%').layoutWeight(1).id('settingsList')
+      // 全新视觉 on PC: a readable column in the wide window. Pad keeps the full width, like the other pages.
+      .constraintSize({ maxWidth: this.settingsModern() && this.isDesktopDevice && this.breakpoint === 'xl' ? 760 : '100%' })
       .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
@@ -16596,6 +18934,1795 @@ struct HostListPage {
 
   }
 
+  @Builder settingsSectionAppearance() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_APPEARANCE, $r('sys.symbol.paintpalette_fill'),
+        '个性化', '主题色、深色模式、壁纸、光晕与应用图标')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- 个性化卡片 ---
+    ListItem() {
+      Column() {
+        Text('个性化').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.settingsVisualStyleRow()
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text]) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Text('主题色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+            Column().width(44).height(24).borderRadius(12).backgroundColor(this.accentColor)
+            this.settingsRowChevron(6)
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+          .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); })
+          this.cardDivider()
+          if (this.appIconProVisible && this.appIconSupported) {
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(22).fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Text('应用图标').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+              ProBadge().margin({ right: 4 })
+              this.settingsRowChevron(4)
+            }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+              .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+              .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+              .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_APP_ICON); })
+            this.cardDivider()
+          }
+          // 深色模式(含跟随系统)
+          Column() {
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.moon_fill')).fontSize(22).fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Column() {
+                Text('深色模式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+                // 全新视觉 says why the switch is greyed out.
+                if (this.settingsModern() && this.followSystem) {
+                  Text('跟随系统中，由系统切换深浅色').fontSize(12).fontColor(this.pal().text2)
+                    .fontFamily(this.font()).margin({ top: 2 })
+                }
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+              Toggle({ type: ToggleType.Switch, isOn: this.theme === 'dark' })
+                .selectedColor(this.accentColor)
+                .onChange((on: boolean) => {
+                  if (this.followSystem) {
+                    hilog.info(0x0000, 'HostListPage',
+                      'manual theme toggle ignored while follow-system is active');
+                    return;
+                  }
+                  this.applyManualTheme(on, 'manual-toggle');
+                })
+                .scale({ x: this.settingsModern() ? 1 : 0.92, y: this.settingsModern() ? 1 : 0.92 }).enabled(!this.followSystem)
+            }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+              .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+              .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            Row() {
+              Blank().width(16)
+              Column().layoutWeight(1).height(0.5).backgroundColor(this.pal().divider)
+              Blank().width(16)
+            }.width('100%')
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(20)
+                  .fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Text('跟随系统').fontSize(14).fontWeight(FontWeight.Normal)
+                .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+              Toggle({ type: ToggleType.Switch, isOn: this.followSystem })
+                .selectedColor(this.accentColor)
+                .onChange((on: boolean) => {
+                  if (on === this.followSystem) {
+                    hilog.info(0x0000, 'HostListPage',
+                      'follow-system toggle ignored unchanged=' + (on ? 'true' : 'false'));
+                    return;
+                  }
+                  if (on) {
+                    this.applyFollowSystemColorMode();
+                  } else {
+                    this.applyManualTheme(this.theme === 'dark', 'follow-off');
+                  }
+                })
+                .scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+            }.width('100%').height(52).padding({ left: 16, right: 16 })
+          }
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.camera_fill')).fontSize(22).fontColor([this.pal().text]) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Text('壁纸').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+            Row() {
+              ForEach(this.wallpaperItems.slice(0, 4), (item: WallpaperItem, idx: number) => {
+                Column().width(20).height(20).borderRadius(10).backgroundColor(item.color).margin({ left: idx > 0 ? 4 : 0 })
+                  .border({ width: this.wallpaperIdx === idx ? 2 : 0, color: this.accentColor })
+              })
+            }
+            this.settingsRowChevron(8)
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+          .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_WALLPAPER); })
+          this.cardDivider()
+          // 光晕颜色 (沉浸光感悬浮栏渐变遮罩色)
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Text('光晕颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+            Column().width(24).height(24).borderRadius(12).backgroundColor(this.haloColor)
+            this.settingsRowChevron(6)
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+          .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_HALO_COLOR); })
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Column() {
+              Text('环境光调节光效').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('根据环境亮度微调光晕强度').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            Toggle({ type: ToggleType.Switch, isOn: this.ambientLightEffectEnabled })
+              .selectedColor(this.accentColor)
+              .scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+              .onChange((on: boolean): void => { this.saveAmbientLightEffectEnabled(on); })
+          }.width('100%').height(this.settingsModern() ? 'auto' : 62)
+            .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.eye_slash')).fontSize(22).fontColor([this.pal().text]) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Column() {
+              Text('隐藏主机卡片敏感信息').fontSize(AppTheme.fontSize.body)
+                .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              Text('隐藏地址、端口、用户名和 RustDesk ID；自定义主机名称仍显示')
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            Toggle({ type: ToggleType.Switch, isOn: this.hostCardSensitiveInfoHidden })
+              .selectedColor(this.accentColor).scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+              .onChange((on: boolean): void => { this.saveHostCardSensitiveInfoHidden(on); })
+          }.width('100%').height(this.settingsModern() ? 'auto' : 66)
+            .constraintSize({ minHeight: this.settingsModern() ? 66 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+      .onAreaChange((_old: Area, next: Area): void => {
+        const nextHeight: number = next.height as number;
+        // Ignore the collapse animation and its intermediate frames. A
+        // max-height animation reports those clipped heights here; using
+        // one as the cached natural height is what previously locked this
+        // card at a few dozen vp after the first expansion.
+        if (this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) &&
+          Number.isFinite(nextHeight) && nextHeight >= APPEARANCE_EXPANDED_MIN_HEIGHT &&
+          nextHeight > this.appearanceContentHeight) {
+          this.appearanceContentHeight = nextHeight;
+        }
+      })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_APPEARANCE) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_APPEARANCE))
+  }
+
+  @Builder settingsSectionHome() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_HOME, $r('sys.symbol.list_bullet'),
+        '主页与主机列表', '添加入口、主机分组与 RustDesk 在线检测')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      Column() {
+        Text('主页与主机列表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_laptop'),
+            label: 'RustDesk 在线检测',
+            detail: this.rustdeskPresenceDetectionEnabled ? '打开主页时自动检测非直连主机；卡片仍可手动检测' : '已关闭自动检测，可在主机卡片上手动检测',
+            isOn: this.rustdeskPresenceDetectionEnabled,
+            onToggle: (on: boolean): void => { this.saveRustDeskPresenceDetection(on); }
+          })
+          this.cardDivider()
+          Column() {
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.plus_circle_fill')).fontSize(22).fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Column() {
+                Text('添加 FAB 风格').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+                Text('控制添加主机、SSH 密钥、2FA 和中继服务器的界面风格')
+                  .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+            Row() {
+              Button('全新模式').layoutWeight(1).height(36).fontSize(13)
+                .fontColor(this.fabAddStyle === 'modern' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+                .backgroundColor(this.fabAddStyle === 'modern' ? this.accentColor : this.pal().surface)
+                .borderRadius(10).onClick((): void => { this.saveFabAddStyle('modern'); })
+              Button('经典模式').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                .fontColor(this.fabAddStyle === 'classic' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+                .backgroundColor(this.fabAddStyle === 'classic' ? this.accentColor : this.pal().surface)
+                .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
+            }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+          }
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(22).fontColor([this.pal().text]) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Column() {
+              Text('按主机类型分组').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('手机、Pad 和 PC 小屏按协议显示分类卡；PC 大屏保留侧栏分类')
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            Toggle({ type: ToggleType.Switch, isOn: this.groupedHostCards })
+              .selectedColor(this.accentColor).scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+              .onChange((on: boolean): void => { this.saveGroupedHostCards(on); })
+          }.width('100%').height(this.settingsModern() ? 'auto' : 66)
+            .constraintSize({ minHeight: this.settingsModern() ? 66 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? this.settingsModernCap(520) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_HOME))
+  }
+
+  @Builder settingsSectionCloudSync() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_CLOUD_SYNC, $r('sys.symbol.cloud_fill'),
+        '云同步', this.appCloneLocalOnly ? this.appCloneStatusText :
+          '华为云空间、跨设备数据恢复与手动同步')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      Column() {
+        Text(this.appCloneLocalOnly ? '分身数据' : '云端数据')
+          .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          if (this.appCloneLocalOnly) {
+            Row() {
+              Row() { Text(this.appCloneIsClone ? '分' : '本').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.accentColor) }
+                .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card)
+                .justifyContent(FlexAlign.Center)
+              Column() {
+                Text(this.appCloneIsClone ? '应用分身 · 本地模式' : '本地安全模式')
+                  .fontSize(AppTheme.fontSize.body)
+                  .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                Text('华为账号、云上传与云下载已关闭；本地备份仍可使用')
+                  .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+            }.width('100%').height(this.settingsModern() ? 'auto' : 72)
+              .constraintSize({ minHeight: this.settingsModern() ? 72 : 0 })
+              .padding({ left: 14, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            if (this.appCloneIsClone) {
+              this.cardDivider()
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.text_clipboard')).fontSize(20).fontColor([this.accentColor]) }
+                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card)
+                  .justifyContent(FlexAlign.Center)
+                Column() {
+                  Text('允许分身同步剪贴板').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('系统剪贴板在主应用和分身之间共享；开启后分身中的远程会话会读写它')
+                    .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                Toggle({ type: ToggleType.Switch, isOn: this.appCloneClipboardOptIn })
+                  .selectedColor(this.accentColor).scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+                  .onChange((on: boolean): void => { this.setAppCloneClipboardOptIn(on); })
+              }.width('100%').height(this.settingsModern() ? 'auto' : 72)
+                .constraintSize({ minHeight: this.settingsModern() ? 72 : 0 })
+                .padding({ left: 14, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            }
+          } else {
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
+                .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+              Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+            }.width('100%').height(this.settingsModern() ? 'auto' : 68)
+              .constraintSize({ minHeight: this.settingsModern() ? 68 : 0 })
+              .padding({ left: 14, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 }).onClick((): void => { this.openCloudSyncSheet(); })
+            this.cardDivider()
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
+                .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+              Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+            }.width('100%').height(this.settingsModern() ? 'auto' : 68)
+              .constraintSize({ minHeight: this.settingsModern() ? 68 : 0 })
+              .padding({ left: 14, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
+          }
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
+              .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+            Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+              Text('可导出脱敏配置或完整备份；VNC trust 只作为候选元数据，本机确认标记不导出').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+          }.width('100%').height(this.settingsModern() ? 'auto' : 68)
+            .constraintSize({ minHeight: this.settingsModern() ? 68 : 0 })
+            .padding({ left: 14, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            .onClick((): void => { this.openCloudSyncSheet(CLOUD_SYNC_SHEET_BACKUP_CONFIRM); })
+          this.cardDivider()
+          Row() {
+            Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
+              .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+            Column() { Text('从本地恢复').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+              Text('校验 v1/v2/v3 文件并安全合并；缺表不会清空新版数据').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+          }.width('100%').height(this.settingsModern() ? 'auto' : 68)
+            .constraintSize({ minHeight: this.settingsModern() ? 68 : 0 })
+            .padding({ left: 14, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 }).onClick((): void => { this.chooseLocalRestore(); })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? this.settingsModernCap(390) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_CLOUD_SYNC))
+  }
+
+  @Builder settingsSectionConnectionLive() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_CONNECTION_LIVE, $r('sys.symbol.gearshape_fill'),
+        '连接实况窗', '主机统计、后台展示和系统实况窗')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- 连接卡片 ---
+    ListItem() {
+      Column() {
+        Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.protocolStatItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
+          this.cardDivider()
+          this.protocolStatItemRow(protocolIcon('rdp'), 'RDP 协议', this.rdpCount + ' 台')
+          this.cardDivider()
+          this.protocolStatItemRow(protocolIcon('rustdesk'), 'RustDesk 协议', this.rustdeskCount + ' 台')
+          this.cardDivider()
+          this.protocolStatItemRow(protocolIcon('ssh'), 'SSH 终端', this.sshCount + ' 台')
+          this.cardDivider()
+          this.protocolStatItemRow(protocolIcon('vnc'), 'VNC 主机', this.vncCount + ' 台')
+          this.cardDivider()
+          this.cardItemRow($r('app.media.icon_lock'), '已锁定', this.lockedCount + ' 台')
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_CONNECTION_LIVE) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_CONNECTION_LIVE))
+
+    // --- 实况窗卡片 ---
+    ListItem() {
+      Column() {
+        Text('实况窗').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          // 总开关
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_desktop'),
+            label: '后台连接展示',
+            detail: '应用退到后台时保持远程连接，并显示系统允许的状态入口',
+            isOn: this.liveViewEnabled,
+            onToggle: (on: boolean): void => {
+              this.liveViewEnabled = on;
+              this.persistPref('liveViewEnabled', on);
+            },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          // 模式选择: AVSession
+          this.liveViewModeRow('画中画模式',
+            '应用退到后台时优先进入 VIDEO_PLAY 画中画，并同步系统媒体控制胶囊',
+            1)
+          this.cardDivider()
+          // 模式选择: 普通后台通知。第三方远程连接不能直接创建系统实况窗。
+          this.liveViewModeRow('后台通知',
+            '使用系统允许的普通通知展示连接状态和时长，不显示视频画中画',
+            2)
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_CONNECTION_LIVE) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_CONNECTION_LIVE))
+  }
+
+  @Builder settingsSectionDisplayInteraction() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
+        '显示与交互', '本地缩放、远程滚轮方向与速度、退出保护与会话控制栏')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      Column() {
+        Text('显示与交互').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.remoteDisplayScaleRow()
+          this.cardDivider()
+          this.remoteWheelDirectionRow()
+          this.cardDivider()
+          this.remotePinchZoomRow()
+          this.cardDivider()
+          this.remotePortraitDisplayRow()
+          this.cardDivider()
+          this.remoteSessionQuickExitRow()
+          this.cardDivider()
+          this.sessionControlBarVisibilityRow()
+          if (!this.isDesktopDevice) {
+            this.cardDivider()
+            Column() {
+              Row() {
+                Row() { this.settingsRowGlyph('⌖', 22, false, $r('sys.symbol.mouse')) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Column() {
+                  Text('触控板鼠标样式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('手机和平板触控板模式，选择圆环或官方远端鼠标').fontSize(this.settingsModern() ? 12 : 11)
+                    .fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+              }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+              Row() {
+                Button('圆环').layoutWeight(1).height(36).fontSize(13)
+                  .fontColor(this.virtualMouseStyle === 'circle' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+                  .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
+                  .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
+                Button('官方远端鼠标').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                  .fontColor(this.virtualMouseStyle === 'arrow' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+                  .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
+                  .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
+              }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+            }
+            this.cardDivider()
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.person_2_fill')).fontSize(22).fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Column() {
+                Text('握持手感知对齐').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+                Text(this.gripPermissionGranted ? '已启用；根据握持手移动添加按钮' : '启动后自动申请权限，不影响主机列表显示')
+                  .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+              Text(this.gripPermissionGranted ? '已开启' : '启动申请')
+                .fontSize(12).fontColor(this.accentColor).fontFamily(this.font()).margin({ right: 8 })
+            }.width('100%').height(this.settingsModern() ? 'auto' : 62)
+              .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+              .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+          }
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_DISPLAY_INTERACTION) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_DISPLAY_INTERACTION))
+  }
+
+  @Builder settingsSectionVirtualKeyboard() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_VIRTUAL_KEYBOARD,
+        $r('sys.symbol.keyboard'), '键盘',
+        '输入法、实体键盘、HarmonyOS 快捷键与远端组合键')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      Column() {
+        Text('键盘').fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
+            '当前输入法、语言子类型与 HarmonyOS 官方设置',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.keyboard'), '输入行为',
+            '精简键盘、文本发送与候选预编辑规则',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_desktop'), '快捷键平台',
+            'Windows 与 macOS 默认组合键语义',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS); })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_info'), '功能键与面板',
+            'F1–F12、导航键、连续发送与面板触控',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.lock_shield_fill'), '屏蔽鸿蒙快捷键',
+            'PC 默认打开；打开后屏蔽并发送远端，关闭后由鸿蒙处理',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); })
+          // Pro 个性化方案: custom key combinations; presets above stay free.
+          if (this.personalizationProVisible) {
+            this.cardDivider()
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.keyboard')).fontSize(20).fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Column({ space: 2 }) {
+                Text('自定义组合键').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+                Text('命名、按键序列、系统键与小键盘，跨连接复用').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
+                  .fontFamily(this.font()).maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+              ProBadge().margin({ right: 4 })
+              this.settingsRowChevron(4)
+            }.width('100%').height(this.settingsModern() ? 'auto' : 64)
+              .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+              .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+              .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); })
+          }
+        }.borderRadius(24).backgroundColor(this.pal().card)
+          .backgroundBlurStyle(BlurStyle.Regular)
+          .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VIRTUAL_KEYBOARD) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_VIRTUAL_KEYBOARD))
+  }
+
+  @Builder settingsSectionRdp() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_RDP, protocolIcon('rdp'),
+        'Windows RDP', '分辨率、色深、输入、音频和凭据')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- Windows RDP 个性化卡片 ---
+    ListItem() {
+      Column() {
+        Text('Windows RDP').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          if (this.rdpAdvancedDisplayVisible) {
+            this.rdpDisplayProfileRow()
+          } else {
+            this.rdpDesktopPresetRow()
+            this.cardDivider()
+            this.rdpRemoteUiScaleRow()
+          }
+          this.cardDivider()
+          this.rdpColorDepthRow()
+          this.cardDivider()
+          this.rdpControlModeRow()
+          this.cardDivider()
+          this.rdpAuthIdentityModeRow()
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_info'),
+            label: '跳过连接前证书预检',
+            detail: '仅直连 RDP；连接时仍核验证书，未知或异常证书需返回信任管理确认',
+            isOn: this.rdpSkipCertificatePreflight,
+            onToggle: (on: boolean): void => { this.saveRdpSkipCertificatePreflight(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_info'),
+            label: 'TLS 兼容登录',
+            detail: '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',
+            isOn: this.rdpTlsWithoutNla,
+            onToggle: (on: boolean): void => { this.saveRdpTlsWithoutNla(on); },
+            neutralIcon: true
+          })
+          if (this.rdpSecurityDowngradeHosts > 0) {
+            this.cardDivider()
+            AppSettingsActionRow({
+              icon: $r('app.media.icon_info'),
+              title: '恢复各电脑的默认安全设置',
+              detail: this.rdpSecurityDowngradeHosts.toString() +
+                ' 台电脑单独改用了旧版 TLS 或 TLS 登录；点此全部恢复',
+              onAction: (): void => { this.confirmRestoreRdpSecurityDowngrades(); }
+            })
+          }
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_audio'),
+            label: '远端音频',
+            detail: '播放 Windows 远端会话声音',
+            isOn: this.rdpAudioEnabled,
+            onToggle: (on: boolean): void => { this.saveRdpAudioEnabled(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_desktop'),
+            label: '剪贴板同步',
+            detail: '连接时启用文本剪贴板通道',
+            isOn: this.rdpClipboardEnabled,
+            onToggle: (on: boolean): void => { this.saveRdpClipboardEnabled(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_info'),
+            label: '性能监视与诊断日志',
+            detail: '连接后显示送显、队列和 GFX 指标，并写入 hilog',
+            isOn: this.rdpShowDiagnostics,
+            onToggle: (on: boolean): void => { this.saveRdpShowDiagnostics(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_folder'),
+            label: '文件共享盘',
+            detail: RDP_DRIVE_REDIRECTION_ENABLED ? '连接时挂载 \\\\tsclient\\' + this.rdpDriveName : '暂时停用，避免影响 Pad/手机连接',
+            isOn: this.rdpDriveEnabled,
+            onToggle: (on: boolean): void => { this.saveRdpDriveEnabled(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rdpDriveNameRow()
+          this.cardDivider()
+          this.rdpCredentialManagerRow()
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_RDP) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_RDP))
+  }
+
+  @Builder settingsSectionRustDesk() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_RUSTDESK, protocolIcon('rustdesk'),
+        'RustDesk', '画质、编码、LAN 发现、隐私和音频')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- RustDesk 个性化卡片 ---
+    ListItem() {
+      Column() {
+        Text('RustDesk').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.rustdeskImageQualityRow()
+          this.cardDivider()
+          this.rustdeskCodecRow()
+          this.cardDivider()
+          this.rustdeskControlModeRow()
+          this.cardDivider()
+          // LAN 发现 — 手动扫描按钮
+          Row() {
+            Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Column() {
+              Text('LAN 发现').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text(this.lanScanning ? '正在扫描...' : (this.lanScanResults.length > 0 ?
+                '发现 ' + this.lanScanResults.length + ' 台设备' : '扫描同局域网 RustDesk 设备'))
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            Button(this.lanScanning ? '扫描中' : '扫描')
+              .fontSize(12).fontWeight(FontWeight.Medium)
+              .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
+              .borderRadius(16).height(30).padding({ left: 12, right: 12 })
+              .enabled(!this.lanScanning)
+              .onClick(() => { this.startLanScan(); })
+          }.width('100%').height(this.settingsModern() ? 'auto' : 64)
+            .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+          // 扫描结果
+          if (this.lanScanResults.length > 0) {
+            Column() {
+              ForEach(this.lanScanResults, (peer: DiscoveredRustDeskPeer) => {
+                Row() {
+                  Column() {
+                    Text(peer.deviceName).fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+                    Row() {
+                      Text(peer.peerId).fontSize(this.settingsModern() ? 12 : 10).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                      Text(' · ' + peer.host + ':' + peer.port.toString())
+                        .fontSize(this.settingsModern() ? 12 : 10).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                    }.margin({ top: 2 })
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Button('添加').fontSize(11).fontWeight(FontWeight.Medium)
+                    .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
+                    .borderRadius(14).height(26).padding({ left: 10, right: 10 })
+                    .onClick(() => { this.addLanPeer(peer); })
+                }.width('100%').padding({ left: 8, right: 8, top: 6, bottom: 6 })
+                .borderRadius(8).backgroundColor(this.pal().surface).margin({ bottom: 6 })
+              })
+            }.width('100%').padding({ left: 16, right: 16, bottom: 8 })
+          }
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_lock'),
+            label: '允许隐私模式',
+            detail: '连接时可请求隐藏远端屏幕',
+            isOn: this.rustdeskPrivacyMode,
+            onToggle: (on: boolean): void => { this.saveRustDeskPrivacyMode(on); }
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_audio'),
+            label: '远端音频',
+            detail: '接收并播放远端设备声音',
+            isOn: this.rustdeskAudioEnabled,
+            onToggle: (on: boolean): void => { this.saveRustDeskAudioEnabled(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_desktop'),
+            label: '远端应用双指缩放',
+            detail: '将双指事件发送到 RustDesk 被控端应用；启用后取代本地画布缩放',
+            isOn: this.rustdeskRemoteAppTouchScaleEnabled,
+            onToggle: (on: boolean): void => { this.saveRustDeskRemoteAppTouchScaleEnabled(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_desktop'),
+            label: '显示连接诊断信息',
+            detail: '连接时显示延迟、帧率、码率、分辨率和编码信息',
+            isOn: this.rustdeskShowDiagnostics,
+            onToggle: (on: boolean): void => { this.saveRustDeskShowDiagnostics(on); },
+            neutralIcon: true
+          })
+          this.cardDivider()
+          this.rustdeskSwitchRow({
+            icon: $r('app.media.icon_desktop'),
+            label: '专业性能数据（Pro）',
+            detail: '进一步显示解码、队列和本机 CPU、内存、GPU 负载',
+            isOn: this.rustdeskShowProDiagnostics,
+            onToggle: (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); },
+            neutralIcon: true
+          })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_RUSTDESK) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_RUSTDESK))
+  }
+
+  @Builder settingsSectionSsh() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_SSH, protocolIcon('ssh'),
+        'SSH 终端', '终端显示、SSH 主机与密钥', true)
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- SSH 终端卡片 ---
+    ListItem() {
+      Column() {
+        Text('SSH 终端').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          Row() {
+            Row() { this.settingsRowGlyph('Aa', 16, true, $r('sys.symbol.paintpalette_fill')) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+            Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
+            this.settingsRowChevron(6)
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
+          this.cardDivider()
+          Row() {
+            Row() { this.settingsRowGlyph('T', 14, true, $r('sys.symbol.doc_text')) }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+            Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
+            this.settingsRowChevron(6)
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
+          this.cardDivider()
+          Row() {
+            Row() {
+              Column() {
+                SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(9).fontColor([this.pal().text])
+                SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(9).fontColor([this.pal().text])
+              }
+            }
+              .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Text('终端行距').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+            Text(this.terminalLineSpacingLabel()).fontSize(13).fontColor(this.pal().text2)
+            this.settingsRowChevron(6)
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+            .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
+          this.cardDivider()
+          // Pro 个性化方案: skins (font, colors, key bar, top bar) for the terminal.
+          if (this.personalizationProVisible) {
+            Row() {
+              Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(20).fontColor([this.pal().text]) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Column({ space: 2 }) {
+                Text('终端皮肤').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+                Text('字体、配色、功能键栏与顶栏成套切换，可自由搭配').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
+                  .fontFamily(this.font()).maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+              ProBadge().margin({ right: 4 })
+              this.settingsRowChevron(4)
+            }.width('100%').height(this.settingsModern() ? 'auto' : 64)
+              .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+              .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+              .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SSH_SKIN); })
+            this.cardDivider()
+          }
+          Row() {
+            Column() {
+              Text('新 SSH 工作台').fontSize(AppTheme.fontSize.body)
+                .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              Text('启用终端搜索、命名 Profile 与后续分屏能力；关闭时沿用现有终端')
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+            Toggle({ type: ToggleType.Switch, isOn: this.sshWorkbenchEnabled })
+              .selectedColor(this.accentColor)
+              .onChange((enabled: boolean): void => {
+                this.saveSshWorkbenchEnabled(enabled);
+              })
+          }.width('100%').height(66).padding({ right: 16 })
+          this.cardDivider()
+          Row() {
+            Column() {
+              Text('SSH 系统通知').fontSize(AppTheme.fontSize.body)
+                .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              Text('用于后台连接与命令完成提醒；不显示命令、IP、用户名或路径')
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+            Button(this.sshSystemNotificationsEnabled ? '已开启' :
+              (this.sshNotificationAuthorizationPending ? '请求中' : '开启'))
+              .height(32).fontSize(12).borderRadius(8)
+              .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : appUiOnAccentText(this.accentColor))
+              .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : this.accentColor)
+              .enabled(!this.sshSystemNotificationsEnabled && !this.sshNotificationAuthorizationPending)
+              .onClick((): void => { this.requestSshNotificationAuthorization(); })
+          }.width('100%').height(68).padding({ right: 16 })
+          this.cardDivider()
+          this.sshInputModeRow()
+          this.cardDivider()
+          Row() {
+            Column() {
+              Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('显示当前颜色、字号和行距，实时映射终端外观')
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+            Column() {
+              Text('user@host:$ ls -la').fontSize(Math.max(12, Math.min(32, this.terminalFontSize)))
+                .lineHeight(this.terminalPreviewLineHeight())
+                .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .fontColor(this.terminalFgColor).fontFamily('monospace').width('100%')
+              Text('drwxr-xr-x  4 user').fontSize(Math.max(10, Math.min(24, this.terminalFontSize - 4)))
+                .lineHeight(this.terminalPreviewLineHeight())
+                .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .fontColor(this.terminalFgColor).fontFamily('monospace').width('100%')
+            }.width(this.terminalPreviewWidth()).height(this.terminalPreviewHeight())
+              .alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
+              .backgroundColor('#0D0D0D').borderRadius(8)
+          }.width('100%').height(this.terminalPreviewHeight()).padding({ left: 0, right: 16 })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_terminal'), '管理 SSH 主机',
+            this.sshCount.toString() + ' 台主机 · 地址、认证和代理仍按主机配置',
+            (): void => { this.openSshHostListFromSettings(); })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_lock'), 'SSH 密钥保险库',
+            this.keyCount.toString() + ' 个密钥 · 私钥和 passphrase 不进入通用设置',
+            (): void => { this.openSshKeyVaultFromSettings(); })
+          this.cardDivider()
+          Row() {
+            Column() {
+              Text('终端显示').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('文字颜色、字号和行距恢复为默认值')
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+            Button('恢复默认').height(32).fontSize(12).backgroundColor(this.pal().surface)
+              .fontColor(this.pal().text2).borderRadius(8)
+              .onClick((): void => { this.confirmResetSshTerminalAppearance(); })
+          }.width('100%').height(this.settingsModern() ? 'auto' : 62)
+            .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+            .padding({ left: 0, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SSH) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_SSH))
+  }
+
+  @Builder settingsSectionVnc() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
+        'VNC', '连接、画面、输入、性能监视和证书信任')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
+    ListItem() {
+      Column() {
+        Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.protocolActionRow($r('sys.symbol.link'), '连接默认值',
+            'TCP 直连、Repeater mode12 与默认端口',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.timer'), '超时与连接行为',
+            '连接、认证与首帧超时，只作用于 VNC',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.lock_shield'), '安全策略与 TLS',
+            '仅安全、可信网络与明文风险策略',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.display'), '显示与画面',
+            '本地缩放、画质、编码、色深和帧率',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.mouse'), '输入与光标',
+            '只读、控制模式、鼠标、触控板和滚轮',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.performance'), '性能监视看板',
+            '连接实况、帧率、送显、停滞与采样频率',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.text_clipboard'), '剪贴板',
+            '单独控制 VNC 文本剪贴板',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.checkmark_shield'), 'Trust / 证书管理',
+            '独立于 RDP 证书和 SSH 主机指纹',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.computer_host_fill'), '管理 VNC 主机',
+            this.vncHosts.list().length.toString() + ' 台 · 不写入 remotehosts',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.cloud_fill'), '管理 VNC Gateway',
+            this.vncGateways.list().length.toString() + ' 个 · 在第三页中继目录管理',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_VNC))
+  }
+
+  @Builder settingsSectionMoonlight() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),
+        'Moonlight', '串流画面、音频、控制与本地安全设置', false, true)
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      Column() {
+        Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.protocolActionRow($r('sys.symbol.display'), '画面',
+            '预设、H.264、分辨率、帧率、码率与无画面策略',
+            (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.circle'), '音频',
+            '接收音频、后台音频、系统音量与主机播放',
+            (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.mouse'), '控制与手柄',
+            '触控、鼠标、键盘、虚拟与实体控制器',
+            (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.link'), '网络与安全',
+            '局域网发现、计费网络、重连、加密与兼容',
+            (): void => {
+              this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY);
+            })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.performance'), '诊断',
+            '性能浮窗、脱敏日志与会话指标',
+            (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.lock_shield'), '配对与信任',
+            '证书变化、本地安全身份与重新配对边界',
+            (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); })
+          this.cardDivider()
+          this.protocolActionRow($r('sys.symbol.cloud_fill'), '数据管理',
+            '停止同步、分别删除云端或本机 Moonlight 数据',
+            (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_MOONLIGHT))
+  }
+
+  @Builder settingsSectionRemoteAi() {
+    if (this.aiProVisible) {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_AI, protocolIcon('ai'),
+        '远程 AI', '连接与配对、显示、数据与电脑端安装')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+    ListItem() {
+      Column() {
+        Column() {
+          this.protocolActionRow(protocolIcon('ai'), '连接与配对', '主机管理、默认 AI 与配对',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); })
+          this.cardDivider()
+          this.protocolActionRow(protocolIcon('ai'), '显示与恢复', '工具过程、文字大小与前台恢复',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); })
+          this.cardDivider()
+          this.protocolActionRow(protocolIcon('ai'), '本机数据管理', '配置导入导出与操作记录',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); })
+          this.cardDivider()
+          this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex、DSH 与 Pi 安装指引',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? this.settingsModernCap(400) : 0 })
+      .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0)
+      .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0.98 })
+      .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 0 : -8 })
+      .clip(true).animation(this.settingsBodyAnimation(SETTINGS_SECTION_AI))
+    }
+  }
+
+  @Builder settingsSectionProDebug() {
+    // Debug builds with the Pro developer tools shown: while the Pro section is hidden (free or simulated free), keep
+    // the state switch reachable.
+    if (proDeveloperToolsVisible() && !this.proManagerVisible) {
+    ListItem() {
+      Column() {
+        Column() {
+          this.proDebugStateRow()
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    }
+  }
+
+  @Builder settingsSectionPro() {
+    // Every Pro feature with its live status and display switch; shown while Pro is active.
+    if (this.proManagerVisible) {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_PRO, $r('sys.symbol.star'),
+        'Pro 功能', '全部 Pro 功能的状态与显示管理')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+    ListItem() {
+      Column() {
+        Column() {
+          if (proDeveloperToolsVisible()) {
+            this.proDebugStateRow()
+            this.cardDivider()
+          }
+          this.proBadgeSettingsRow()
+          ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature): void => {
+            this.cardDivider()
+            this.protocolActionRow(this.proFeatureIcon(feature.id), feature.title,
+              proFeatureCurrentStatus(feature).label + ' · ' + proFeatureCurrentStatus(feature).detail,
+              (): void => { this.selectedProFeatureId = feature.id; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); })
+          }, (feature: ProFeature): string => feature.id + ':' + this.proFeatureRevision.toString())
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? this.settingsModernCap(1600) : 0 })
+      .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1 : 0)
+      .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 0 : -8 })
+      .clip(true).animation(this.settingsBodyAnimation(SETTINGS_SECTION_PRO))
+    }
+  }
+
+  /** 安全与数据 → 手机通行密钥: the passkey prototype's page (Debug builds with Pro, see ProPasskeyEntry). */
+  @Builder phonePasskeyRow() {
+    Row() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill')).fontSize(20).fontColor([this.accentColor])
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Row({ space: 6 }) {
+          Text('手机通行密钥').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          ProBadge()
+        }
+        Text('用同账号的手机当通行密钥，每次在手机上确认 · 原型')
+          .fontSize(this.settingsModern() ? 12 : 10).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
+          .fontFamily(this.font()).margin({ top: 3 }).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.settingsModern() ? 16 : 18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }
+    .width('100%').height(this.settingsModern() ? 'auto' : 62)
+    .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+    .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+    .accessibilityText('手机通行密钥，Pro 原型')
+    .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); })
+  }
+
+  @Builder settingsSectionSecurity() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_SECURITY, $r('sys.symbol.lock_shield_fill'),
+        '数据安全', '端到端加密、2FA 隐私和设备信任')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- 数据安全卡片 ---
+    ListItem() {
+      Column() {
+        Text('数据安全').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          // ---- 端到端加密 ----
+          Row() {
+            Row() {
+              SymbolGlyph($r('sys.symbol.lock_shield_fill'))
+                .fontSize(22).fontColor([this.cryptoEnabled ? this.accentColor : this.pal().text3])
+            }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Column() {
+              Text('端到端加密')
+                .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text(masterPasswordStatusText(this.cryptoEnabled, this.cryptoUnlocked))
+                .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+            if (this.cryptoEnabled) {
+              if (this.cryptoUnlocked) {
+                Row() {
+                  Text('已启用').fontSize(12).fontColor(this.pal().success).fontWeight(FontWeight.Medium)
+                    .margin({ right: 6 })
+                  Text('关闭').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
+                    .onClick(() => { this.confirmDisableEncryption(); })
+                  Text('·').fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
+                    .margin({ left: 4, right: 4 })
+                  Text('重置').fontSize(11).fontColor(this.pal().danger)
+                    .onClick(() => { this.confirmResetEncryption(); })
+                }
+              } else {
+                Row() {
+                  Text('已锁定').fontSize(12).fontColor(this.pal().danger).fontWeight(FontWeight.Medium)
+                    .onClick(() => {
+                      this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                        this.cryptoMode = 1;
+                        this.popupSheetMode = 0;
+                      });
+                    })
+                    .margin({ right: 6 })
+                  Text('重置').fontSize(11).fontColor(this.pal().danger)
+                    .onClick(() => { this.confirmResetEncryption(); })
+                }
+              }
+            } else {
+              Button('启用').height(32).fontSize(12)
+                .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8)
+                .onClick(() => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.cryptoMode = 0;
+                    this.popupSheetMode = 0;
+                  });
+                })
+            }
+          }.width('100%').height(this.settingsModern() ? 'auto' : 64)
+            .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+
+          this.cardDivider()
+
+          this.cardActionRow($r('app.media.icon_lock'), '密码与秘密回显',
+            this.secretPresentationSummaryText(),
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SECRET_VISIBILITY); })
+
+          this.cardDivider()
+
+          if (phonePasskeyEntryAvailable()) {
+            this.phonePasskeyRow()
+            this.cardDivider()
+          }
+
+          // ---- TOTP 隐私保护 ----
+          Row() {
+            Row() {
+              SymbolGlyph($r('sys.symbol.lock_fill'))
+                .fontSize(22).fontColor([this.totpPageLocked ? this.accentColor : this.pal().text3])
+            }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+            Column() {
+              Text('TOTP 隐私保护')
+                .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text(this.totpPageLocked ?
+                '已开启 · 查看或绑定 2FA 前需要系统身份认证' :
+                '未开启 · 绑定 RustDesk 2FA 无需额外认证')
+                .fontSize(this.settingsModern() ? 12 : 10).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+                .margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            // Rebuilt at the saved value when verification fails (see settingsSwitchEpoch).
+            ForEach([this.settingsSwitchEpoch], (_epoch: number): void => {
+              Toggle({ type: ToggleType.Switch, isOn: this.totpPageLocked })
+                .selectedColor(this.accentColor)
+                .scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+                .onChange(async (on: boolean) => {
+                  if (on) {
+                    const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
+                    if (r.ok) {
+                      this.totpPageLocked = true;
+                      // Protection starts locked: an earlier unlock of the 2FA page does not carry over.
+                      AppStorage.setOrCreate('totpUnlocked', false);
+                      this.saveTotpLock(true);
+                      promptAction.showToast({ message: '2FA 已锁定', duration: 1500 });
+                    } else {
+                      promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
+                      this.totpPageLocked = false;
+                      this.settingsSwitchEpoch++;
+                    }
+                  } else {
+                    const r = await showLockGate('关闭 TOTP 隐私保护，请验证系统身份', 'biometric');
+                    if (r.ok) {
+                      this.totpPageLocked = false;
+                      AppStorage.setOrCreate('totpUnlocked', false);
+                      this.saveTotpLock(false);
+                      promptAction.showToast({ message: '2FA 已解锁', duration: 1500 });
+                    } else {
+                      promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
+                      this.settingsSwitchEpoch++;
+                    }
+                  }
+                })
+            }, (epoch: number): string => 'totp-lock-' + epoch.toString())
+          }.width('100%').height(this.settingsModern() ? 'auto' : 60)
+            .constraintSize({ minHeight: this.settingsModern() ? 60 : 0 })
+            .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+
+          this.cardDivider()
+
+          Column() {
+            Row() {
+              Row() { this.settingsRowGlyph('◎', 22, false, $r('sys.symbol.person_crop_circle_fill')) }
+                .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+              Column() {
+                Text('2FA 验证器头像').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+                Text('切换真实品牌 Logo 或高对比度首字母')
+                  .fontSize(this.settingsModern() ? 12 : 11).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+            }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+            Row() {
+              Button('真实 Logo').layoutWeight(1).height(36).fontSize(13)
+                .fontColor(this.totpLogoMode === 'logo' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+                .backgroundColor(this.totpLogoMode === 'logo' ? this.accentColor : this.pal().surface)
+                .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('logo'); })
+              Button('首字母').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                .fontColor(this.totpLogoMode === 'initials' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+                .backgroundColor(this.totpLogoMode === 'initials' ? this.accentColor : this.pal().surface)
+                .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('initials'); })
+            }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+          }
+
+          this.cardDivider()
+
+          this.cardActionRow($r('app.media.icon_terminal'), 'SSH 主机指纹',
+            this.sshTrustedHostsView.length.toString() + ' 条已信任记录',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.popupSheetMode = 2;
+              });
+            })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_desktop'), 'RDP 证书信任',
+            this.rdpTrustedHostsView.length.toString() + ' 条已信任记录',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.popupSheetMode = POPUP_SHEET_RDP_CERTIFICATES;
+              });
+            })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_lock'), 'VNC TLS 证书信任',
+            this.vncTrustSummary(),
+            (): void => { this.openVncTrustManagerFromSettings(); })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_lock'), 'RustDesk 认证信任',
+            this.rustDeskHosts().length.toString() + ' 台主机',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.popupSheetMode = POPUP_SHEET_RUSTDESK_AUTH_TRUST;
+              });
+            })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SECURITY) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_SECURITY))
+  }
+
+  @Builder settingsSectionTutorial() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_TUTORIAL, $r('sys.symbol.doc_plaintext'),
+        '教程', '快速认识、按设备操作和连接前准备')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- 教程卡片 ---
+    ListItem() {
+      Column() {
+        Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          if (currentReleasePageCount() > 0) {
+            this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
+              CURRENT_RELEASE_VERSION + ' · 查看全部 ' + currentReleasePageCount().toString() + ' 项功能与修复',
+              (): void => {
+                this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                  this.aboutSheetMode = 4;
+                  this.popupSheetMode = 1;
+                });
+              })
+          } else {
+            // Nothing to open yet: shown dimmed with the reason instead of a row that does nothing.
+            this.cardDisabledRow($r('app.media.icon_info'), '本版本更新日志',
+              CURRENT_RELEASE_VERSION + ' 的更新说明还没有发布')
+          }
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_info'), '快速认识应用',
+            '用 ' + settingsUsageGuidePages().length.toString() + ' 页了解协议、主页、设备、安全与数据',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.aboutSheetMode = 0;
+                this.popupSheetMode = 1;
+              });
+            })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_pro'), 'Pro 功能介绍', '工作区、主机管理、接续、显示方案与个性化',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.aboutSheetMode = 6;
+                this.popupSheetMode = 1;
+              });
+            })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_desktop'), '操作引导中心',
+            '按设备和场景查看步骤，含远程 AI 与 AI 助理，可搜索',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.aboutSheetMode = 5;
+                this.popupSheetMode = 1;
+              });
+            })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_info'), '连接前准备', 'RDP、RustDesk、SSH、VNC 与 Sunshine',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.aboutSheetMode = 3;
+                this.popupSheetMode = 1;
+              });
+            })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_TUTORIAL) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_TUTORIAL))
+  }
+
+  @Builder settingsSectionAbout() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_ABOUT, $r('sys.symbol.message'),
+        '关于', '版本、隐私政策和应用信息')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- 关于卡片 ---
+    ListItem() {
+      Column() {
+        Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          this.cardItemRow($r('app.media.icon_info'), '版本', CURRENT_RELEASE_VERSION + ' · FreeRDP+RustDesk+SSH')
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_info'), '关于应用', '开源协议、作者说明和联系方式',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.aboutSheetMode = 1;
+                this.popupSheetMode = 1;
+              });
+            })
+          this.cardDivider()
+          this.cardActionRow($r('app.media.icon_lock'), '隐私政策', '数据收集、权限和安全说明',
+            (): void => {
+              this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                this.aboutSheetMode = 2;
+                this.popupSheetMode = 1;
+              });
+            })
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+        .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+        .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_ABOUT) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_ABOUT))
+  }
+
+  @Builder settingsSectionDiagnostics() {
+    ListItem() {
+      this.settingsAccordionHeader(SETTINGS_SECTION_DIAGNOSTICS, $r('sys.symbol.performance'),
+        'AI 助理', this.diagnosticAiConfigVisible || this.diagnosticAiAssistantVisible ?
+          '辅助 AI 配置、启动 AI 辅助与传统日志抓取' : '传统脱敏日志抓取')
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    // --- AI 助理: configuration, assistant, monitoring, personalization and classic logs ---
+    ListItem() {
+      Column() {
+        Text('AI 助理').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+          .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+        Column() {
+          if (this.diagnosticAiConfigVisible) {
+            this.diagnosticSubRow(0)
+            this.cardDivider()
+          }
+          if (this.diagnosticAiAssistantVisible) {
+            this.diagnosticSubRow(1)
+            this.cardDivider()
+            this.diagnosticSubRow(3)
+            this.cardDivider()
+            this.diagnosticSubRow(4)
+            this.cardDivider()
+            this.diagnosticSubRow(5)
+            this.cardDivider()
+            this.diagnosticSubRow(7)
+            this.cardDivider()
+            this.diagnosticSubRow(8)
+            this.cardDivider()
+            this.diagnosticSubRow(6)
+            this.cardDivider()
+          }
+          this.diagnosticSubRow(2)
+        }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+      }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+    }
+    .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ?
+      this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_DIAGNOSTICS) : 0 })
+    .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 1 : 0)
+    .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 1 : 0.98 })
+    .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 0 : -8 })
+    .clip(true)
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_DIAGNOSTICS))
+  }
+
+  @Builder settingsSectionActions() {
+    ListItem() {
+      this.settingsActionHeader($r('sys.symbol.message'), '反馈',
+        '邮箱反馈或加入畅联群聊',
+        (): void => { this.openFeedbackSheet(); })
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      this.settingsActionHeader($r('sys.symbol.star_fill'), '评价',
+        SETTINGS_RATING_SUBTITLE,
+        (): void => { this.openAppRatingPage(); })
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+    ListItem() {
+      this.settingsActionHeader($r('app.media.icon_pro'), 'RemoteDesk Pro',
+        '',
+        (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, true, true)
+    }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+  }
+
+  /** 全新视觉: the same sections as the classic page, grouped by what they are for. */
+  @Builder settingsModernSections() {
+    this.settingsGroupTitle('通用')
+    this.settingsSectionAppearance()
+    this.settingsSectionHome()
+    this.settingsSectionConnectionLive()
+    this.settingsSectionDisplayInteraction()
+    this.settingsSectionVirtualKeyboard()
+    this.settingsGroupTitle('连接协议')
+    this.settingsSectionRdp()
+    this.settingsSectionRustDesk()
+    this.settingsSectionSsh()
+    this.settingsSectionVnc()
+    this.settingsSectionMoonlight()
+    this.settingsGroupTitle('AI 与 Pro')
+    this.settingsSectionDiagnostics()
+    this.settingsSectionRemoteAi()
+    this.settingsSectionProDebug()
+    this.settingsSectionPro()
+    this.settingsGroupTitle('安全与数据')
+    this.settingsSectionCloudSync()
+    this.settingsSectionSecurity()
+    this.settingsGroupTitle('帮助')
+    this.settingsSectionTutorial()
+    this.settingsSectionAbout()
+    this.settingsSectionActions()
+  }
+
+  /** 全新视觉: search every settings row by its name or the words people use for it. */
+  @Builder settingsSearchField() {
+    Row({ space: 8 }) {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text2])
+      TextInput({ placeholder: '搜索设置', text: $$this.settingsSearchQuery })
+        .layoutWeight(1).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT }).fontColor(this.pal().text)
+        .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent)
+        .padding({ left: 0, right: 0 }).enterKeyType(EnterKeyType.Search)
+        .accessibilityText('搜索设置')
+      if (this.settingsSearchQuery !== '') {
+        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(18).fontColor([this.pal().text3])
+          .width(44).height(44).accessibilityText('清除搜索')
+          .onClick((): void => { this.settingsSearchQuery = ''; })
+      }
+    }
+    .width('100%').height(SEARCH_CAPSULE_HEIGHT).padding({ left: 14, right: 4 }).borderRadius(SEARCH_CAPSULE_RADIUS)
+    .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
+  }
+
+  /** Rows the page itself shows right now (Pro features, device kind, app clone…). */
+  private settingsSearchRequirementMet(requires: string): boolean {
+    switch (requires) {
+      case '': return true;
+      case 'appIcon': return this.appIconProVisible && this.appIconSupported;
+      case 'phonePasskey': return phonePasskeyEntryAvailable();
+      case 'personalization': return this.personalizationProVisible;
+      case 'touchDevice': return !this.isDesktopDevice;
+      case 'cloud': return !this.appCloneLocalOnly;
+      case 'clone': return this.appCloneLocalOnly && this.appCloneIsClone;
+      case 'rdpAdvanced': return this.rdpAdvancedDisplayVisible;
+      case 'rdpBasic': return !this.rdpAdvancedDisplayVisible;
+      case 'rdpDowngrades': return this.rdpSecurityDowngradeHosts > 0;
+      case 'aiPro': return this.aiProVisible;
+      case 'proManager': return this.proManagerVisible;
+      case 'aiConfig': return this.diagnosticAiConfigVisible;
+      case 'aiAssistant': return this.diagnosticAiAssistantVisible;
+      case 'releaseNotes': return currentReleasePageCount() > 0;
+      default: return false;
+    }
+  }
+
+  private settingsSearchResultList(): SettingsSearchEntry[] {
+    const visible: SettingsSearchEntry[] = settingsSearchEntries().filter((entry: SettingsSearchEntry): boolean =>
+      this.settingsSearchRequirementMet(entry.requires));
+    return settingsSearchMatches(this.settingsSearchQuery, visible, 40);
+  }
+
+  @Builder settingsSearchResults() {
+    if (this.settingsSearchResultList().length === 0) {
+      ListItem() {
+        Column({ space: 6 }) {
+          Text('没有找到相关设置').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('换个说法试试，例如「滚轮」「深色」「证书」').fontSize(13).fontColor(this.pal().text2)
+        }.width('100%').padding({ top: 32, bottom: 32 })
+      }.width('100%').padding({ left: 20, right: 20 })
+    } else {
+      ForEach(this.settingsSearchResultList(), (entry: SettingsSearchEntry): void => {
+        ListItem() { this.settingsSearchResultRow(entry) }
+          .width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 8 })
+      }, (entry: SettingsSearchEntry): string => entry.section + ':' + entry.title)
+    }
+  }
+
+  @Builder settingsSearchResultRow(entry: SettingsSearchEntry) {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph(settingsModernRowSymbol(entry.title) ??
+          settingsModernSectionSymbol(entry.section, $r('sys.symbol.gearshape_fill')))
+          .fontSize(20).fontColor([this.accentColor])
+      }.width(36).height(36).borderRadius(10).backgroundColor(this.pal().surface)
+      Column({ space: 2 }) {
+        Text(entry.title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(this.font()).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(settingsSectionTitle(entry.section)).fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+    }
+    .width('100%').constraintSize({ minHeight: 60 }).padding({ left: 14, right: 14, top: 8, bottom: 8 })
+    .borderRadius(18).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .accessibilityGroup(true).accessibilityText(entry.title + '，' + settingsSectionTitle(entry.section))
+    .onClick((): void => { this.openSettingsSearchEntry(entry); })
+  }
+
+  /**
+   * An AI step pointed at a section of 设置 (not a page of its own): open the settings (the settings tab, or the
+   * settings panel on a PC) with that section unfolded.
+   */
+  private openSettingsSectionForAssistant(section: string): void {
+    this.settingsSearchQuery = '';
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      if (!this.showSettingsPanel) {
+        // The panel waits while a connection starts or a host sheet is open (openSheetSafely): say so.
+        if (this.addSheetClosing || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
+          this.connectionAttemptHostId !== '') {
+          promptAction.showToast({ message: '正在连接或有窗口打开，稍后再打开设置', duration: 2200 });
+          return;
+        }
+        this.settingsValuesRevision++;
+        this.openSheetSafely((): void => { this.showSettingsPanel = true; });
+      }
+    } else {
+      this.curTab = 3;
+      this.tabsCtrl.changeIndex(3);
+    }
+    this.settingsScrollGeneration++;
+    if (!this.settingsSectionExpanded(section)) { this.toggleSettingsSection(section); }
+    this.scrollSettingsSectionIntoView(section, SETTINGS_ACCORDION_ANIMATION_MS + 240);
+  }
+
+  /** A sheet opens directly (the same app action the AI uses); an inline setting opens its section in place. */
+  private openSettingsSearchEntry(entry: SettingsSearchEntry): void {
+    if (entry.action.startsWith('ai:')) {
+      this.openDiagnosticAiSection(Number(entry.action.substring(3)));
+      return;
+    }
+    if (entry.action !== '') {
+      const action: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(entry.action);
+      if (action !== null) {
+        this.runAssistantAppAction(action);
+        return;
+      }
+    }
+    this.settingsSearchQuery = '';
+    if (!this.settingsSectionExpanded(entry.section)) { this.toggleSettingsSection(entry.section); }
+    this.scrollSettingsSectionIntoView(entry.section, SETTINGS_ACCORDION_ANIMATION_MS + 40);
+  }
+
+  private settingsModernVisibility(): SettingsModernVisibility {
+    return { remoteAi: this.aiProVisible, proDebug: proDeveloperToolsVisible() && !this.proManagerVisible,
+      pro: this.proManagerVisible };
+  }
+
+  /** 全新视觉: bring an opened section's header up under the page title (smoothly; a header already there stays). */
+  private scrollSettingsSectionIntoView(section: string, delayMs: number): void {
+    const index: number = settingsModernSectionIndex(section, this.settingsModernVisibility());
+    if (index < 0) { return; }
+    const generation: number = this.settingsScrollGeneration;
+    setTimeout((): void => {
+      if (!this.settingsModern() || this.settingsSearchQuery.trim() !== '') { return; }
+      // A later tap took over, or the section has been closed since.
+      if (generation !== this.settingsScrollGeneration || !this.settingsSectionExpanded(section)) { return; }
+      try {
+        this.settingsListScroller.scrollToIndex(index, true, ScrollAlign.START,
+          { extraOffset: LengthMetrics.vp(-(this.titleTopBarHeight() + 8)) });
+      } catch (_error) { /* the list is not laid out yet; the section is still open */ }
+    }, delayMs);
+  }
+
+  /** The account card's mark without an avatar: the classic 👤, or a person symbol in 全新视觉. */
+  @Builder settingsAccountGlyph() {
+    if (this.settingsModern()) {
+      SymbolGlyph($r('sys.symbol.person_crop_circle_fill')).fontSize(40).fontColor([this.pal().text3])
+    } else {
+      Text('👤').fontSize(30)
+    }
+  }
+
+  /** A row's trailing arrow: the classic text arrow, or the system chevron in 全新视觉. */
+  @Builder settingsRowChevron(leftMargin: number) {
+    if (this.settingsModern()) {
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3]).margin({ left: leftMargin })
+    } else {
+      Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: leftMargin })
+    }
+  }
+
+  /** A row's leading mark: the classic character (⌖, Aa, T, ◎), or a system symbol in 全新视觉. */
+  @Builder settingsRowGlyph(text: string, size: number, bold: boolean, symbol: Resource) {
+    if (this.settingsModern()) {
+      SymbolGlyph(symbol).fontSize(20).fontColor([this.pal().text])
+    } else {
+      Text(text).fontSize(size).fontColor(this.pal().text)
+        .fontWeight(bold ? FontWeight.Bold : FontWeight.Normal)
+    }
+  }
+
+  /** 全新视觉: a group heading between sections. */
+  @Builder settingsGroupTitle(title: string) {
+    ListItem() {
+      Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+        .fontFamily(this.font()).width('100%').padding({ left: 28, right: 28, top: 10, bottom: 8 })
+        .accessibilityLevel('yes')
+    }.width('100%')
+  }
+
+
   // T-210: 前置校验面板 (单 @Builder, 内联状态以避免 ArkTS 限制)
   // T-210: 前置校验面板 (bindSheet builder — 系统管理模态层+样式)
   @Builder rdpCertificatePanel() {
@@ -16603,9 +20730,15 @@ struct HostListPage {
       if (this.rdpCertificateState === RdpCertificatePreflightState.PROBING) {
         Row() {
           LoadingProgress().width(32).height(32).color(this.accentColor)
-          Text('正在检查 RDP 证书...')
-            .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .fontFamily(this.font()).margin({ left: 12 }).layoutWeight(1)
+          Column({ space: 4 }) {
+            Text('正在检查 RDP 证书...')
+              .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .fontFamily(this.font())
+            if (this.rdpCertificateProgress.length > 0) {
+              Text(this.rdpCertificateProgress)
+                .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+            }
+          }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
         }.width('100%').margin({ bottom: 18 })
         Text(this.rdpCertificateHostLabel)
           .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')
@@ -16646,6 +20779,24 @@ struct HostListPage {
         if (this.rdpCertificateShowDetails) {
           this.rdpCertificateInfoCard()
         }
+      }
+      if (this.rdpCertificateBypassHintVisible()) {
+        Column() {
+          Text('如果 Windows mstsc 可以连接，而这里只在获取远端证书或解析地址阶段失败，可先尝试直接建立一次 RDP 连接。')
+            .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+            .lineHeight(20).width('100%')
+          Text('本次连接仍会在真实 RDP 握手中校验证书。也可在“设置 → Windows RDP”开启“跳过连接前证书预检”；仅直连 RDP 可用，RD Gateway 不适用。')
+            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+            .lineHeight(18).width('100%').margin({ top: 6 })
+          Button('本次直接尝试')
+            .fontSize(14).height(40).width('100%')
+            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+            .margin({ top: 10 })
+            .onClick(() => { this.doRdpCertificatePreflightBypassOnce(); })
+        }
+        .width('100%').padding(12)
+        .backgroundColor(this.pal().surface).borderRadius(10)
+        .margin({ top: 16 })
       }
       this.rdpCertificateButtonsContent()
     }
@@ -17364,6 +21515,12 @@ struct HostListPage {
         Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
         Row() {
           Text('设置').fontSize(27).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+            .layoutWeight(1)
+          if (this.hostAiOrbAvailable()) {
+            DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+              onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+              .visibility(this.pcAiBesideFab() ? Visibility.Hidden : Visibility.Visible)
+          }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
       }.width('100%')
       .backgroundColor(Color.Transparent)
@@ -17386,7 +21543,7 @@ struct HostListPage {
       this.rustDeskAuthTrustManagerSheet()
     } else if (this.popupSheetMode === POPUP_SHEET_VNC_CERTIFICATES) {
       VncCertificateTrustManagerSheet({
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onRecheck: (trust: VncTrustView, hostId: string): void => { this.recheckVncTrust(trust, hostId); }
       })
     } else if (this.popupSheetMode === 3) {
@@ -17395,7 +21552,8 @@ struct HostListPage {
       AboutSettingsSheet({
         aboutSheetMode: this.aboutSheetMode,
         guideViewportHeight: this.pageViewportHeight,
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
+        onOrderPro: (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }
       })
     }
   }
@@ -17418,7 +21576,7 @@ struct HostListPage {
           .fontFamily(this.font()).layoutWeight(1).textAlign(TextAlign.Center)
         if (this.currentCloudSyncSheetSpec().canDismiss) {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]).width(44).height(36)
-            .onClick((): void => { this.closeSettingsLeafSheet(); })
+            .onClick((): void => { this.closeSettingsLeafSheetByUser(); })
         } else {
           Blank().width(44)
         }
@@ -17489,7 +21647,19 @@ struct HostListPage {
               .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
               .lineHeight(19).margin({ top: 8 })
           }
-          Text('取消勾选不会删除数据，只会停止此设备未来的上传和下载。加密参数会随敏感数据自动保护。')
+          if (CloudStore.getInstance().cryptoResetUploadBlockedTables().length > 0) {
+            Column() {
+              Text('主密码重置后，主机、凭据、密钥、2FA、中继、VNC 与加密参数的上传已暂停，云端和其他设备的数据保持不变。')
+                .fontSize(11).fontColor('#B66A00').fontFamily(this.font()).lineHeight(18).width('100%')
+              Button('以本机为准覆盖云端')
+                .fontSize(12).fontWeight(FontWeight.Medium)
+                .fontColor(Color.White).backgroundColor(this.pal().danger)
+                .height(36).borderRadius(12).width('100%').margin({ top: 8 })
+                .onClick((): void => { this.confirmReleaseCryptoResetUploadBlock(); })
+            }.width('100%').padding(12).borderRadius(12)
+              .backgroundColor(this.pal().surface).margin({ top: 8 })
+          }
+          Text(cloudSyncManageTablesHint(this.cryptoEnabled))
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
           Row() {
             Checkbox()
@@ -17519,7 +21689,7 @@ struct HostListPage {
               if (this.moonlightRestoreActivationState === 'pending') {
                 Button('核对云端并允许恢复数据上传')
                   .fontSize(12).fontWeight(FontWeight.Medium)
-                  .fontColor(Color.White).backgroundColor(this.accentColor)
+                  .fontColor(appUiOnAccentText(this.accentColor)).backgroundColor(this.accentColor)
                   .height(38).borderRadius(12).width('100%')
                   .margin({ top: 10 })
                   .onClick((): void => {
@@ -17536,11 +21706,17 @@ struct HostListPage {
                   void this.toggleCloudSyncTable(table);
                 })
               Column() {
-                Text(table === 'usersettings' ? '跨设备外观设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
+                Text(table === 'usersettings' ? '跨设备外观、分组与工作区' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
+                Text(cloudSyncTableDescription(table, this.cryptoEnabled))
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              if (cloudSyncTableProtectionLabel(table, this.cryptoEnabled) !== '') {
+                Text(cloudSyncTableProtectionLabel(table, this.cryptoEnabled))
+                  .fontSize(10).fontColor(this.cryptoEnabled ? this.pal().success : '#B66A00')
+                  .fontFamily(this.font()).padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                  .borderRadius(8).backgroundColor(this.pal().bg).margin({ left: 8 })
+              }
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
           }, (table: string): string => table)
           Row() {
@@ -17548,10 +21724,9 @@ struct HostListPage {
               .selectedColor(this.accentColor).enabled(false)
             Column() {
               Text('加密参数').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              Text('为已选择的敏感数据提供解密能力，自动随其同步').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+              Text(cloudSyncCryptoParamsDescription(this.cryptoEnabled)).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
-          Text('加密参数会自动随已选择的敏感数据同步。').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 6 })
         }.width('100%').padding({ left: 24, right: 24, top: 22, bottom: 28 }).alignItems(HorizontalAlign.Start)
       } else if (this.cloudSyncStep === CLOUD_SYNC_SHEET_DETAILS) {
         Column() {
@@ -17595,8 +21770,8 @@ struct HostListPage {
               .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(21).margin({ top: 8 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 20 })
           Button(this.currentCloudSyncSheetSpec().primaryLabel).width('100%').height(46).fontSize(15).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(14).margin({ top: 22 })
-            .onClick((): void => { this.closeSettingsLeafSheet(); })
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(14).margin({ top: 22 })
+            .onClick((): void => { this.closeSettingsLeafSheetByUser(); })
         }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 30 }).alignItems(HorizontalAlign.Start)
       } else if (this.cloudSyncStep === CLOUD_SYNC_SHEET_UPLOADING || this.cloudSyncStep === CLOUD_SYNC_SHEET_DOWNLOADING) {
         Column() {
@@ -17630,7 +21805,7 @@ struct HostListPage {
                   .fontSize(18).fontColor([this.backupFullMode ? this.pal().text3 : this.accentColor])
                 Column() {
                   Text('脱敏配置（推荐）').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('不含密码、SSH 私钥、2FA 与登录令牌；保留 SSH/RDP 设备信任，VNC trust 候选和本机确认标记均不导出')
+                  Text('不含密码、SSH 私钥、2FA、登录令牌与 SSH/RDP 设备信任；VNC trust 候选和本机确认标记均不导出')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
               }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
@@ -17642,7 +21817,7 @@ struct HostListPage {
                   .fontSize(18).fontColor([this.backupFullMode ? this.accentColor : this.pal().text3])
                 Column() {
                   Text('完整备份').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('包含密码、SSH 私钥、2FA、VNC 配置与 trust 候选；本机 confirmation marker 不导出。源已加密则携带加密参数（恢复需相同主密码），未加密则按你的选择以明文保存')
+                  Text('包含密码、SSH 私钥、2FA、VNC 配置与 trust 候选；SSH/RDP 设备信任恢复后需重新确认，本机 confirmation marker 不导出。源已加密则携带加密参数（恢复到未设主密码的设备时使用相同主密码解锁），未加密则按你的选择以明文保存')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
               }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 8 })
@@ -17653,8 +21828,8 @@ struct HostListPage {
             Text('影响范围').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
             Text(this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM
               ? (this.backupFullMode
-                ? '全部连接配置、密码、私钥、2FA、VNC 配置与 trust 候选；不含本机 confirmation marker'
-                : '连接配置与个性化设置；保留 SSH/RDP 设备信任，不含密码、私钥、2FA、登录令牌和 VNC trust marker')
+                ? '全部连接配置、密码、私钥、2FA、VNC 配置与 trust 候选；设备信任恢复为待确认，不含本机 confirmation marker'
+                : '连接配置与个性化设置；不含密码、私钥、2FA、登录令牌、SSH/RDP 设备信任和 VNC trust marker')
               : (this.cloudSyncStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM
                 ? this.localRestorePreviewSummary()
                 : '主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置'))
@@ -17670,7 +21845,8 @@ struct HostListPage {
             Button(this.currentCloudSyncSheetSpec().primaryLabel).layoutWeight(1).height(46).fontSize(15).fontWeight(FontWeight.Medium)
               .backgroundColor(this.currentCloudSyncSheetSpec().primaryDestructive
                 ? this.pal().danger : this.accentColor)
-              .fontColor('#FFFFFF').borderRadius(14).margin({ left: 12 })
+              .fontColor(this.currentCloudSyncSheetSpec().primaryDestructive ? '#FFFFFF' : appUiOnAccentText(this.accentColor))
+              .borderRadius(14).margin({ left: 12 })
               .onClick(async (): Promise<void> => {
                 if (this.cloudSyncStep === CLOUD_SYNC_SHEET_UPLOAD_CONFIRM) {
                   await this.confirmCloudSyncUpload();
@@ -17691,13 +21867,18 @@ struct HostListPage {
 
   @Builder sshHostKeyManagerSheet() {
     Column() {
-      Row() {
-        Text('SSH 主机指纹').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheet(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'SSH 主机指纹', subtitle: '已信任的服务器指纹；移除后下次连接会重新确认', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('SSH 主机指纹').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      }
 
       if (this.sshTrustedHostsView.length === 0) {
         Column() {
@@ -17769,13 +21950,18 @@ struct HostListPage {
 
   @Builder rdpCertificateManagerSheet() {
     Column() {
-      Row() {
-        Text('RDP 证书信任').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheet(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'RDP 证书信任', subtitle: '已信任的 Windows 证书；移除后下次连接会重新确认', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('RDP 证书信任').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      }
 
       if (this.rdpTrustedHostsView.length === 0) {
         Column() {
@@ -17868,9 +22054,16 @@ struct HostListPage {
 
   @Builder cryptoSheet() {
     Column() {
-      Text(this.cryptoMode === 0 ? '启用端到端加密' : (this.cryptoMode === 1 ? '解锁加密' : '关闭端到端加密'))
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .margin({ top: 24, bottom: 16 }).fontFamily(this.font())
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: this.cryptoMode === 0 ? '启用端到端加密' : (this.cryptoMode === 1 ? '解锁加密' : '关闭端到端加密'),
+          horizontalPadding: 0, whiteOnAccent: true, onClose: (): void => {
+            this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+          } }).margin({ top: 8, bottom: 8 })
+      } else {
+        Text(this.cryptoMode === 0 ? '启用端到端加密' : (this.cryptoMode === 1 ? '解锁加密' : '关闭端到端加密'))
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .margin({ top: 24, bottom: 16 }).fontFamily(this.font())
+      }
 
       // 说明文字
       Column() {
@@ -17897,10 +22090,10 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
           Blank().width(12)
           Button('解锁').layoutWeight(1).height(44).fontSize(14)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
             .enabled(this.cryptoPwd.length > 0 && !this.cryptoLoading)
             .onClick(async () => { await this.handleUnlock(); })
         }.width('100%').margin({ bottom: 8 })
@@ -17923,7 +22116,7 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
           Blank().width(12)
           Button(this.cryptoResetCountdown > 0 ? '确认关闭 (' + this.cryptoResetCountdown + 's)' : '确认关闭')
             .layoutWeight(1).height(44).fontSize(14)
@@ -17938,13 +22131,13 @@ struct HostListPage {
         Text('⚠️ 确定要重置加密吗?')
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.pal().danger)
           .width('100%').margin({ bottom: 10 }).fontFamily(this.font())
-        Text('本机当前账号的所有加密数据将被永久删除，此操作不可恢复。\n跨设备远程清空协议尚未启用，其他设备不会被本次操作自动清空。')
+        Text('将清空本机当前账号的加密数据：主机密码、SSH 私钥与口令、2FA 密钥、RDP 凭据密码、RustDesk 中继密钥、VNC 密码与令牌，此操作不可恢复。\n主机地址、端口、用户名、分组、显示设置和 SSH/RDP 设备信任会保留（VNC 证书需重新确认），之后可重新填写密码或重新导入密钥。\n云端和其他设备的数据不会被清空：这些数据的上传会暂停，直到你在“云同步”中明确选择以本机为准覆盖云端。')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
           .width('100%').margin({ bottom: 16 })
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
           Blank().width(12)
           Button(this.cryptoResetCountdown > 0 ? '确认重置 (' + this.cryptoResetCountdown + 's)' : '确认重置')
             .layoutWeight(1).height(44).fontSize(14)
@@ -17955,9 +22148,10 @@ struct HostListPage {
         }.width('100%')
       } else {
         // 设置模式: 输入密码 + 确认
-        TextInput({ placeholder: '输入主密码 (12-32位, 大写开头, 含特殊字符)', text: this.cryptoPwd })
+        TextInput({ placeholder: '输入主密码', text: this.cryptoPwd })
           .type(InputType.NEW_PASSWORD).enableAutoFill(true)
-          .passwordRules('begin:[upper],special:[yes],len:[maxlen:32,minlen:12]')
+          // Shapes the Password Vault suggestion only; typed passwords are not restricted.
+          .passwordRules('special:[yes],len:[maxlen:32,minlen:12]')
           .height(44).width('100%').fontSize(15)
           .backgroundColor(this.pal().surface).borderRadius(10)
           .padding({ left: 12, right: 12 }).margin({ bottom: 10 })
@@ -17972,11 +22166,11 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoPwd = ''; this.cryptoPwdConfirm = ''; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoPwd = ''; this.cryptoPwdConfirm = ''; })
           Blank().width(12)
           Button('启用加密').layoutWeight(1).height(44).fontSize(14)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
-            .enabled(this.cryptoPwd.length >= 8 && this.cryptoPwd === this.cryptoPwdConfirm && !this.cryptoLoading)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
+            .enabled(masterPasswordSetupError(this.cryptoPwd, this.cryptoPwdConfirm) === '' && !this.cryptoLoading)
             .onClick(async () => { await this.handleEnable(); })
         }.width('100%')
       }
@@ -17985,7 +22179,9 @@ struct HostListPage {
     .padding({ left: 24, right: 24, top: 8, bottom: 40 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
-    .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
+    .shadow({ radius: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 24,
+      color: this.breakpoint === 'sm' || this.settingsModern() ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)',
+      offsetY: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 6 })
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -18095,7 +22291,7 @@ struct HostListPage {
       this.cryptoResetCountdown = 0;
       this.refreshCryptoStatus();
       promptAction.showToast({
-        message: '加密已重置，本机加密数据已清空；敏感云同步已暂停',
+        message: '加密已重置：密码与密钥已清空，主机配置已保留；敏感数据上传已暂停',
         duration: 2600
       });
     } finally {
@@ -18125,8 +22321,13 @@ struct HostListPage {
 
   @Builder cardItemRow(icon: Resource, label: string, value: string) {
     Row() {
-      Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
-        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Row() {
+        if (this.settingsModern() && settingsModernRowSymbol(label) !== null) {
+          SymbolGlyph(settingsModernRowSymbol(label) as Resource).fontSize(20).fontColor([this.pal().text2])
+        } else {
+          Image(icon).width(22).height(22).fillColor(this.pal().text3)
+        }
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
       Text(value).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
@@ -18145,34 +22346,573 @@ struct HostListPage {
 
   @Builder cardActionRow(icon: Resource, label: string, value: string, action: () => void) {
     Row() {
-      Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
-        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Row() {
+        if (this.settingsModern() && settingsModernRowSymbol(label) !== null) {
+          SymbolGlyph(settingsModernRowSymbol(label) as Resource).fontSize(20).fontColor([this.pal().text2])
+        } else {
+          Image(icon).width(22).height(22).fillColor(this.pal().text3)
+        }
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(value).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+        this.settingsRowDetail(label, value)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.settingsModern() ? 16 : 18).fontColor([this.pal().text3])
         .margin({ right: 14 })
     }
-    .width('100%').height(62).padding({ left: 16, right: 16 })
+    .width('100%').height(this.settingsModern() ? 'auto' : 62)
+    .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+    .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
     .onClick(action)
+  }
+
+  /**
+   * A row's second line. Classic: the description, one line in text3. 全新视觉: the setting's current value when the
+   * page knows it (read live, so it follows changes), otherwise the description; two lines in the readable text2.
+   */
+  @Builder settingsRowDetail(label: string, value: string) {
+    Text(this.settingsModern() && this.settingsRowCurrentValue(label, this.settingsValuesRevision) !== '' ?
+      this.settingsRowCurrentValue(label, this.settingsValuesRevision) : value)
+      .fontSize(this.settingsModern() ? 12 : 11)
+      .fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+      .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+  }
+
+  private moonlightSnapshotRevision: number = -1;
+  private moonlightSnapshotValue: MoonlightSettings | null = null;
+
+  /**
+   * 全新视觉: Moonlight's saved settings for the header and rows, read once per settingsValuesRevision. null when
+   * they are not the user's (no account lease yet, a failed read): the rows then keep their descriptions.
+   */
+  private moonlightSnapshot(revision: number): MoonlightSettings | null {
+    if (revision !== this.moonlightSnapshotRevision) {
+      this.moonlightSnapshotRevision = revision;
+      try {
+        const loaded = this.moonlightSettingsService.load();
+        this.moonlightSnapshotValue = loaded.ok ? loaded.settings : null;
+      } catch (_error) {
+        this.moonlightSnapshotValue = null;
+      }
+    }
+    return this.moonlightSnapshotValue;
+  }
+
+  /** 全新视觉: what a row that opens a sheet is set to now ('' when the page does not know). */
+  private settingsRowCurrentValue(label: string, _revision: number): string {
+    try {
+      switch (label) {
+        case '连接默认值': {
+          const vnc = this.vncSettings.get();
+          return settingsVncTransportLabel(vnc.defaultTransport) + ' · 端口 ' + vnc.defaultPort.toString();
+        }
+        case '超时与连接行为': {
+          const vnc = this.vncSettings.get();
+          return '连接 ' + settingsSecondsLabel(vnc.connectTimeoutMs) + ' · 认证 ' +
+            settingsSecondsLabel(vnc.authTimeoutMs) + ' · 首帧 ' + settingsSecondsLabel(vnc.firstFrameTimeoutMs);
+        }
+        case '安全策略与 TLS': return settingsVncSecurityLabel(this.vncSettings.get().securityPolicy);
+        case '显示与画面': {
+          const vnc = this.vncSettings.get();
+          return settingsVncDisplayScaleLabel(vnc.displayScaleMode, vnc.customScalePercent);
+        }
+        case '输入与光标': {
+          const vnc = this.vncSettings.get();
+          return settingsControlModeLabel(vnc.controlMode) + (vnc.viewOnly ? ' · 只读' : '');
+        }
+        case '性能监视看板': return this.vncSettings.get().showDiagnostics ? '连接时显示' : '不显示';
+        case '剪贴板': return this.vncSettings.get().clipboardEnabled ? '文本剪贴板已开启' : '文本剪贴板已关闭';
+        case '画面': {
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          const video = moonlight.video;
+          return settingsMoonlightVideoLabel(video.resolutionMode, video.customWidth, video.customHeight, video.fps,
+            video.bitrateKbps) + (video.hdr ? ' · HDR' : '');
+        }
+        case '音频': {
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          const audio = moonlight.audio;
+          if (!audio.enabled) { return '已关闭'; }
+          return (audio.channels === 'surround71' ? '7.1 声道' : audio.channels === 'surround51' ? '5.1 声道' : '立体声') +
+            (audio.playOnHost ? ' · 主机同时播放' : '');
+        }
+        case '控制与手柄': {
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          const input = moonlight.input;
+          const mode: string = input.controlMode === 'keyboardMouse' ? '键鼠' :
+            input.controlMode === 'trackpad' ? '触控板' : '自适应';
+          return mode + (input.enableRumble ? ' · 手柄震动' : '');
+        }
+        case '诊断': {
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          return moonlight.diagnostics.showPerformanceHud ? '显示性能浮层' : '不显示性能浮层';
+        }
+        case '输入行为':
+          return RemoteKeyboardSettingsService.getInstance().loadPreferences(getContext(this) as common.Context)
+            .autoOpenOnRemoteClick ? '点按远端输入框时自动弹出键盘' : '手动打开键盘';
+        case '快捷键平台':
+          return RemoteKeyboardSettingsService.getInstance().loadPreferences(getContext(this) as common.Context)
+            .shortcutPlatform === 'macos' ? 'macOS 快捷键' : 'Windows 快捷键';
+        case '功能键与面板':
+          return RemoteKeyboardSettingsService.getInstance().loadPreferences(getContext(this) as common.Context)
+            .functionKeysVisible ? '显示功能键' : '隐藏功能键';
+        default:
+          return '';
+      }
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  @Builder cardDisabledRow(icon: Resource, label: string, reason: string) {
+    Row() {
+      Row() {
+        if (this.settingsModern() && settingsModernRowSymbol(label) !== null) {
+          SymbolGlyph(settingsModernRowSymbol(label) as Resource).fontSize(20).fontColor([this.pal().text2])
+        } else {
+          Image(icon).width(22).height(22).fillColor(this.pal().text3)
+        }
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(reason).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+    }
+    .width('100%').height(62).padding({ left: 16, right: 16 }).opacity(0.55)
+    .accessibilityText(label + '，' + reason)
   }
 
   @Builder protocolActionRow(icon: Resource, label: string, value: string, action: () => void) {
     Row() {
-      SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3])
+      SymbolGlyph(this.settingsModern() ? (settingsModernRowSymbol(label) ?? icon) : icon)
+        .fontSize(this.settingsModern() ? 20 : 22)
+        .fontColor([this.settingsModern() ? this.pal().text2 : this.pal().text3])
         .width(22).height(22).margin({ left: 9, right: 9 })
       Column() {
         Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(value).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+        this.settingsRowDetail(label, value)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.settingsModern() ? 16 : 18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(this.settingsModern() ? 'auto' : 62)
+    .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+    .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+    .onClick(action)
+  }
+
+  /**
+   * Pro 标识 row. It reads the badge settings itself: a value passed into protocolActionRow is copied once, so the
+   * subtitle would keep showing the old look after a change.
+   */
+  @Builder proBadgeSettingsRow() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Text('Pro 标识').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(proBadgeSummary(this.proBadgeVisible, this.proBadgeStyle, this.proBadgeMotion, this.proBadgePalette))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
         .margin({ right: 14 })
-    }.width('100%').height(62).padding({ left: 16, right: 16 }).onClick(action)
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+    .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); })
+  }
+
+  /** The 启动 AI 辅助 entry sits at the right end of the 远程主机 title, on the host list only. */
+  /** The assistant entry sits at the right end of the page title on every tab. */
+  private hostAiOrbShown(): boolean {
+    return this.hostAiOrbAvailable();
+  }
+
+  /** PC in its large-screen (sidebar) layout puts the AI beside 「+」; every other window keeps it in the title. */
+  private pcAiBesideFab(): boolean {
+    return this.isDesktopDevice && this.breakpoint === 'xl';
+  }
+
+  /** The entry exists for this account; whether it shows depends on the tab. */
+  private hostAiOrbAvailable(): boolean {
+    // The assistant entrance is a Pro surface and is intentionally always resident. The old preference is retained
+    // only for migration; it must not hide the entry after a settings/profile reload.
+    return this.diagnosticAiAssistantVisible;
+  }
+
+  /**
+   * An app screen an AI answer pointed to (whitelisted in DiagnosticAiAppActionPolicy). The island floats while the
+   * user works in it; nothing is changed on the user's behalf, the screen is only opened.
+   */
+  private runAssistantAppAction(action: DiagnosticAiAppActionId): void {
+    switch (action) {
+      case 'host.add':
+        this.resetForm();
+        this.addSheetShowsModernPicker = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+        if (this.addSheetShowsModernPicker) { this.probeMoonlightCapabilityForPicker(); }
+        this.modernAddProtocol = '';
+        this.openSheetSafely((): void => { this.showAddSheet = true; });
+        return;
+      case 'cloud.sync': this.openCloudSyncSheet(); return;
+      case 'diagnostic.log': this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); return;
+      case 'feedback': this.openFeedbackSheet(); return;
+      case 'ssh.keys': this.openSshKeyVaultFromSettings(); return;
+      case 'rdp.credentials': this.openRdpCredentialManager(); return;
+      case 'settings.appIcon': this.openSettingsLeafSheet(SETTINGS_SHEET_APP_ICON); return;
+      case 'settings.keyVault': this.openSshKeyVaultFromSettings(); return;
+      case 'settings.rdpCredentialEditor': this.openRdpCredentialManager(); return;
+      case 'settings.proBadge': this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); return;
+      case 'ai.config': this.openDiagnosticAiSection(0); return;
+      case 'settings.account': this.openSettingsLeafSheet(SETTINGS_SHEET_ACCOUNT); return;
+      case 'settings.appearance': this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); return;
+      case 'settings.wallpaper': this.openSettingsLeafSheet(SETTINGS_SHEET_WALLPAPER); return;
+      case 'settings.haloColor': this.openSettingsLeafSheet(SETTINGS_SHEET_HALO_COLOR); return;
+      case 'settings.terminalColor': this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); return;
+      case 'settings.terminalFontSize': this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); return;
+      case 'settings.terminalSpacing': this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); return;
+      case 'settings.popup': this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP); return;
+      case 'settings.keyboard': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); return;
+      case 'settings.keyboardBehavior': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); return;
+      case 'settings.keyboardShortcuts': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS); return;
+      case 'settings.keyboardFunctions': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); return;
+      case 'settings.keyboardCustom': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); return;
+      case 'settings.harmonyShortcut': this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); return;
+      case 'settings.secretVisibility': this.openSettingsLeafSheet(SETTINGS_SHEET_SECRET_VISIBILITY); return;
+      case 'settings.remotePortrait': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY); return;
+      case 'settings.remoteWheel': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION); return;
+      case 'settings.remotePinch': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM); return;
+      case 'settings.controlBar': this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR); return;
+      case 'settings.rdpDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_DISPLAY_PROFILE); return;
+      case 'settings.rdpSecurity': this.openSettingsSectionForAssistant(SETTINGS_SECTION_RDP); return;
+      case 'rdp.restoreSecurity': this.restoreRdpSecurityForAssistant(); return;
+      case 'settings.sshSkin': this.openSettingsLeafSheet(SETTINGS_SHEET_SSH_SKIN); return;
+      case 'settings.diagnosticAi': this.openDiagnosticAiSection(0); return;
+      case 'diagnosticAi.assistant': this.openDiagnosticAiSection(1); return;
+      case 'diagnosticAi.usage': this.openDiagnosticAiSection(3); return;
+      case 'diagnosticAi.personalization': this.openDiagnosticAiSection(4); return;
+      case 'diagnosticAi.sessions': this.openDiagnosticAiSection(5); return;
+      case 'diagnosticAi.skills': this.openDiagnosticAiSection(7); return;
+      case 'diagnosticAi.classicLogs': this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); return;
+      case 'settings.aiHosts': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); return;
+      case 'settings.aiDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); return;
+      case 'settings.aiData': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); return;
+      case 'settings.aiInstall': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); return;
+      // 手机通行密钥 (安全与数据, or its Pro detail where it is not open) / 安全密钥重定向 (its Pro detail).
+      case 'pro.phonePasskey':
+        // Its page is 安全与数据 → 手机通行密钥; where it is not open (release builds) the Pro detail explains why.
+        if (phonePasskeyEntryAvailable()) { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); return; }
+        this.selectedProFeatureId = 'pro.security.phonePasskey'; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); return;
+      case 'pro.securityKey':
+        this.selectedProFeatureId = 'pro.security.webauthnRedirect'; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); return;
+      case 'settings.vncConnection': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); return;
+      case 'settings.vncTimeout': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); return;
+      case 'settings.vncSecurity': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); return;
+      case 'settings.vncDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); return;
+      case 'settings.vncInput': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); return;
+      case 'settings.vncPerformance': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); return;
+      case 'settings.vncClipboard': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); return;
+      case 'settings.vncTrust': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); return;
+      case 'settings.vncHosts': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); return;
+      case 'settings.vncGateway': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); return;
+      case 'settings.moonlightVideo': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); return;
+      case 'settings.moonlightAudio': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); return;
+      case 'settings.moonlightInput': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); return;
+      case 'settings.moonlightNetwork': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY); return;
+      case 'settings.moonlightDiagnostics': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); return;
+      case 'settings.moonlightTrust': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); return;
+      case 'settings.moonlightData': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); return;
+    }
+  }
+
+  /**
+   * Something was shared to the app: the AI island opens in 聊天 and the chat reads it. Without the AI assistant (no
+   * Pro) the share is dropped with a note, after giving the entitlement a moment to load.
+   */
+  private openSharedToAi(): void {
+    if (!AiShareInbox.pending()) { return; }
+    if (!this.diagnosticAiAssistantVisible) {
+      if (this.aiShareRefusedTimer >= 0) { return; }
+      this.aiShareRefusedTimer = setTimeout((): void => {
+        this.aiShareRefusedTimer = -1;
+        if (!AiShareInbox.pending() || this.diagnosticAiAssistantVisible) { return; }
+        AiShareInbox.take();
+        try {
+          this.getUIContext().getPromptAction().showToast({ message: 'AI 助理需要开通 Pro 后才能处理分享的文档', duration: 3000 });
+        } catch (_error) { /* no toast */ }
+      }, 2500);
+      return;
+    }
+    AiChatMemory.active = true;
+    const sheetOpen: boolean = this.showSettingsLeafSheet;
+    if (sheetOpen) { this.closeSettingsLeafSheet(); }
+    aiChatRefresh();
+    if (!this.aiIslandShown) {
+      setTimeout((): void => { this.aiIslandShown = true; this.diagnosticAiOrbState = 'open'; }, sheetOpen ? 320 : 60);
+    }
+  }
+
+  /** AI 语音's switches (on, 按住说话) for this account, mirrored for the chat and the AI button. */
+  private refreshAiVoiceFlags(): void {
+    try {
+      const settings: AiVoiceSettings = new AiVoiceSettings();
+      settings.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+      settings.read();
+    } catch (_error) { /* stays off */ }
+  }
+
+  private onSessionAiHandover(): void {
+    // After the session page's own layers have closed and this page is back in front.
+    if (this.aiSessionHandover > 0) { setTimeout((): void => { this.takeSessionAi(); }, 240); }
+  }
+
+  /**
+   * The user left a host with its AI up (SessionAiHost): the AI carries on here as the orb with its small chat, on the
+   * same conversation (an answer still on its way lands in it). It waits until this list is the page showing, and is
+   * dropped when another session's AI is in front, the list's own AI is already up, or the user took too long.
+   */
+  private takeSessionAi(): void {
+    const at: number = AppStorage.get<number>(AI_SESSION_HANDOVER) ?? 0;
+    if (at <= 0) { return; }
+    if (Date.now() - at > AI_SESSION_HANDOVER_TTL_MS) { AppStorage.setOrCreate(AI_SESSION_HANDOVER, 0); return; }
+    let top: string = '';
+    try { top = this.getUIContext().getRouter().getState().name; } catch (_error) { return; }
+    // Only once this list itself is showing (not a session, Moonlight's app list, or a page over it): until then it
+    // waits for onPageShow.
+    if (!this.pageShown || top !== 'HostListPage') { return; }
+    AppStorage.setOrCreate(AI_SESSION_HANDOVER, 0);
+    if (AiSessionRouter.sessionActive() || !this.diagnosticAiAssistantVisible || this.aiIslandShown || this.aiVoiceShown) {
+      return;
+    }
+    hilog.info(0x0000, 'AiChat', 'host list carries on the session AI');
+    AiChatMemory.active = true;
+    AiChatMemory.voiceResume = false;
+    this.aiIslandStartAction = '';
+    this.aiIslandQuickOpen = false;
+    this.aiIslandStartFloat = true;
+    this.aiIslandStartChat = true;
+    this.aiIslandShown = true;
+    this.diagnosticAiOrbState = AiChatMemory.requestId !== '' ? 'thinking' : 'open';
+  }
+
+  private onAiVoiceRequest(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
+    if (this.aiVoiceRequest > 0 && AppStorage.get<boolean>(AI_VOICE_ENABLED) === true) { this.openAiVoice('hands'); }
+  }
+
+  private onAiVoiceHold(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
+    if (this.aiVoiceHold.startsWith('down:') && !this.aiVoiceShown) { this.openAiVoice('hold'); }
+  }
+
+  private onAiVoiceResume(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
+    if (this.aiVoiceResumeRequest > 0) { this.openAiVoice('hands', true); }
+  }
+
+  private onAiAppActionRequest(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
+    const at: number = this.aiAppActionRequest.indexOf('@');
+    if (at <= 0 || !this.diagnosticAiAssistantVisible) { return; }
+    const id: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(this.aiAppActionRequest.slice(0, at));
+    if (id === null) { return; }
+    // With the island open, it steps back to its status capsule and floats once the screen is up.
+    if (this.aiIslandShown && !this.aiIslandFloating) { AppStorage.setOrCreate('aiIsland.appAction', this.aiAppActionRequest); }
+    else { this.runAssistantAppAction(id); }
+  }
+
+  /** Opens or closes the AI top layers to match what is shown (as the in-page `if` used to). */
+  private syncAiLayers(): void {
+    const islandWanted: boolean = this.aiIslandShown && this.diagnosticAiAssistantVisible;
+    if (islandWanted && !this.aiIslandLayer.isOpen()) {
+      this.aiIslandLayer.openIsland(this.getUIContext(), this.aiIslandLayerParams());
+    } else if (!islandWanted && this.aiIslandLayer.isOpen()) {
+      this.aiIslandLayer.close();
+    }
+    const voiceWanted: boolean = this.aiVoiceShown && this.diagnosticAiAssistantVisible;
+    if (voiceWanted && !this.aiVoiceLayer.isOpen()) {
+      this.aiVoiceLayer.openVoice(this.getUIContext(), this.aiVoiceLayerParams());
+    } else if (!voiceWanted && this.aiVoiceLayer.isOpen()) {
+      this.aiVoiceLayer.close();
+    }
+  }
+
+  private aiDeviceClass(): 'phone' | 'pad' | 'pc' {
+    return this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad';
+  }
+
+  private aiIslandLayerParams(): AiIslandLayerParams {
+    const p: AiIslandLayerParams = new AiIslandLayerParams();
+    p.topInset = this.topSafeHeightVp();
+    p.deviceClass = this.aiDeviceClass();
+    p.quickOpen = this.aiIslandQuickOpen;
+    p.startAction = this.aiIslandStartAction;
+    p.startFloat = this.aiIslandStartFloat;
+    p.startChat = this.aiIslandStartChat;
+    p.onDismissed = (): void => {
+      this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
+      this.aiIslandStartAction = '';
+      this.aiIslandStartFloat = false;
+      this.aiIslandStartChat = false;
+      this.diagnosticAiOrbState = 'idle';
+    };
+    p.onFloatingChanged = (floating: boolean): void => { this.aiIslandFloating = floating; };
+    p.onActivityChanged = (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; };
+    p.onCaptureStateChanged = (capturing: boolean): void => {
+      if (capturing) { this.diagnosticAiOrbState = 'capturing'; }
+      else if (this.diagnosticAiOrbState === 'capturing') { this.diagnosticAiOrbState = 'open'; }
+    };
+    p.onAppAction = (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); };
+    p.isAppActionScreenOpen = (): boolean => this.showAddSheet || this.showSettingsLeafSheet;
+    p.closeAppActionScreen = (): void => {
+      if (this.showAddSheet) { this.requestAddSheetClose(); }
+      if (this.showSettingsLeafSheet) { this.closeSettingsLeafSheet(); }
+    };
+    return p;
+  }
+
+  private aiVoiceLayerParams(): AiVoiceLayerParams {
+    const p: AiVoiceLayerParams = new AiVoiceLayerParams();
+    p.owner = this.assistantOwner();
+    p.topInset = this.topSafeHeightVp();
+    p.deviceClass = this.aiDeviceClass();
+    p.mode = this.aiVoiceMode;
+    p.startShape = this.aiVoiceStart;
+    p.resume = this.aiVoiceResume;
+    p.onFloat = (): void => {
+      this.aiIslandStartAction = '';
+      this.aiIslandStartFloat = true;
+      this.aiIslandStartChat = false;
+      this.aiIslandQuickOpen = false;
+      if (!this.aiIslandShown) { this.aiIslandShown = true; }
+    };
+    p.onOpenScreen = (action: string): void => {
+      // The island runs the action as text mode's would, and floats as the orb over the opened screen.
+      this.aiIslandStartAction = action;
+      this.aiIslandQuickOpen = false;
+      if (!this.aiIslandShown) { this.aiIslandShown = true; }
+      this.diagnosticAiOrbState = 'open';
+    };
+    p.onDismissed = (): void => { this.aiVoiceShown = false; };
+    p.onOpenChat = (): void => {
+      // The panel opens at once under the voice card, which then dissolves into it.
+      this.aiIslandQuickOpen = true;
+      if (!this.aiIslandShown) { this.aiIslandShown = true; }
+      this.diagnosticAiOrbState = 'open';
+    };
+    return p;
+  }
+
+  /** Voice mode takes over from the island (which folds away first). */
+  private openAiVoice(mode: string, resume: boolean = false): void {
+    if (this.aiVoiceShown || !this.diagnosticAiAssistantVisible) { return; }
+    const islandOpen: boolean = this.aiIslandShown && !this.aiIslandFloating;
+    // The island folds away (a floating one too: its orb would otherwise stay above voice mode).
+    if (this.aiIslandShown) { AppStorage.setOrCreate('aiIsland.closeRequest', Date.now()); }
+    // From the panel: the droplet takes over from the capsule the panel gathers into as it closes.
+    setTimeout((): void => {
+      this.aiVoiceMode = mode;
+      this.aiVoiceStart = islandOpen ? 'panel' : 'island';
+      this.aiVoiceResume = resume;
+      this.aiVoiceShown = true;
+    }, islandOpen ? 300 : 0);
+  }
+
+  private onAiEntryOpenRequest(): void {
+    if (this.aiEntryOpenRequest > 0) { this.openDiagnosticAiSection(1); }
+  }
+
+  private openDiagnosticAiSection(section: number): void {
+    if (section === 1) {
+      // 启动 AI 辅助 unfolds from the AI island instead of a sheet.
+      if (this.diagnosticAiAssistantVisible) { this.aiIslandShown = true; this.diagnosticAiOrbState = 'open'; }
+      return;
+    }
+    this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => {
+      this.diagnosticAiSection = section; this.diagnosticAiResumeSessionId = '';
+    });
+  }
+
+  /**
+   * History resumes through the same native bindSheet owner. Calling the
+   * normal replacement path closes the session list sheet first, then mounts
+   * the assistant section with the selected owner-scoped session.
+   */
+  private openDiagnosticAiSession(sessionId: string): void {
+    const id: string = sessionId.trim();
+    if (id === '') { return; }
+    // 对话记录 → continue in the AI island itself: the chosen conversation becomes the current one, the settings
+    // sheet closes, and the island opens on its last answer with the input ready.
+    const session: DiagnosticAiConversationSession | undefined = this.assistantConversationStore().session(id.slice(0, 128));
+    if (session === undefined || !this.diagnosticAiAssistantVisible) {
+      this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => {
+        this.diagnosticAiSection = 1; this.diagnosticAiResumeSessionId = id.slice(0, 128);
+      });
+      return;
+    }
+    if (diagnosticAiSessionKind(session) === 'chat') {
+      // A chat continues in 聊天 with its messages and documents.
+      aiChatResumeSession(this.assistantOwner(), session);
+      aiChatRefresh();
+    } else {
+      AiChatMemory.active = false;
+      diagnosticAiResumeSession(this.assistantOwner(), session);
+      aiChatRefresh();
+    }
+    this.closeSettingsLeafSheet();
+    setTimeout((): void => {
+      this.aiIslandShown = true;
+      this.diagnosticAiOrbState = 'open';
+    }, 320);
+  }
+
+  /** One AI help setting row: 0 config, 1 assistant, 2 classic logs, 3 usage, 4 personalization, 5 sessions. */
+  @Builder diagnosticSubRow(kind: number) {
+    Row() {
+      SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
+        kind === 2 ? $r('sys.symbol.doc_plaintext') : kind === 3 ? $r('sys.symbol.performance') :
+        kind === 4 ? $r('sys.symbol.person_crop_circle_fill') : kind === 6 ? $r('sys.symbol.wand_and_stars') :
+        kind === 7 ? $r('sys.symbol.puzzle_fill') : kind === 8 ? $r('sys.symbol.mic_fill_waves_left_and_right') :
+        $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Row({ space: 6 }) {
+          Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
+            kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : kind === 6 ? 'AI 动效' : kind === 7 ? 'AI 工具与技能' :
+            kind === 8 ? 'AI 语音' : 'AI 对话记录')
+            .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          if (kind === 8) {
+            Text('Beta').fontSize(10).fontWeight(FontWeight.Bold).fontColor(Color.White)
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6)
+              .linearGradient({ angle: 90, colors: [['#FF7A45', 0], ['#FF3D7F', 1]] })
+          }
+        }
+        Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
+          kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? '按时间和订阅查看请求、Token 与费用' :
+          kind === 4 ? '助手名称、性格、风格和本机用户画像记忆' :
+          kind === 6 ? '思考动画、悬浮球、完成动画和展开方式' : kind === 7 ? '聊天可用的工具、技能库和自定义技能' :
+          kind === 8 ? '语音模式、按住说话和朗读引擎' : '搜索、继续或删除历史对话')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      // The section header carries the Pro mark; its rows do not repeat it.
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+    .onClick((): void => {
+      if (kind === 2) { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); }
+      else { this.openDiagnosticAiSection(kind); }
+    })
   }
 
   @Builder cardDivider() {
@@ -18189,7 +22929,7 @@ struct HostListPage {
     Column() {
       Text(label)
         .fontSize(12)
-        .fontColor(this.rustdeskImageQuality === value ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.rustdeskImageQuality === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.rustdeskImageQuality === value ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -18290,7 +23030,7 @@ struct HostListPage {
   @Builder _codecChip(label: string, codecIdx: number) {
     Column() {
       Text(label).fontSize(10)
-        .fontColor(this.rustdeskCodec === codecIdx ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.rustdeskCodec === codecIdx ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.rustdeskCodec === codecIdx ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .padding({ left: 3, right: 3, top: 4, bottom: 4 })
@@ -18300,29 +23040,64 @@ struct HostListPage {
   }
 
   private rdpDesktopPresetLabel(): string {
-    return rdpResolutionLabel(this.rdpDesktopResolutionId) +
-      (this.rdpDesktopResolutionId === 'auto' ?
-        (this.isDesktopDevice ? '（推荐，跟随会话窗口）' : '（推荐，连接时适应设备）') :
-        '（固定分辨率）');
+    const id: string = rdpResolutionSelection(this.rdpDesktopResolutionId, false);
+    return rdpResolutionLabel(id) +
+      (id === 'auto' ? (this.isDesktopDevice ? '（推荐，跟随会话窗口）' : '（推荐，连接时适应设备）') : '（固定分辨率）');
   }
 
+  /** Free layout (unchanged): a chip row of 自适应 and the standard sizes. */
   @Builder rdpDesktopPresetRow() {
     Column() {
       this.rdpDesktopPresetLabelBlock()
-      Scroll() {
-        Row({ space: 8 }) {
-          this.rdpResolutionPresetChip('自适应（推荐）', 'auto')
-          ForEach(rdpResolutionPresets(), (preset: RemoteResolutionPreset): void => {
-            this.rdpResolutionPresetChip(preset.label, preset.id)
-          }, (preset: RemoteResolutionPreset): string => preset.id)
-        }.padding({ left: 16, right: 16 })
+      if (this.settingsModern() && this.breakpoint !== 'sm') {
+        // 全新视觉 on Pad and PC: all sizes in view instead of a sideways strip.
+        Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+          this.rdpResolutionPresetChips()
+        }.width('100%').padding({ left: 16, right: 16 }).margin({ top: 6 })
+      } else {
+        Scroll() {
+          Row({ space: 8 }) {
+            this.rdpResolutionPresetChips()
+          }.padding({ left: 16, right: 16 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .height(42)
+        .margin({ top: 4 })
       }
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .width('100%')
-      .height(42)
-      .margin({ top: 4 })
-    }.width('100%').height(110).padding({ top: 10, bottom: 10 })
+    }.width('100%').height(this.settingsModern() && this.breakpoint !== 'sm' ? 'auto' : 110)
+    .padding({ top: 10, bottom: 10 })
+  }
+
+  @Builder rdpResolutionPresetChips() {
+    this.rdpResolutionPresetChip('自适应（推荐）', 'auto')
+    ForEach(rdpResolutionPresets(), (preset: RemoteResolutionPreset): void => {
+      this.rdpResolutionPresetChip(preset.label, preset.id)
+    }, (preset: RemoteResolutionPreset): string => preset.id)
+  }
+
+  /** Free users see the old chips; a saved custom size they can no longer use shows as 自适应, as it connects. */
+  private rdpResolutionSelection(): string { return rdpResolutionSelection(this.rdpDesktopResolutionId, false); }
+
+  /** Pro: desktop size and Windows scale behind one entry that opens 远端显示方案. */
+  @Builder rdpDisplayProfileRow() {
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('远端显示方案').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(rdpDisplayProfileSummary(this.rdpDesktopResolutionId, this.rdpCustomWidth, this.rdpCustomHeight,
+          rdpResolutionLabel(this.rdpDesktopResolutionId), this.rdpDesktopScaleMode, this.rdpDesktopScalePercent))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      ProBadge().margin({ right: 8 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
+    .accessibilityText('远端显示方案，Pro')
+    .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_DISPLAY_PROFILE); })
   }
 
   @Builder rdpDesktopPresetLabelBlock() {
@@ -18340,11 +23115,11 @@ struct HostListPage {
   @Builder rdpResolutionPresetChip(label: string, id: string) {
     Text(label)
       .fontSize(11)
-      .fontColor(this.rdpDesktopResolutionId === id ? '#FFFFFF' : this.pal().text2)
-      .fontWeight(this.rdpDesktopResolutionId === id ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.rdpResolutionSelection() === id ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+      .fontWeight(this.rdpResolutionSelection() === id ? FontWeight.Medium : FontWeight.Normal)
       .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       .padding({ left: 10, right: 10, top: 7, bottom: 7 })
-      .backgroundColor(this.rdpDesktopResolutionId === id ? this.accentColor : this.pal().surface)
+      .backgroundColor(this.rdpResolutionSelection() === id ? this.accentColor : this.pal().surface)
       .borderRadius(6)
       .onClick((): void => { this.saveRdpDesktopResolutionId(id); })
   }
@@ -18389,7 +23164,7 @@ struct HostListPage {
 
   @Builder rdpRemoteUiScaleChip(label: string, value: string) {
     Text(label).fontSize(11)
-      .fontColor(this.rdpRemoteUiScale === value ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.rdpRemoteUiScale === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontWeight(this.rdpRemoteUiScale === value ? FontWeight.Medium : FontWeight.Normal)
       .textAlign(TextAlign.Center).maxLines(1)
       .padding({ left: 9, right: 9, top: 7, bottom: 7 })
@@ -18417,36 +23192,65 @@ struct HostListPage {
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       }.width('100%').height(54).padding({ left: 16, right: 16 })
-      Scroll() {
-        Row({ space: 8 }) {
-          this.remoteDisplayScaleChip('适应', 'fit')
-          this.remoteDisplayScaleChip('填满', 'fill')
-          this.remoteDisplayScaleChip('100%', '100')
-          this.remoteDisplayScaleChip('125%', '125')
-          this.remoteDisplayScaleChip('150%', '150')
-          this.remoteDisplayScaleChip('175%', '175')
-          this.remoteDisplayScaleChip('200%', '200')
-          this.remoteDisplayScaleChip('自定义', 'custom')
-        }.padding({ left: 16, right: 16 })
+      if (this.settingsModern() && this.breakpoint !== 'sm') {
+        // 全新视觉 on Pad and PC: every choice in view (a sideways strip has no scroll bar for a mouse).
+        Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+          this.remoteDisplayScaleChips()
+        }.width('100%').padding({ left: 16, right: 16, bottom: 6 })
+      } else {
+        Scroll() {
+          Row({ space: 8 }) {
+            this.remoteDisplayScaleChips()
+          }.padding({ left: 16, right: 16 })
+        }
+        .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        .width('100%').height(42)
       }
-      .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-      .width('100%').height(42)
       if (normalizeLocalViewScaleMode(this.remoteDisplayScaleMode) === 'custom') {
         Row({ space: 8 }) {
           Text('自定义比例').fontSize(12).fontColor(this.pal().text2)
-          TextInput({ text: this.remoteDisplayCustomScalePercent.toString(), placeholder: '50 - 300' })
+          TextInput({ text: this.remoteDisplayScaleEditing ? this.remoteDisplayScaleDraft :
+            this.remoteDisplayCustomScalePercent.toString(), placeholder: '50 - 300' })
             .width(96).height(34).type(InputType.Number).fontSize(13)
             .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(6)
-            .onChange((value: string): void => { this.saveRemoteDisplayCustomScalePercent(value); })
+            .accessibilityText('自定义比例')
+            .onFocus((): void => {
+              this.remoteDisplayScaleDraft = this.remoteDisplayCustomScalePercent.toString();
+              this.remoteDisplayScaleEditing = true;
+            })
+            .onChange((value: string): void => {
+              // Also after Enter while the field keeps focus: typing again starts a new draft.
+              if (!this.remoteDisplayScaleEditing && value !== this.remoteDisplayCustomScalePercent.toString()) {
+                this.remoteDisplayScaleEditing = true;
+              }
+              if (this.remoteDisplayScaleEditing) { this.remoteDisplayScaleDraft = value; }
+            })
+            .onSubmit((): void => { this.commitRemoteDisplayScaleDraft(); })
+            .onBlur((): void => { this.commitRemoteDisplayScaleDraft(); })
           Text('%').fontSize(12).fontColor(this.pal().text3)
         }.width('100%').padding({ left: 16, right: 16, bottom: 10 })
+        if (this.remoteDisplayScaleEditing && this.remoteDisplayScaleDraftHopeless()) {
+          Text('请输入 50 到 300 之间的整数').fontSize(12).fontColor(this.pal().danger)
+            .width('100%').padding({ left: 16, right: 16, bottom: 10 })
+        }
       }
     }.width('100%')
   }
 
+  @Builder remoteDisplayScaleChips() {
+    this.remoteDisplayScaleChip('适应', 'fit')
+    this.remoteDisplayScaleChip('填满', 'fill')
+    this.remoteDisplayScaleChip('100%', '100')
+    this.remoteDisplayScaleChip('125%', '125')
+    this.remoteDisplayScaleChip('150%', '150')
+    this.remoteDisplayScaleChip('175%', '175')
+    this.remoteDisplayScaleChip('200%', '200')
+    this.remoteDisplayScaleChip('自定义', 'custom')
+  }
+
   @Builder remoteDisplayScaleChip(label: string, mode: string) {
     Text(label).fontSize(11)
-      .fontColor(this.remoteDisplayScaleMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.remoteDisplayScaleMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontWeight(this.remoteDisplayScaleMode === mode ? FontWeight.Medium : FontWeight.Normal)
       .padding({ left: 10, right: 10, top: 7, bottom: 7 })
       .backgroundColor(this.remoteDisplayScaleMode === mode ? this.accentColor : this.pal().surface)
@@ -18459,18 +23263,21 @@ struct HostListPage {
       Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
-        Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+        Text('远程滚轮').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(remoteWheelSelectionSummary(this.remoteWheelPreferences()))
+        Text(remoteWheelSettingsSummary(this.remoteWheelPreferences(), this.remoteWheelSpeeds()))
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      Button('编辑').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
         .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
         .onClick((): void => {
           this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
         })
     }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
+      })
   }
 
   @Builder sessionControlBarVisibilityRow() {
@@ -18511,14 +23318,18 @@ struct HostListPage {
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
-        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-        .accessibilityText('关闭快捷退出')
-        .onChange((on: boolean): void => {
-          if (!this.saveRemoteSessionQuickExitDisabled(on)) {
-            promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
-          }
-        })
+      // Rebuilt at the saved value when saving fails (see settingsSwitchEpoch).
+      ForEach([this.settingsSwitchEpoch], (_epoch: number): void => {
+        Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
+          .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+          .accessibilityText('关闭快捷退出')
+          .onChange((on: boolean): void => {
+            if (!this.saveRemoteSessionQuickExitDisabled(on)) {
+              promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
+              this.settingsSwitchEpoch++;
+            }
+          })
+      }, (epoch: number): string => 'quick-exit-' + epoch.toString())
     }.width('100%').height(68).padding({ left: 16, right: 16 })
   }
 
@@ -18541,6 +23352,30 @@ struct HostListPage {
     }.width('100%').height(62).padding({ left: 16, right: 16 })
       .onClick((): void => {
         this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+      })
+  }
+
+  @Builder remotePortraitDisplayRow() {
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('竖屏显示').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remotePortraitDisplaySelectionSummary(this.remotePortraitDisplayPreferences()) +
+          ' · 侧栏：' + remotePortraitSidebarHeightLabel(this.remotePortraitSidebarHeightMode) +
+          ' · 建议打开双指缩放')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY);
+        })
+    }.width('100%').height(68).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY);
       })
   }
 
@@ -18601,7 +23436,7 @@ struct HostListPage {
     Column() {
       Text(label)
         .fontSize(11)
-        .fontColor(this.rdpColorDepth === value ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.rdpColorDepth === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.rdpColorDepth === value ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -18670,7 +23505,7 @@ struct HostListPage {
     Column() {
       Text(label)
         .fontSize(11)
-        .fontColor(this.rdpControlMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.rdpControlMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.rdpControlMode === mode ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -18719,22 +23554,26 @@ struct HostListPage {
     }.layoutWeight(1)
   }
 
+  /** Five chips of 58vp did not fit a phone card (308vp in 288vp); phones use 52vp chips and 2vp gaps. */
+  private rdpAuthChipWidth(): number { return this.breakpoint === 'sm' ? 52 : 58; }
+  private rdpAuthChipGap(): number { return this.breakpoint === 'sm' ? 2 : 3; }
+
   @Builder rdpAuthIdentityModeSlider() {
     Stack({ alignContent: Alignment.Start }) {
       Column()
-        .width(58).height(30).borderRadius(8)
+        .width(this.rdpAuthChipWidth()).height(30).borderRadius(8)
         .backgroundColor(this.accentColor)
-        .translate({ x: this.rdpAuthIdentityMode * 61, y: 0 })
+        .translate({ x: this.rdpAuthIdentityMode * (this.rdpAuthChipWidth() + this.rdpAuthChipGap()), y: 0 })
         .animation({ duration: 260, curve: Curve.FastOutSlowIn })
       Row() {
         this._rdpAuthIdentityModeSliderChip('MSA前', 0)
-        Blank().width(3)
+        Blank().width(this.rdpAuthChipGap())
         this._rdpAuthIdentityModeSliderChip('MSA域', 1)
-        Blank().width(3)
+        Blank().width(this.rdpAuthChipGap())
         this._rdpAuthIdentityModeSliderChip('邮箱', 2)
-        Blank().width(3)
+        Blank().width(this.rdpAuthChipGap())
         this._rdpAuthIdentityModeSliderChip('AAD.', 3)
-        Blank().width(3)
+        Blank().width(this.rdpAuthChipGap())
         this._rdpAuthIdentityModeSliderChip('AAD域', 4)
       }
     }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
@@ -18744,14 +23583,14 @@ struct HostListPage {
     Column() {
       Text(label)
         .fontSize(11)
-        .fontColor(this.rdpAuthIdentityMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.rdpAuthIdentityMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.rdpAuthIdentityMode === mode ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .padding({ left: this.breakpoint === 'sm' ? 4 : 8, right: this.breakpoint === 'sm' ? 4 : 8, top: 6, bottom: 6 })
         .borderRadius(8)
         .onClick((): void => { this.saveRdpAuthIdentityMode(mode); })
-    }.width(58).justifyContent(FlexAlign.Center)
+    }.width(this.rdpAuthChipWidth()).justifyContent(FlexAlign.Center)
   }
 
   @Builder rdpDriveNameRow() {
@@ -18761,17 +23600,34 @@ struct HostListPage {
       Column() {
         Text('文件共享盘名称').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text('Windows 路径: \\\\tsclient\\' + this.rdpDriveName)
-          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        // While typing, the path previews what will be saved (only letters, digits, _ and -).
+        Text('Windows 路径: \\\\tsclient\\' +
+          (this.rdpDriveNameEditing ? this.normalizeRdpDriveName(this.rdpDriveNameDraft) : this.rdpDriveName))
+          .fontSize(this.settingsModern() ? 12 : 11)
+          .fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+          .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      TextInput({ text: this.rdpDriveName, placeholder: 'RemoteDesktop' })
+      TextInput({ text: this.rdpDriveNameEditing ? this.rdpDriveNameDraft : this.rdpDriveName,
+        placeholder: 'RemoteDesktop' })
         .width(144).height(36).fontSize(13).fontColor(this.pal().text).placeholderColor(this.pal().text3)
         .backgroundColor(this.pal().surface).borderRadius(10).padding({ left: 10, right: 10 })
         .enabled(this.rdpDriveEnabled)
         .opacity(this.rdpDriveEnabled ? 1.0 : 0.55)
-        .onChange((v: string): void => { this.saveRdpDriveName(v); })
-    }.width('100%').height(64).padding({ left: 16, right: 16 })
+        .accessibilityText('文件共享盘名称')
+        .onFocus((): void => {
+          this.rdpDriveNameDraft = this.rdpDriveName;
+          this.rdpDriveNameEditing = true;
+        })
+        .onChange((v: string): void => {
+          // Also after Enter while the field keeps focus: typing again starts a new draft (onFocus will not fire).
+          if (!this.rdpDriveNameEditing && v !== this.rdpDriveName) { this.rdpDriveNameEditing = true; }
+          if (this.rdpDriveNameEditing) { this.rdpDriveNameDraft = v; }
+        })
+        .onSubmit((): void => { this.commitRdpDriveNameDraft(); })
+        .onBlur((): void => { this.commitRdpDriveNameDraft(); })
+    }.width('100%').height(this.settingsModern() ? 'auto' : 64)
+    .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+    .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
   }
 
   @Builder rdpCredentialManagerRow() {
@@ -18852,7 +23708,7 @@ struct HostListPage {
     Column() {
       Text(label)
         .fontSize(11)
-        .fontColor(this.sshInputMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.sshInputMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.sshInputMode === mode ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -18922,7 +23778,7 @@ struct HostListPage {
     Column() {
       Text(label)
         .fontSize(11)
-        .fontColor(this.rustdeskControlMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontColor(this.rustdeskControlMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .fontWeight(this.rustdeskControlMode === mode ? FontWeight.Medium : FontWeight.Normal)
         .textAlign(TextAlign.Center)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -18931,27 +23787,59 @@ struct HostListPage {
         .onClick((): void => { this.saveRustDeskControlMode(mode); })
     }.width(72).justifyContent(FlexAlign.Center)
   }
-  @Builder rustdeskSwitchRow(icon: Resource, label: string, detail: string, isOn: boolean,
-    onToggle: (on: boolean) => void, neutralIcon: boolean = false, enabled: boolean = true) {
+  /** 个性化 → 全新视觉: the classic settings look (off, the default) or the grouped, searchable one. */
+  @Builder settingsVisualStyleRow() {
     Row() {
-      Row() { Image(icon).width(22).height(22).fillColor(neutralIcon ? this.pal().text3 : (isOn ? this.accentColor : this.pal().text3)) }
+      Row() { SymbolGlyph($r('sys.symbol.wand_and_stars')).fontSize(22).fontColor([this.pal().text]) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
-        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+        Text('全新视觉').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.settingsModern() ? '设置分组、可搜索；远程主机、密钥保险库、中继页也换新外观' : '关闭时保持经典外观')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      Toggle({ type: ToggleType.Switch, isOn: isOn })
-        .selectedColor(this.accentColor)
-        .scale({ x: 0.88, y: 0.88 })
-        .enabled(enabled)
-        .onChange((on: boolean) => {
-          animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-            onToggle(on);
+      Toggle({ type: ToggleType.Switch, isOn: this.settingsModern() })
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .accessibilityText('全新视觉')
+        .onChange((on: boolean): void => { this.saveSettingsVisualStyle(on); })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+  }
+
+  @Builder rustdeskSwitchRow(row: SettingsSwitchRowArgs) {
+    Row() {
+      Row() {
+        if (this.settingsModern() && settingsModernRowSymbol(row.label) !== null) {
+          SymbolGlyph(settingsModernRowSymbol(row.label) as Resource).fontSize(20)
+            .fontColor([row.neutralIcon === true ? this.pal().text2 : (row.isOn ? this.accentColor : this.pal().text2)])
+        } else {
+          Image(row.icon).width(22).height(22)
+            .fillColor(row.neutralIcon === true ? this.pal().text3 : (row.isOn ? this.accentColor : this.pal().text3))
+        }
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text(row.label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(row.detail).fontSize(this.settingsModern() ? 12 : 11)
+          .fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3).fontFamily(this.font())
+          .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      // Rebuilt when settingsSwitchEpoch changes, so a cancelled change shows the saved value again.
+      ForEach([this.settingsSwitchEpoch], (_epoch: number): void => {
+        Toggle({ type: ToggleType.Switch, isOn: row.isOn })
+          .selectedColor(this.accentColor)
+          .scale({ x: this.settingsModern() ? 1 : 0.88, y: this.settingsModern() ? 1 : 0.88 })
+          .enabled(row.enabled !== false)
+          .accessibilityText(row.label)
+          .onChange((on: boolean) => {
+            animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
+              row.onToggle(on);
+            })
           })
-        })
-    }.width('100%').height(64).padding({ left: 16, right: 16 })
+      }, (epoch: number): string => 'switch-' + epoch.toString())
+    }.width('100%').height(this.settingsModern() ? 'auto' : 64)
+    .constraintSize({ minHeight: this.settingsModern() ? 64 : 0 })
+    .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
   }
 
   /** 灵动岛模式选择行: 类似 radio 按钮的视觉效果 */
@@ -19008,7 +23896,7 @@ struct HostListPage {
   }
 
   @Builder colorPickerSheet() {
-    ColorPickerSheet()
+    ColorPickerSheet({ onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
   }
 
   // ==================== Sheet builder ====================
@@ -19037,7 +23925,9 @@ struct HostListPage {
         // network-observer lease. Pairing and streaming remain capability-gated.
         moonlightFabEntryAvailable: true,
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
+        workspaceAvailable: this.proWorkspacesVisible,
         onSelectProtocol: (protocol: string): void => {
+          this.hostAddFlowDirty = false;
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {
@@ -19056,14 +23946,38 @@ struct HostListPage {
         },
         onClose: (): void => { this.requestAddSheetClose(); }
       })
+    } else if (this.activeHostAddProtocol() === 'ai') {
+      AiHostEditor({ host: this.aiEditingHost, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+        viewportHeight: this.pageViewportHeight,
+        canReturnToProtocols: this.aiEditingHost === null && resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
+        onSaved: (id: string, connect: boolean): void => {
+          const generation = this.aiSheetGeneration, account = this.aiSheetAccount;
+          void this.refreshAiHosts().then((): void => {
+            if (generation !== this.aiSheetGeneration || !this.showAddSheet || !this.pageActive ||
+              account === null || !AiAccess.getInstance().current(account)) { return; }
+            this.pendingAiConnectId = connect ? id : ''; this.pendingAiAccount = account; this.requestAddSheetClose();
+          });
+        }
+      })
     } else if (this.modernAddProtocol === 'rdp') {
       RdpAddFlow({
         credentials: this.rdpCredentials,
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         lanScanning: this.rdpLanScanning,
         lanHosts: this.rdpLanScanResults,
         lanStatusText: this.rdpLanStatusText,
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onStartLanScan: (port: number): void => { this.startRdpLanScan(port); },
         onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string): void => {
           this.saveHostFromAddFlow(host, connectNow, restrictedAdminHash);
@@ -19072,13 +23986,19 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'rustdesk') {
       RustDeskAddFlow({
         relays: this.srv.getAllRelays(),
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         lanScanning: this.lanScanning,
         lanPeers: this.lanScanResults,
         defaultDirectPort: this.rustdeskDirectPort,
         initialDraft: this.rustDeskAddResumeDraft,
         initialDraftRevision:
           this.rustDeskAddResumeRevision,
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onStartLanScan: (): void => { this.startLanScan(); },
         onManageRelays: (
           draft: RustDeskHostAddDraft): void => {
@@ -19155,6 +24075,8 @@ struct HostListPage {
           this.openExistingMoonlightHost(hostId, ownerToken);
         },
         onBackToProtocols: (): void => {
+          // The flow asked 保留当前添加进度？ already when something would be lost.
+          this.hostAddFlowDirty = false;
           this.stopMoonlightLanDiscovery();
           this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
           this.clearMoonlightVerificationState();
@@ -19165,15 +24087,40 @@ struct HostListPage {
         },
         onDiscardTemporaryState: (): Promise<void> =>
           this.revokeMoonlightTemporaryPairing(),
+        // Closing revokes an unsaved temporary pairing in the sheet's dismissal, as a swipe-down does.
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
           this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
+        }
+      })
+    } else if (this.modernAddProtocol === 'workspace') {
+      WorkspaceAddFlow({
+        extraRows: this.orgRows(this.hostViewRevision).filter((row: OrgHostRow): boolean => row.protocol === 'moonlight'),
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
+        onCreated: (workspace: Workspace, openNow: boolean): void => {
+          this.pendingWorkspaceOpen = openNow ? workspace : null;
+          if (!openNow) { promptAction.showToast({ message: '已创建「' + workspace.name + '」', duration: 1600 }); }
+          this.requestAddSheetClose();
         }
       })
     } else if (this.modernAddProtocol === 'ssh') {
       SshAddFlow({
         keys: this.keyVault.getAllSshKeys(),
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
+        initialBasicFields: this.proConnectionShareBasicFields,
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => {
+            this.clearProConnectionShareDraft(); this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true;
+          });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1): void => {
           this.saveSshHostFromAddFlow(host, connectNow, proxyProfile);
         }
@@ -19181,17 +24128,26 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'vnc') {
       VncAddFlow({
         gateways: this.vncGateways.list(),
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         fitContent: resolveHostAddSheetContentMode(
           this.activeHostAddProtocol(), this.breakpoint) === 'fitContent',
         onBackToProtocols: (): void => {
-          this.modernAddProtocol = '';
-          this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
-          this.vncAddFromModernPicker = false;
+          this.backToHostAddPicker((): void => {
+            this.modernAddProtocol = '';
+            this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
+            this.vncAddFromModernPicker = false;
+          });
         },
         onOpenSettings: (): void => {
-          this.pendingVncGatewayDirectoryOpen = true;
-          this.requestAddSheetClose();
+          // Opening the gateway directory drops this form: the same question as closing.
+          this.confirmDiscardHostAdd((): void => {
+            this.pendingVncGatewayDirectoryOpen = true;
+            this.requestAddSheetClose();
+          });
         },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSave: (values: VncHostValues, password: string, connectNow: boolean,
           plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind): void => {
           this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed,
@@ -19205,14 +24161,19 @@ struct HostListPage {
 
   @Builder rustDeskAuthTrustManagerSheet() {
     Column() {
-      Row() {
-        Column() {
-          Text('RustDesk 认证信任').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text('管理各主机默认认证方式；密码内容不会在此显示').fontSize(11).fontColor(this.pal().text3)
-            .margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheet(); })
-      }.width('100%').padding({ left: 22, right: 22, top: 22 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'RustDesk 认证信任', subtitle: '管理各主机默认认证方式；密码内容不会在此显示', horizontalPadding: 22, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Column() {
+            Text('RustDesk 认证信任').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            Text('管理各主机默认认证方式；密码内容不会在此显示').fontSize(11).fontColor(this.pal().text3)
+              .margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 22, right: 22, top: 22 }).margin({ bottom: 14 })
+      }
       if (this.rustDeskHosts().length === 0) {
         Text('暂无 RustDesk 主机').fontSize(13).fontColor(this.pal().text3)
           .width('100%').textAlign(TextAlign.Center).padding(32)
@@ -19307,12 +24268,12 @@ struct HostListPage {
       Row() {
         Button('TCP 直连').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
           .backgroundColor(this.vncHostTransport === 'direct_tcp' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostTransport === 'direct_tcp' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostTransport === 'direct_tcp' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.selectClassicVncTransport('direct_tcp'); })
         Button('UltraVNC Repeater').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
           .margin({ left: 6 })
           .backgroundColor(this.vncHostTransport === 'ultravnc_repeater' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostTransport === 'ultravnc_repeater' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostTransport === 'ultravnc_repeater' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.selectClassicVncTransport('ultravnc_repeater'); })
       }.width('100%').margin({ bottom: 8 })
 
@@ -19401,19 +24362,19 @@ struct HostListPage {
         Row() {
           Button('自适应').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
             .backgroundColor(this.vncHostScalingMode === 'fit' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'fit' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'fit' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'fit'; })
           Button('整数').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
             .backgroundColor(this.vncHostScalingMode === 'integer' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'integer' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'integer' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'integer'; })
           Button('1:1').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
             .backgroundColor(this.vncHostScalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'one_to_one' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'one_to_one'; })
           Button('平移').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
             .backgroundColor(this.vncHostScalingMode === 'pan' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'pan' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'pan' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'pan'; })
         }.width('100%').margin({ bottom: 8 })
       }
@@ -19422,11 +24383,11 @@ struct HostListPage {
       Row() {
         Button('仅 TLS').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
           .backgroundColor(this.vncHostSecurityPolicy === 'secure_only' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostSecurityPolicy === 'secure_only' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostSecurityPolicy === 'secure_only' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.vncHostSecurityPolicy = 'secure_only'; this.vncHostTls = true; })
         Button('可信网络').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
           .backgroundColor(this.vncHostSecurityPolicy === 'trusted_network' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostSecurityPolicy === 'trusted_network' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostSecurityPolicy === 'trusted_network' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.vncHostSecurityPolicy = 'trusted_network'; })
         Button('允许明文').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
           .backgroundColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().surface)
@@ -19468,6 +24429,9 @@ struct HostListPage {
             this.protoBtn('RustDesk', 'rustdesk', 21116)
             this.protoBtn('VNC', 'vnc', 5900)
             this.protoBtn('SSH', 'ssh', 22)
+            if (this.aiProVisible) {
+              this.protoBtn('AI · Pro', 'ai', 9443)
+            }
           }.width('100%').margin({ bottom: 12 })
 
           // 名称
@@ -19485,17 +24449,18 @@ struct HostListPage {
               Row() {
                 Column() {
                   if (this.proto === 'ssh') {
-                    this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
+                    // An emptied port stays empty (0) until saved; the save says what is wrong.
+                    this.fieldRow('端口', '22', this.sshPortVal > 0 ? this.sshPortVal.toString() : '', (v: string): void => {
                       const n: number = parseInt(v);
-                      this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
+                      this.sshPortVal = v.trim() === '' || isNaN(n) ? 0 : n;
                       this.portVal = this.sshPortVal;
-                    })
+                    }, true, true)
                   } else {
-                    this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
+                    this.fieldRow('端口', '3389', this.rdpPortVal > 0 ? this.rdpPortVal.toString() : '', (v: string): void => {
                       const n: number = parseInt(v);
-                      this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
+                      this.rdpPortVal = v.trim() === '' || isNaN(n) ? 0 : n;
                       this.portVal = this.rdpPortVal;
-                    })
+                    }, true, true)
                   }
                 }.width('30%')
                 Column() {
@@ -19578,7 +24543,11 @@ struct HostListPage {
             }
             if (this.sheetPwdMode === 1) {
               Row() {
-                Text('⚠️').fontSize(14)
+                if (this.settingsModern()) {
+                  SymbolGlyph($r('sys.symbol.exclamationmark_triangle')).fontSize(14).fontColor(['#FF9500'])
+                } else {
+                  Text('⚠️').fontSize(14)
+                }
                 Text('永久密码需在对方设备 RustDesk 设置中预先配置')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 4 })
               }.width('100%').margin({ bottom: 8 })
@@ -19620,11 +24589,13 @@ struct HostListPage {
                 Text('还没有 RustDesk 中继').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 6 })
                 Text('先添加中继配置后再绑定主机').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
                 Button('去添加中继').fontSize(12).height(32)
-                  .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(16)
+                  .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(16)
                   .margin({ top: 10 }).padding({ left: 16, right: 16 })
                   .onClick(() => {
-                    this.pendingRustDeskRelayDirectoryOpen = true;
-                    this.requestAddSheetClose();
+                    this.confirmDiscardHostAdd((): void => {
+                      this.pendingRustDeskRelayDirectoryOpen = true;
+                      this.requestAddSheetClose();
+                    });
                   })
               }.width('100%').padding({ top: 16, bottom: 16 })
               .borderRadius(10).backgroundColor(this.pal().surface)
@@ -19700,8 +24671,10 @@ struct HostListPage {
                     Blank()
                     Text('去添加 →').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
                       .onClick(() => {
-                        this.pendingRustDeskRelayDirectoryOpen = true;
-                        this.requestAddSheetClose();
+                        this.confirmDiscardHostAdd((): void => {
+                          this.pendingRustDeskRelayDirectoryOpen = true;
+                          this.requestAddSheetClose();
+                        });
                       })
                   }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                 }
@@ -19758,7 +24731,7 @@ struct HostListPage {
           }
           if (this.proto !== 'vnc') {
             Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-              .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+              .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
               .borderRadius(10).margin({ top: 16 })
               .onClick((): void => { this.doAdd(); })
           }
@@ -19766,18 +24739,23 @@ struct HostListPage {
   }
 
   @Builder private classicHostEditorTitle() {
-    Text(this.editingHostId !== '' ? '编辑主机' :
-      (this.proto === 'ssh' ? '添加 SSH 终端' :
-        (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
-          (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
-      .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-      .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
+    Row() {
+      Text(this.editingHostId !== '' ? '编辑主机' :
+        (this.proto === 'ssh' ? '添加 SSH 终端' :
+          (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
+            (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
+        .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        .layoutWeight(1).fontFamily(this.font())
+      Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().text2]) }
+        .width(32).height(32).borderRadius(16).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭').onClick((): void => { this.requestAddSheetCloseByUser(); })
+    }.width('100%').margin({ bottom: 12 })
   }
 
   @Builder private classicVncEditorFooter() {
     Row() {
       Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-        .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+        .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .borderRadius(10).onClick((): void => { this.doAdd(); })
     }.width('100%').margin({ top: 12 })
   }
@@ -19820,27 +24798,32 @@ struct HostListPage {
     Button(label).layoutWeight(1).height(36).fontSize(12)
       .fontWeight(this.proto === protoVal ? FontWeight.Medium : FontWeight.Normal)
       .backgroundColor(this.proto === protoVal ? this.accentColor : this.pal().surface)
-      .fontColor(this.proto === protoVal ? '#FFFFFF' : this.pal().text).borderRadius(10)
+      .fontColor(this.proto === protoVal ? appUiOnAccentText(this.accentColor) : this.pal().text).borderRadius(10)
       .shadow(this.proto === protoVal
         ? { radius: 8, color: this.pal().fabGlow, offsetY: 2 }
         : { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 })
-      .margin({ right: label !== 'SSH' ? 8 : 0 })
+      .margin({ left: protoVal === 'rdp' ? 0 : 8 })
       .enabled(this.editingHostId === '')
       .opacity(this.editingHostId === '' || this.proto === protoVal ? 1.0 : 0.4)
       .onClick(() => {
         if (this.editingHostId !== '') { return; }
+        const untouched: boolean = !this.hostAddHasUnsavedInput();
         this.switchHostProtocol(protoVal, defaultPort);
         if (protoVal === 'vnc') {
           this.prepareClassicVncEditor(null);
         }
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
+        // Switching the protocol of an untouched form is not input; switching to VNC starts its form afresh.
+        if (untouched || protoVal === 'vnc') { this.classicEditorBaseline = this.classicEditorSnapshot(); }
       })
   }
 
-  @Builder fieldRow(l: string, h: string, v: string, cb: (v: string) => void, enabled: boolean = true) {
+  @Builder fieldRow(l: string, h: string, v: string, cb: (v: string) => void, enabled: boolean = true,
+    numeric: boolean = false) {
     Column() {
       Text(l).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-      TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+      TextInput({ placeholder: h, text: v }).type(numeric ? InputType.Number : InputType.Normal)
+        .height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
         .fontSize(13).padding({ left: 10, right: 10 }).enabled(enabled)
         .opacity(enabled ? 1.0 : 0.55)
@@ -19876,7 +24859,7 @@ struct HostListPage {
   @Builder rdpAuthModeButton(label: string, mode: RdpAuthMode, marginLeft: number = 0) {
     Button(label).layoutWeight(1).height(34).borderRadius(8).margin({ left: marginLeft })
       .backgroundColor(this.sheetRdpAuthMode === mode ? this.accentColor : this.pal().surface)
-      .fontColor(this.sheetRdpAuthMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.sheetRdpAuthMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontSize(11)
       .onClick((): void => {
         this.sheetRdpAuthMode = mode;
@@ -20028,13 +25011,18 @@ struct HostListPage {
 
   @Builder rdpCredentialSheet() {
     Column() {
-      Row() {
-        Text('Windows 凭据').fontSize(19).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        Text('完成').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
-          .fontFamily(this.font()).onClick(() => { this.closeSettingsLeafSheet(); })
-      }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'Windows 凭据', subtitle: this.rdpCredentials.length > 0 ? '已保存 ' + this.rdpCredentials.length + ' 个账户，可在主机里直接选用' : '保存后可在 RDP 主机里直接选用', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('Windows 凭据').fontSize(19).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Text('完成').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
+            .fontFamily(this.font()).onClick(() => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      }
 
       if (this.rdpCredentials.length === 0) {
         Text('还没有保存的 Windows 登录凭据。可以添加邮箱账号、DOMAIN\\user 或本地用户名。')
@@ -20077,7 +25065,7 @@ struct HostListPage {
       Column() {
         Button('添加 Windows 凭据')
           .height(40).width('100%').fontSize(13).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
           .onClick((): void => {
             this.resetRdpCredentialEditor();
             this.rdpCredentialEditorReturnToManager = true;
@@ -20088,10 +25076,10 @@ struct HostListPage {
     .width('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
+    .shadow(this.breakpoint === 'sm' || this.settingsModern()
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
       : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
+    .border(this.breakpoint === 'sm' || this.settingsModern()
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -20100,16 +25088,19 @@ struct HostListPage {
 
   @Builder rdpCredentialEditorSheet() {
     Column() {
-      Row() {
-        Text(this.rdpCredEditId === '' ? '添加凭据' : '编辑凭据')
-          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        Text('取消').fontSize(13).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
-          .fontFamily(this.font()).onClick((): void => {
-            this.closeSettingsLeafSheet();
-            this.rdpCredentialEditorReturnToManager = false;
-          })
-      }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: this.rdpCredEditId === '' ? '添加凭据' : '编辑凭据',
+          subtitle: '用户名可以是邮箱、DOMAIN\\user 或本地用户名', closeLabel: '取消', whiteOnAccent: true,
+          onClose: (): void => { this.cancelRdpCredentialEditor(); } })
+      } else {
+        Row() {
+          Text(this.rdpCredEditId === '' ? '添加凭据' : '编辑凭据')
+            .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Text('取消').fontSize(13).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
+            .fontFamily(this.font()).onClick((): void => { this.cancelRdpCredentialEditor(); })
+        }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      }
 
       Column() {
         this.rdpCredentialFieldRow('名称', '例如：个人 Microsoft 账户', this.rdpCredLabel,
@@ -20137,7 +25128,7 @@ struct HostListPage {
         Row() {
           Button(this.rdpCredEditId === '' ? '保存凭据' : '更新凭据')
             .height(40).layoutWeight(1).fontSize(13).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
             .onClick((): void => { this.saveRdpCredentialFromSettings(); })
           Button('清空')
             .height(40).width(82).fontSize(13).backgroundColor(this.pal().surface)
@@ -20150,10 +25141,10 @@ struct HostListPage {
     .width('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
+    .shadow(this.breakpoint === 'sm' || this.settingsModern()
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
       : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
+    .border(this.breakpoint === 'sm' || this.settingsModern()
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -20412,7 +25403,7 @@ struct HostListPage {
                       .backgroundColor(this.rustDeskProTwoFactorSelectedEntryId === option.id
                         ? this.accentColor : this.pal().surface)
                       .fontColor(this.rustDeskProTwoFactorSelectedEntryId === option.id
-                        ? Color.White : this.pal().text2)
+                        ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                       .enabled(!this.rustDeskProTwoFactorSubmitting)
                       .onClick((): void => {
                         this.rustDeskProTwoFactorSelectedEntryId = option.id;
@@ -20424,7 +25415,7 @@ struct HostListPage {
             }.width('100%')
           }.width('100%').height(126)
           Button('填入所选验证码').width('100%').height(38).fontSize(12)
-            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(9)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(9)
             .enabled(!this.rustDeskProTwoFactorSubmitting &&
               this.rustDeskProTwoFactorSelectedEntryId.length > 0)
             .onClick((): void => {
@@ -20454,7 +25445,7 @@ struct HostListPage {
             .onClick((): void => { this.cancelRustDeskProTwoFactor(); })
           Button(this.rustDeskProTwoFactorSubmitting ? '等待中' : '验证')
             .layoutWeight(1).height(42).fontSize(13).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
             .enabled(!this.rustDeskProTwoFactorSubmitting)
             .onClick((): void => { this.submitRustDeskProTwoFactor(); })
         }.width('100%')
@@ -20462,7 +25453,7 @@ struct HostListPage {
       Row({ space: 8 }) {
         Button('设备密码')
           .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
-          .fontColor(this.rustDeskProAuthMode === 'password' ? Color.White : this.pal().text)
+          .fontColor(this.rustDeskProAuthMode === 'password' ? appUiOnAccentText(this.accentColor) : this.pal().text)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
           .onClick((): void => {
             this.rustDeskProAuthMode = 'password';
@@ -20472,7 +25463,7 @@ struct HostListPage {
         if (!this.isCurrentRustDeskPreflightDirect()) {
           Button('请求远端批准')
             .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
-            .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
+            .fontColor(this.rustDeskProAuthMode === 'request_approval' ? appUiOnAccentText(this.accentColor) : this.pal().text)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
               this.rustDeskProAuthMode = 'request_approval';
@@ -20509,7 +25500,7 @@ struct HostListPage {
         Row({ space: 8 }) {
           Button('一次性密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskProPasswordMode === 0 ? this.accentColor : this.pal().surface)
-            .fontColor(this.rustDeskProPasswordMode === 0 ? Color.White : this.pal().text2)
+            .fontColor(this.rustDeskProPasswordMode === 0 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
               if (this.rustDeskProPasswordMode !== 0) {
@@ -20523,7 +25514,7 @@ struct HostListPage {
             })
           Button('永久密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskProPasswordMode === 1 ? this.accentColor : this.pal().surface)
-            .fontColor(this.rustDeskProPasswordMode === 1 ? Color.White : this.pal().text2)
+            .fontColor(this.rustDeskProPasswordMode === 1 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
               if (this.rustDeskProPasswordMode !== 1) {
@@ -20567,7 +25558,7 @@ struct HostListPage {
         }.width('100%')
       }
       Button(this.rustDeskProPreflightState === RustDeskProPreflightState.ERROR ? '重新连接' : '连接')
-        .width('100%').height(46).backgroundColor(this.accentColor).fontColor(Color.White)
+        .width('100%').height(46).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
         .onClick((): void => { this.confirmRustDeskProPreflight(); })
     }
@@ -20624,6 +25615,7 @@ struct HostListPage {
       rustDeskAddTrigger: this.relayRustDeskAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
       hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl',
       returnToHostAdd: this.rustDeskRelayReturnToHostAdd,
+      onShowRelayHosts: (relayId: string): void => { this.showRelayHostsFromRelayPage(relayId); },
       onReturnToHostAdd: (relayId: string): void => {
         this.resumeRustDeskHostAddFromRelayDirectory(
           relayId);
@@ -20632,10 +25624,23 @@ struct HostListPage {
 
   @Builder keyVaultSheet() {
     Column() {
-      Text('选择 SSH 密钥').fontSize(18).fontWeight(FontWeight.Bold)
-        .fontColor(this.pal().text).margin({ bottom: 16 }).width('100%')
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '选择 SSH 密钥', subtitle: '从密钥保险库中选择，私钥不会显示', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } }).margin({ bottom: 8 })
+      } else {
+        Text('选择 SSH 密钥').fontSize(18).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).margin({ bottom: 16 }).width('100%')
+      }
 
-      if (this.keyVault.getAllSshKeys().length === 0) {
+      if (this.keyVault.getAllSshKeys().length === 0 && this.settingsModern()) {
+        // An empty vault says where keys come from instead of leaving the user stuck.
+        Column({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.key_fill')).fontSize(32).fontColor([this.pal().text3])
+          Text('密钥库里还没有 SSH 密钥').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('可以关闭后在主机编辑页直接粘贴私钥；或到「密钥保险库」页添加，之后在这里选择。')
+            .fontSize(13).fontColor(this.pal().text2).textAlign(TextAlign.Center).lineHeight(19)
+        }.width('100%').padding({ left: 16, right: 16, top: 16, bottom: 16 })
+      } else if (this.keyVault.getAllSshKeys().length === 0) {
         Text('密钥库为空，请先在密钥保险库中添加密钥')
           .fontSize(13).fontColor(this.pal().text3).textAlign(TextAlign.Center)
           .padding({ left: 24, right: 24, top: 20, bottom: 20 })
@@ -20646,8 +25651,8 @@ struct HostListPage {
           ForEach(this.keyVault.getAllSshKeys(), (key: SshKey) => {
             ListItem() {
               Row() {
-                Text(SshKey.typeLabel(key.keyType))
-                  .fontSize(11).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+                Text(sshKeyTypePending(key.privateKey, key.publicKey) ? 'KEY' : SshKey.typeLabel(key.keyType))
+                  .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
                   .width(36).height(36).borderRadius(10).backgroundColor(this.accentColor)
                   .textAlign(TextAlign.Center)
                 Column() {
@@ -20657,7 +25662,7 @@ struct HostListPage {
                     Text(key.comment).fontSize(11).fontColor(this.pal().text2).maxLines(1)
                   }
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-                Text(SshKey.typeLabel(key.keyType))
+                Text(sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
                   .fontSize(10).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
                   .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(4)
                   .backgroundColor(this.pal().surface)
@@ -20703,10 +25708,10 @@ struct HostListPage {
     .width('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
+    .shadow(this.breakpoint === 'sm' || this.settingsModern()
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
       : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
+    .border(this.breakpoint === 'sm' || this.settingsModern()
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -20716,14 +25721,19 @@ struct HostListPage {
   @Builder haloColorSheet() {
     Column() {
       // 标题 + 预览 (与主题色面板一致)
-      Row() {
-        Text('光晕颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Column()
-          .width(36).height(36).borderRadius(12)
-          .backgroundColor(this.haloColor)
-          .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '光晕颜色', subtitle: '点选即保存；深色和浅色模式分别记住', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('光晕颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Column()
+            .width(36).height(36).borderRadius(12)
+            .backgroundColor(this.haloColor)
+            .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.haloPresets, (hex: string) => {
@@ -20747,14 +25757,19 @@ struct HostListPage {
   // ==================== 终端字体颜色选择 Sheet ====================
   @Builder terminalFgColorSheet() {
     Column() {
-      Row() {
-        Text('终端字体颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Column()
-          .width(36).height(36).borderRadius(12)
-          .backgroundColor(this.terminalFgColor)
-          .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '终端字体颜色', subtitle: '当前 ' + this.terminalFgColor + '，点选即保存', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('终端字体颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Column()
+            .width(36).height(36).borderRadius(12)
+            .backgroundColor(this.terminalFgColor)
+            .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.terminalColorPresets, (hex: string) => {
@@ -20778,12 +25793,17 @@ struct HostListPage {
   // ==================== 终端字体大小选择 Sheet ====================
   @Builder terminalFontSizeSheet() {
     Column() {
-      Row() {
-        Text('终端字体大小').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Text(this.terminalFontSize + 'vp').fontSize(16).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().primary)
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '终端字体大小', subtitle: '当前 ' + this.terminalFontSize + 'vp，点选即保存', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('终端字体大小').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Text(this.terminalFontSize + 'vp').fontSize(16).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().primary)
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.terminalFontSizes, (sz: number) => {
@@ -20791,8 +25811,8 @@ struct HostListPage {
             Column() {
               Text(sz.toString())
                 .fontSize(sz > 20 ? 10 : sz > 16 ? 11 : 12)
-                .fontColor(this.terminalFontSize === sz ? '#FFFFFF' : this.pal().text)
-              Text('vp').fontSize(9).fontColor(this.terminalFontSize === sz ? '#FFFFFF' : this.pal().text3)
+                .fontColor(this.terminalFontSize === sz ? appUiOnAccentText(this.accentColor) : this.pal().text)
+              Text('vp').fontSize(9).fontColor(this.terminalFontSize === sz ? appUiOnAccentText(this.accentColor) : this.pal().text3)
             }
             .width(56).height(48).borderRadius(12).justifyContent(FlexAlign.Center)
             .backgroundColor(this.terminalFontSize === sz ? this.accentColor : this.pal().card)
@@ -20813,12 +25833,17 @@ struct HostListPage {
   // ==================== 终端行距选择 Sheet ====================
   @Builder terminalLineSpacingSheet() {
     Column() {
-      Row() {
-        Text('终端行距').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Text(this.terminalLineSpacingLabel()).fontSize(16).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().primary)
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '终端行距', subtitle: '当前 ' + this.terminalLineSpacingLabel() + '，点选即保存', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('终端行距').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Text(this.terminalLineSpacingLabel()).fontSize(16).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().primary)
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.terminalLineSpacings, (spacing: number) => {
@@ -20848,8 +25873,13 @@ struct HostListPage {
 
   @Builder wallPicker() {
     Column() {
-      Text('选择壁纸').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .margin({ bottom: 20 }).width('100%').fontFamily(this.font())
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '壁纸', subtitle: '选择主机列表的背景色，点选即保存', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } }).margin({ bottom: 8 })
+      } else {
+        Text('选择壁纸').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .margin({ bottom: 20 }).width('100%').fontFamily(this.font())
+      }
       Grid() {
         ForEach(this.wallpaperItems, (item: WallpaperItem, idx: number) => {
           GridItem() {
@@ -20858,9 +25888,16 @@ struct HostListPage {
               .onClick(() => { this.wallpaperIdx = idx; this.syncWallpaperColor(); this.persistPref('wallpaperIdx', idx); })
           }
         })
-      }.columnsTemplate('1fr 1fr 1fr').rowsGap(12).columnsGap(12).width('100%').height(200)
+      }.columnsTemplate('1fr 1fr 1fr').rowsGap(12).columnsGap(12).width('100%').height(this.wallpaperGridHeight())
     }.padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
       .backgroundColor(this.pal().sheetBg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+  }
+
+  /** Every row of swatches fits (a fixed 200vp cut the third row); a long list scrolls within the window. */
+  private wallpaperGridHeight(): number {
+    const rows: number = Math.max(1, Math.ceil(this.wallpaperItems.length / 3));
+    const natural: number = rows * 80 + (rows - 1) * 12;
+    return Math.min(natural, Math.max(172, this.pageViewportHeight - 200));
   }
 
   @Builder statItem(label: string, count: number, color: string) {
@@ -20872,14 +25909,19 @@ struct HostListPage {
 
   @Builder accountSheet() {
     Column() {
-      Text(this.appCloneLocalOnly ?
-        (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理')
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .margin({ top: 24, bottom: 20 }).fontFamily(this.font())
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: this.appCloneLocalOnly ? (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理', subtitle: '', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } }).margin({ bottom: 8 })
+      } else {
+        Text(this.appCloneLocalOnly ?
+          (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理')
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .margin({ top: 24, bottom: 20 }).fontFamily(this.font())
+      }
       Column() {
         if (this.appCloneLocalOnly) {
           Text(this.appCloneIsClone ? '分' : '本').fontSize(24).fontWeight(FontWeight.Bold)
-            .fontColor(Color.White).textAlign(TextAlign.Center)
+            .fontColor(appUiOnAccentText(this.accentColor)).textAlign(TextAlign.Center)
             .width(64).height(64).borderRadius(32)
             .backgroundColor(this.accentColor).padding({ top: 14 })
             .margin({ bottom: 8 })
@@ -20888,11 +25930,16 @@ struct HostListPage {
             .width(64).height(64).borderRadius(32)
             .margin({ bottom: 8 })
         }
-        Text(this.appCloneLocalOnly ?
-          (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
-          (this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录'))
-          .fontSize(AppTheme.fontSize.subtitle)
-          .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Row({ space: 8 }) {
+          Text(this.appCloneLocalOnly ?
+            (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+            (this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录'))
+            .fontSize(AppTheme.fontSize.subtitle)
+            .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          if (this.proManagerVisible && !this.appCloneLocalOnly) {
+            ProBadge({ large: true })
+          }
+        }.justifyContent(FlexAlign.Center)
         Text(this.appCloneLocalOnly ?
           '主机、凭据和密钥与主应用隔离\n华为账号与云同步在分身中关闭' :
           (this.auth.isLoggedIn() ? '华为账号已登录' : '离线模式 · 主机仅本地存储'))
@@ -20906,18 +25953,19 @@ struct HostListPage {
       }.width('90%').justifyContent(FlexAlign.SpaceEvenly).margin({ bottom: 24 })
       if (this.appCloneLocalOnly) {
         Button('完成').width('86%').height(46).fontSize(14)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
-          .onClick((): void => { this.closeSettingsLeafSheet(); })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
+          .onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+      } else if (this.accountLoggedIn()) {
+        Button('退出登录').width('86%').height(44).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
+          .onClick(() => { this.confirmLogout(); })
       } else {
         Button('华为账号登录').width('86%').height(46).fontSize(13).fontWeight(FontWeight.Normal)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12).margin({ bottom: 10 })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
           .onClick(() => {
             this.closeSettingsLeafSheet();
             this.triggerSystemLogin();
           })
-        Button('退出登录').width('86%').height(44).fontSize(14)
-          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
-          .onClick(() => { this.doLogout(); })
       }
       Blank().height(32)
     }.width('100%')
@@ -20936,10 +25984,13 @@ struct HostListPage {
   private switchHostProtocol(protocol: string, defaultPort: number): void {
     this.rememberCurrentHostPort();
     this.proto = protocol;
+    // A port left empty on the other protocol comes back as its default rather than an empty field.
     if (protocol === 'rdp') {
-      this.portVal = this.rdpPortVal > 0 ? this.rdpPortVal : defaultPort;
+      if (this.rdpPortVal <= 0) { this.rdpPortVal = defaultPort; }
+      this.portVal = this.rdpPortVal;
     } else if (protocol === 'ssh') {
-      this.portVal = this.sshPortVal > 0 ? this.sshPortVal : defaultPort;
+      if (this.sshPortVal <= 0) { this.sshPortVal = defaultPort; }
+      this.portVal = this.sshPortVal;
     } else {
       // RustDesk 的主机端点由中继/直连配置决定，通用端口只作为表单过渡值。
       this.portVal = defaultPort;
@@ -20947,7 +25998,12 @@ struct HostListPage {
   }
 
   private resetForm(): void {
+    // A baseline kept for a 2FA round trip that never came back must not judge the next form.
+    this.classicEditorBaseline = '';
+    this.clearProConnectionShareDraft();
     this.editingHostId = '';
+    this.aiSheetGeneration++; this.aiEditingHost = null;
+    try { this.aiSheetAccount = AiAccess.getInstance().capture(); } catch (_error) { this.aiSheetAccount = null; }
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
     this.rdpPortVal = 3389; this.sshPortVal = 22;
     this.username = ''; this.sheetPwd = ''; this.chn = ''; this.sheetErr = '';
@@ -20961,6 +26017,7 @@ struct HostListPage {
     this.sheetRustdeskDirectHost = '';
     this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
     this.sheetRustdeskTargetDevice = 'computer';
+    this.sheetRustdeskPhoneChoiceVersion = 0;
     this.sheetRustdeskAdaptiveOrientation = false;
     this.sheetRustdeskTotpEntryId = '';
     this.sheetRustdeskTotpAutoSubmit = false;
@@ -21019,7 +26076,7 @@ struct HostListPage {
       return;
     }
     this.refreshHostSnapshotAfterMutation();
-    promptAction.showToast({ message: recordId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新', duration: 1800 });
+    this.announceSavedHost(result.id, recordId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新');
     this.requestAddSheetClose();
   }
 
@@ -21159,12 +26216,18 @@ struct HostListPage {
         h.rustdeskProSyncError = existingHost.rustdeskProSyncError;
       }
       h.rustdeskTargetDevice = this.effectiveSheetRustDeskTargetDevice();
+      h.rustdeskPhoneChoiceVersion = isManualRustDeskPhoneTarget(h) &&
+        this.sheetRustdeskPhoneChoiceVersion === 1 ? 1 : 0;
       h.rustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
         h.protocol, h.rustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
         h.sourceType, h.rustdeskProManaged, h.rustdeskProPlatform);
     } else {
       h.host = this.hostAddr;
       h.port = this.proto === 'rdp' ? this.rdpPortVal : this.sshPortVal;
+      if (!Number.isInteger(h.port) || h.port < 1 || h.port > 65535) {
+        this.sheetErr = '请输入 1–65535 之间的端口';
+        return;
+      }
       this.portVal = h.port;
       h.customHostname = this.chn;
       if (this.proto === 'rdp') {
@@ -21423,6 +26486,7 @@ struct HostListPage {
       (h.protocol === 'rustdesk' && h.rustdeskDirectEnabled
         ? ' direct=' + maskHost(h.rustdeskDirectHost) + ':' + h.rustdeskDirectPort : '') +
       ' rdpCredentialHash=' + hashForLog(h.rdpCredentialId));
+    this.announceSavedHost(h.id, (editingId !== '' ? '已保存「' : '已添加「') + h.label + '」');
     this.requestAddSheetClose();
     this.rdpCredentials = this.srv.getAllRdpCredentials();
   }
@@ -21467,6 +26531,7 @@ struct HostListPage {
     this.rdpCredPasswordProjectionBinding = [];
     this.rdpCredSecretProjectionInvalidated = false;
     this.rdpCredEditorKey++;
+    this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
   }
 
   private openRdpCredentialManager(): void {
@@ -21494,7 +26559,21 @@ struct HostListPage {
     this.rdpCredPasswordProjectionBinding = this.rdpCredentialBindingParts(credential);
     this.rdpCredSecretProjectionInvalidated = false;
     this.rdpCredEditorKey++;
+    this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
     this.openRdpCredentialEditorFromManager();
+  }
+
+  /** 取消 in the credential editor: ask about typed changes, then go back to the list it came from. */
+  private cancelRdpCredentialEditor(): void {
+    this.dismissSettingsLeafIfNeeded((): void => {
+      const backToManager: boolean = this.rdpCredentialEditorReturnToManager;
+      this.rdpCredentialEditorReturnToManager = false;
+      if (backToManager) {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);
+      } else {
+        this.closeSettingsLeafSheetByUser();
+      }
+    });
   }
 
   private saveRdpCredentialFromSettings(): void {
@@ -21553,9 +26632,15 @@ struct HostListPage {
       promptAction.showToast({ message: 'Windows 凭据已更新', duration: 1500 });
     }
     this.rdpCredentials = this.srv.getAllRdpCredentials();
-    this.closeSettingsLeafSheet();
-    this.resetRdpCredentialEditor();
+    const backToManager: boolean = this.rdpCredentialEditorReturnToManager;
     this.rdpCredentialEditorReturnToManager = false;
+    this.resetRdpCredentialEditor();
+    if (backToManager) {
+      // Opened from the credential list: show the list again with the saved entry.
+      this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);
+    } else {
+      this.closeSettingsLeafSheet();
+    }
   }
 
   private confirmDeleteRdpCredential(credential: RdpCredential): void {
@@ -21886,9 +26971,9 @@ struct HostListPage {
         result = await this.loader.probeRdpCertificateRouteAsync(
           this.rdpCertificateRouteRequest(host, Date.now()));
       } else {
-        const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
-          host.host, host.port, host.customHostname);
-        result = this.rdpCertificateResultFromDirectProbe(host, info, Date.now());
+        const directProbe = await this.probeRdpCertificateWithDnsFallback(host);
+        result = this.rdpCertificateResultFromDirectProbe(
+          host, directProbe.info, Date.now(), directProbe.transportHost);
       }
       if (!result.ok || !result.targetCertificate.present ||
         (this.rdpCertificateRouteMode(host) === 'microsoft_rd_gateway' &&

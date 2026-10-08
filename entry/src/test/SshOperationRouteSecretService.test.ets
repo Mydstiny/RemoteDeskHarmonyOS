@@ -2,6 +2,8 @@ import { describe, it, expect } from '@ohos/hypium';
 import { RemoteHost } from '../main/ets/model/RemoteHost';
 import { SshProxyProfileV1 } from '../main/ets/services/SshProxyProfilePolicy';
 import { resolveSshProxyRuntimePlan } from '../main/ets/services/SshProxyRuntimePolicy';
+import { SshOperationRouteSecretPublishFence } from '../main/ets/services/SshOperationRouteSecretService';
+import { withOverrides } from './helpers/RecordTestUtils';
 import {
   SSH_OPERATION_ROUTE_SECRET_TTL_MS,
   sshOperationRouteHasNonReplayableAuthentication,
@@ -16,6 +18,7 @@ import {
   SshOperationRouteSecretTimer
 } from
   '../main/ets/services/SshOperationRouteSecretService';
+import { SshOperationRouteSecrets } from '../main/ets/services/SshOperationConfigPolicy';
 
 class FakeRouteSecretClock implements SshOperationRouteSecretClock {
   value: number = 1000;
@@ -187,10 +190,10 @@ export default function sshOperationRouteSecretServiceTest(): void {
       expect(broker.put(exact, {
         proxyPassword: 'proxy-one-shot', jumpHandoffs: []
       })).assertTrue();
-      expect(broker.take({ ...exact, ownerScopeId: 'owner-b' })).assertNull();
-      expect(broker.take({ ...exact, storeIdentity: 'store-b.db' })).assertNull();
-      expect(broker.take({ ...exact, accountGeneration: 8 })).assertNull();
-      expect(broker.take({ ...exact, routeIdentity: 'ssh-route-b' })).assertNull();
+      expect(broker.take(withOverrides(exact, { 'ownerScopeId': 'owner-b' }))).assertNull();
+      expect(broker.take(withOverrides(exact, { 'storeIdentity': 'store-b.db' }))).assertNull();
+      expect(broker.take(withOverrides(exact, { 'accountGeneration': 8 }))).assertNull();
+      expect(broker.take(withOverrides(exact, { 'routeIdentity': 'ssh-route-b' }))).assertNull();
       expect(broker.take(exact)?.proxyPassword).assertEqual('proxy-one-shot');
       expect(broker.take(exact)).assertNull();
     });
@@ -221,7 +224,7 @@ export default function sshOperationRouteSecretServiceTest(): void {
     it('clones_inputs_and_never_brokers_private_keys_or_kbi_answers', 0, (): void => {
       const broker: SshOperationRouteSecretBroker = new SshOperationRouteSecretBroker();
       const responses: string[] = ['otp'];
-      const secrets = {
+      const secrets: SshOperationRouteSecrets = {
         proxyPassword: '',
         jumpHandoffs: [{
           password: '', privateKeyPem: 'PRIVATE', privateKeyPassphrase: 'key-pass',
@@ -311,7 +314,7 @@ export default function sshOperationRouteSecretServiceTest(): void {
 
     it('publishes_only_after_exact_authenticated_owner_route_and_session_match', 0,
       (): void => {
-        const exact = {
+        const exact: SshOperationRouteSecretPublishFence = {
           authenticated: true,
           expectedHostId: 'route-secret-host', actualHostId: 'route-secret-host',
           expectedRouteIdentity: 'route-fe80-wlan0', actualRouteIdentity: 'route-fe80-wlan0',
@@ -320,20 +323,16 @@ export default function sshOperationRouteSecretServiceTest(): void {
           hostOwnerScopeId: 'owner-a', currentOwnerScopeId: 'owner-a'
         };
         expect(sshOperationRouteSecretPublishAllowed(exact)).assertTrue();
-        expect(sshOperationRouteSecretPublishAllowed({ ...exact, authenticated: false }))
+        expect(sshOperationRouteSecretPublishAllowed(withOverrides(exact, { 'authenticated': false })))
           .assertFalse();
-        expect(sshOperationRouteSecretPublishAllowed({ ...exact, actualHostId: 'other-host' }))
+        expect(sshOperationRouteSecretPublishAllowed(withOverrides(exact, { 'actualHostId': 'other-host' })))
           .assertFalse();
-        expect(sshOperationRouteSecretPublishAllowed({
-          ...exact, actualRouteIdentity: 'route-fe80-eth0'
-        })).assertFalse();
-        expect(sshOperationRouteSecretPublishAllowed({ ...exact, actualSessionId: 42 }))
+        expect(sshOperationRouteSecretPublishAllowed(withOverrides(exact, { 'actualRouteIdentity': 'route-fe80-eth0' }))).assertFalse();
+        expect(sshOperationRouteSecretPublishAllowed(withOverrides(exact, { 'actualSessionId': 42 })))
           .assertFalse();
-        expect(sshOperationRouteSecretPublishAllowed({ ...exact, actualGeneration: 10 }))
+        expect(sshOperationRouteSecretPublishAllowed(withOverrides(exact, { 'actualGeneration': 10 })))
           .assertFalse();
-        expect(sshOperationRouteSecretPublishAllowed({
-          ...exact, currentOwnerScopeId: 'owner-b'
-        })).assertFalse();
+        expect(sshOperationRouteSecretPublishAllowed(withOverrides(exact, { 'currentOwnerScopeId': 'owner-b' }))).assertFalse();
       });
 
     it('allows_only_foreground_explicit_consumption_and_clear_all_invalidates_singleton', 0,

@@ -177,10 +177,10 @@ export type RemoteTopBarMenuId = 'control' | 'display' | 'desktopFlip' |
 
 export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
   'desktopFlip' | 'keyboardMouse' | 'keyboard' | 'fileTransfer' |
-  'diagnostics' | 'disconnect';
+  'portrait' | 'diagnostics' | 'disconnect' | 'ai';
 
 export type RustDeskTopBarSubMenuId = 'viewScale' | 'remoteDisplay' |
-  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed';
+  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed' | 'wheelSpeed' | 'virtualDisplay';
 
 export interface RustDeskTopBarSubMenuState {
   active: RustDeskTopBarSubMenuId | '';
@@ -209,6 +209,8 @@ export function rustDeskTopBarSubMenuForItem(itemId: string): RustDeskTopBarSubM
   if (itemId === 'imageQuality') { return 'imageQuality'; }
   if (itemId === 'codec') { return 'codec'; }
   if (itemId === 'touchpadSpeed') { return 'touchpadSpeed'; }
+  if (itemId === 'wheelSpeed') { return 'wheelSpeed'; }
+  if (itemId === 'virtualDisplay') { return 'virtualDisplay'; }
   return '';
 }
 
@@ -391,12 +393,13 @@ export function remoteKeyboardSidebarAction(
 }
 
 const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
+  'relativeMouse': '当前 RustDesk 传输未提供相对鼠标模式',
   'screenshot': '截屏需要本地截图保存和权限链路接入后启用',
   'textChat': '文字聊天需要 RustDesk 会话消息通道接入后启用',
   'voiceCall': '语音通话需要 RustDesk 音频输入和通话信令接入后启用',
   'recordSession': '录制需要本地录屏/编码保存链路接入后启用',
   'resolutionSettings': '远端显示器能力尚未同步完成',
-  'virtualDisplay': '虚拟显示器需要 RustDesk 虚拟显示控制协议接入后启用',
+  'virtualDisplay': '虚拟显示器只支持已安装 RustDesk 且带虚拟显示驱动的 Windows 被控端',
   'remoteCamera': '查看摄像头需要 RustDesk 摄像头流接入后启用',
   'terminal': '终端需要 RustDesk 远程 shell 能力接入后启用',
   'tcpTunnel': 'TCP 隧道需要 RustDesk tunnel 控制通道接入后启用',
@@ -441,6 +444,11 @@ export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boo
 }
 
 /** Phone and Pad always use a right rail; PC always uses a top bar. */
+/** The Phone/Pad session rail's width: its buttons plus 6 vp a side (the AI orb rests just inside it). */
+export function remoteSessionEdgeRailWidth(iconSize: number): number {
+  return iconSize + 12;
+}
+
 export function shouldUseRemoteSessionEdgeRail(protocol: string,
   isDesktopDevice: boolean): boolean {
   return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;
@@ -449,12 +457,17 @@ export function shouldUseRemoteSessionEdgeRail(protocol: string,
 /** Keep the desktop workaround out of the shared Phone/Pad edge rail. */
 export function remoteSessionPrimaryActionIds(protocol: string,
   deviceClass: RemoteTopBarDeviceClass = 'phone',
-  rustDeskPhoneTarget: boolean = false): RemoteSessionPrimaryActionId[] {
+  rustDeskPhoneTarget: boolean = false, portraitEnabled: boolean = false,
+  aiVisible: boolean = false): RemoteSessionPrimaryActionId[] {
   if (protocol !== 'rustdesk') { return []; }
-  if (deviceClass === 'pc' && !rustDeskPhoneTarget) {
-    return RUSTDESK_PC_PRIMARY_ACTION_IDS.slice();
+  const actions: RemoteSessionPrimaryActionId[] = deviceClass === 'pc' && !rustDeskPhoneTarget ?
+    RUSTDESK_PC_PRIMARY_ACTION_IDS.slice() : RUSTDESK_PRIMARY_ACTION_IDS.slice();
+  if (portraitEnabled && !(deviceClass === 'pc' && !rustDeskPhoneTarget)) {
+    actions.splice(Math.max(0, actions.length - 1), 0, 'portrait');
   }
-  return RUSTDESK_PRIMARY_ACTION_IDS.slice();
+  // The AI (for Pro): in the rail with the other tools, before 性能 and 断开.
+  if (aiVisible) { actions.splice(Math.max(0, actions.indexOf('diagnostics')), 0, 'ai'); }
+  return actions;
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
@@ -480,7 +493,7 @@ export function remoteSessionActionAvailability(actionId: string, protocol: stri
   if (protocol !== 'rdp') {
     return { enabled: false, reason: '当前协议不支持该会话工具栏操作' };
   }
-  if (actionId === 'fileTransfer') { return capabilities.fileUpload; }
+  if (actionId === 'fileTransfer') { return fileTransferAvailability(capabilities); }
   if (actionId === 'toggleClipboard') { return capabilities.clipboardSend; }
   if (actionId === 'disconnect' || actionId === 'refreshFrame' ||
       actionId === 'ctrlAltDel' || actionId === 'toggleKeyboard' ||
@@ -489,6 +502,12 @@ export function remoteSessionActionAvailability(actionId: string, protocol: stri
     return capabilities.connect;
   }
   return { enabled: false, reason: 'RDP 当前未提供该操作' };
+}
+
+/** The file panel opens when either direction works (an RDP shared folder can receive while clipboard sending is off). */
+export function fileTransferAvailability(capabilities: RemoteSessionCapabilities): RemoteTopBarActionAvailability {
+  return capabilities.fileUpload.enabled ? capabilities.fileUpload :
+    capabilities.fileDownload.enabled ? capabilities.fileDownload : capabilities.fileUpload;
 }
 
 function knownRustDeskCapabilities(): RemoteSessionCapabilities {
@@ -502,7 +521,10 @@ function knownRustDeskCapabilities(): RemoteSessionCapabilities {
 
 export function rustDeskActionAvailability(actionId: string,
   capabilities: RemoteSessionCapabilities = knownRustDeskCapabilities()): RemoteTopBarActionAvailability {
-  if (actionId === 'fileTransfer' || actionId === 'toggleFilePaste') {
+  if (actionId === 'fileTransfer') {
+    return fileTransferAvailability(capabilities);
+  }
+  if (actionId === 'toggleFilePaste') {
     return capabilities.fileUpload;
   }
   if (actionId === 'toggleClipboard') {

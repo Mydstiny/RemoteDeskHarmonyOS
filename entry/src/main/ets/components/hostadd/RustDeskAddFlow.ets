@@ -1,4 +1,6 @@
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { accentSecondaryText, appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
@@ -13,10 +15,12 @@ import {
   parseEndpointFields,
   parseEndpointPortText
 } from '../../services/EndpointAddressPolicy';
+import { rustDeskAddControlIdError } from '../../services/RustDeskHostConfigPolicy';
 
 @Component
 export struct RustDeskAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop relays: RustDeskRelayConfig[] = [];
   @Prop lanScanning: boolean = false;
@@ -26,6 +30,9 @@ export struct RustDeskAddFlow {
   @Prop @Watch('onInitialDraftChanged')
   initialDraftRevision: number = 0;
   onBackToProtocols: () => void = (): void => {};
+  onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onStartLanScan: () => void = (): void => {};
   onManageRelays: (draft: RustDeskHostAddDraft) => void =
     (_draft: RustDeskHostAddDraft): void => {};
@@ -34,30 +41,65 @@ export struct RustDeskAddFlow {
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
-  @State direct: boolean = false;
-  @State useLan: boolean = false;
-  @State selectedLanPeerId: string = '';
+  @State @Watch('reportDirty') direct: boolean = false;
+  @State @Watch('reportDirty') useLan: boolean = false;
+  @State @Watch('reportDirty') selectedLanPeerId: string = '';
   @State lanAddressMode: string = '';
-  @State label: string = '';
-  @State controlId: string = '';
-  @State directHost: string = '';
-  @State directPortText: string = '21118';
-  @State relayId: string = '';
-  @State password: string = '';
-  @State passwordMode: number = 0;
-  @State totpEntryId: string = '';
+  @State @Watch('reportDirty') label: string = '';
+  /** The name the last LAN pick filled in (a typed name is not overwritten by the next pick). */
+  private lanAutoLabel: string = '';
+  @State @Watch('reportDirty') controlId: string = '';
+  @State @Watch('reportDirty') directHost: string = '';
+  @State @Watch('reportDirty') directPortText: string = '21118';
+  @State @Watch('reportDirty') relayId: string = '';
+  @State @Watch('reportDirty') password: string = '';
+  @State @Watch('reportDirty') passwordMode: number = 0;
+  @State @Watch('reportDirty') totpEntryId: string = '';
   @State totpAutoSubmit: boolean = false;
   @State errorText: string = '';
-  @State targetDevice: RustDeskTargetDevice = 'computer';
-  @State adaptiveOrientation: boolean = false;
+  /** A save the page could not complete: its reason shows in the form as well as in the toast. */
+  @Prop @Watch('onSaveError') saveError: string = '';
+  @Prop @Watch('onSaveError') saveErrorRevision: number = 0;
+  @State @Watch('reportDirty') targetDevice: RustDeskTargetDevice = 'computer';
+  @State phoneChoiceVersion: number = 0;
+  @State @Watch('reportDirty') adaptiveOrientation: boolean = false;
 
   aboutToAppear(): void {
-    if (this.initialDraft === null) {
-      this.directPortText = this.defaultDirectPort.toString();
-    } else {
+    this.directPortText = this.defaultDirectPort.toString();
+    // A draft resumed after 管理中继 is still unsaved: compare with the empty form, not with the draft.
+    this.draftBaseline = this.draftSnapshot();
+    if (this.initialDraft !== null) {
       this.applyDraft(this.initialDraft);
     }
   }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.direct, this.selectedLanPeerId, this.label, this.controlId, this.directHost,
+      this.directPortText, this.relayId, this.password, this.passwordMode, this.totpEntryId, this.useLan,
+      this.targetDevice, this.adaptiveOrientation]);
+  }
+  private onSaveError(): void {
+    if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The empty form; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
+  }
+
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
 
   private onInitialDraftChanged(): void {
@@ -84,6 +126,7 @@ export struct RustDeskAddFlow {
     this.totpEntryId = draft.totpEntryId;
     this.totpAutoSubmit = draft.totpAutoSubmit && draft.totpEntryId !== '';
     this.targetDevice = draft.targetDevice;
+    this.phoneChoiceVersion = draft.phoneChoiceVersion;
     this.adaptiveOrientation = draft.adaptiveOrientation;
     this.errorText = '';
   }
@@ -105,6 +148,7 @@ export struct RustDeskAddFlow {
     draft.totpEntryId = this.totpEntryId;
     draft.totpAutoSubmit = this.totpAutoSubmit && this.totpEntryId !== '';
     draft.targetDevice = this.targetDevice;
+    draft.phoneChoiceVersion = this.phoneChoiceVersion;
     draft.adaptiveOrientation = this.adaptiveOrientation;
     return draft;
   }
@@ -125,7 +169,9 @@ export struct RustDeskAddFlow {
   private buildHost(): RemoteHost | null {
     const directEndpoint: EndpointAddressResult = this.parsedDirectEndpoint();
     if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return null; }
-    if (this.controlId.trim() === '') { this.errorText = '请输入 RustDesk 控制 ID'; return null; }
+    const controlIdError: string = rustDeskAddControlIdError(
+      this.direct, this.useLan, this.controlId);
+    if (controlIdError !== '') { this.errorText = controlIdError; return null; }
     if (this.direct && !directEndpoint.ok) {
       this.errorText = directEndpoint.error === 'invalid_port' ? '端口必须在 1-65535 之间' :
         '请输入有效的直连域名、IPv4 或 IPv6 地址';
@@ -154,6 +200,7 @@ export struct RustDeskAddFlow {
     host.rustdeskTotpAutoSubmit = this.totpAutoSubmit && this.totpEntryId !== '';
     host.rustdeskDirectEnabled = this.direct;
     host.rustdeskTargetDevice = this.targetDevice;
+    host.rustdeskPhoneChoiceVersion = this.targetDevice === 'phone' && this.phoneChoiceVersion === 1 ? 1 : 0;
     host.rustdeskAdaptiveOrientation = this.targetDevice === 'phone' && this.adaptiveOrientation;
     if (this.direct) {
       const canonicalHost: string = endpointTransportHost(directEndpoint.endpoint);
@@ -187,22 +234,26 @@ export struct RustDeskAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText(this.step === 1 ? '返回协议选择' : '返回上一步')
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step--; } })
       Column() {
         Text('添加 RustDesk 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         Text(this.step === 1 ? '1/2  连接模式' : '2/2  主机与认证')
           .fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+      Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 
   @Builder private modeButton(title: string, subtitle: string, directMode: boolean) {
     Column() {
       Text(title).fontSize(15).fontWeight(FontWeight.Medium)
-        .fontColor(this.direct === directMode ? Color.White : this.pal().text)
+        .fontColor(this.direct === directMode ? appUiOnAccentText(this.accentColor) : this.pal().text)
       Text(subtitle).fontSize(11)
-        .fontColor(this.direct === directMode ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
+        .fontColor(this.direct === directMode ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
     .backgroundColor(this.direct === directMode ? this.accentColor : this.pal().surface)
     .onClick((): void => { this.direct = directMode; })
@@ -211,13 +262,14 @@ export struct RustDeskAddFlow {
   @Builder private targetButton(title: string, subtitle: string, target: RustDeskTargetDevice) {
     Column() {
       Text(title).fontSize(14).fontWeight(FontWeight.Medium)
-        .fontColor(this.targetDevice === target ? Color.White : this.pal().text)
+        .fontColor(this.targetDevice === target ? appUiOnAccentText(this.accentColor) : this.pal().text)
       Text(subtitle).fontSize(11)
-        .fontColor(this.targetDevice === target ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
+        .fontColor(this.targetDevice === target ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
       .backgroundColor(this.targetDevice === target ? this.accentColor : this.pal().surface)
       .onClick((): void => {
         this.targetDevice = target;
+        this.phoneChoiceVersion = target === 'phone' ? 1 : 0;
         if (target === 'computer') { this.adaptiveOrientation = false; }
       })
   }
@@ -228,18 +280,18 @@ export struct RustDeskAddFlow {
     Row({ space: 8 }) {
       Column() {
         Text('静态 IP').fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.lanAddressMode === 'static' ? Color.White : this.pal().text)
+          .fontColor(this.lanAddressMode === 'static' ? appUiOnAccentText(this.accentColor) : this.pal().text)
         Text('按当前地址保存；正常参与云同步，不自动改地址')
-          .fontSize(10).fontColor(this.lanAddressMode === 'static' ? '#EAF3FF' : this.pal().text3)
+          .fontSize(10).fontColor(this.lanAddressMode === 'static' ? accentSecondaryText(this.accentColor) : this.pal().text3)
           .margin({ top: 4 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
       .backgroundColor(this.lanAddressMode === 'static' ? this.accentColor : this.pal().surface)
       .onClick((): void => { this.lanAddressMode = 'static'; this.errorText = ''; })
       Column() {
         Text('动态 IP').fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.lanAddressMode === 'dynamic' ? Color.White : this.pal().text)
+          .fontColor(this.lanAddressMode === 'dynamic' ? appUiOnAccentText(this.accentColor) : this.pal().text)
         Text('仅保存在本机；连接前按 RustDesk ID 自动更新 IP')
-          .fontSize(10).fontColor(this.lanAddressMode === 'dynamic' ? '#EAF3FF' : this.pal().text3)
+          .fontSize(10).fontColor(this.lanAddressMode === 'dynamic' ? accentSecondaryText(this.accentColor) : this.pal().text3)
           .margin({ top: 4 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
       .backgroundColor(this.lanAddressMode === 'dynamic' ? this.accentColor : this.pal().surface)
@@ -254,7 +306,7 @@ export struct RustDeskAddFlow {
         Row() {
           this.modeButton('中继连接', '通过已配置服务器连接', false)
           Blank().width(8)
-          this.modeButton('局域网直连', 'IP + 端口直接连接', true)
+          this.modeButton('虚拟组网或局域网', 'IP 地址或域名 + 端口', true)
         }.width('100%').margin({ bottom: 16 })
         if (!this.direct) {
           if (this.relays.length === 0) {
@@ -283,17 +335,22 @@ export struct RustDeskAddFlow {
           Text('直连仅支持设备密码，不能请求被控端批准。').fontSize(12).fontColor(this.pal().danger)
             .width('100%').margin({ bottom: 12 })
           Row() {
-            Button('手动配置').layoutWeight(1).height(38).borderRadius(10)
+            Button('手动地址').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(!this.useLan ? this.accentColor : this.pal().surface)
-              .fontColor(!this.useLan ? Color.White : this.pal().text2).onClick((): void => {
+              .fontColor(!this.useLan ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => {
                 this.useLan = false; this.selectedLanPeerId = ''; this.lanAddressMode = '';
               })
             Button('局域网搜索').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
               .backgroundColor(this.useLan ? this.accentColor : this.pal().surface)
-              .fontColor(this.useLan ? Color.White : this.pal().text2).onClick((): void => {
+              .fontColor(this.useLan ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => {
                 this.useLan = true; this.selectedLanPeerId = ''; this.lanAddressMode = ''; this.onStartLanScan();
               })
           }.width('100%').margin({ bottom: 10 })
+          Text(this.useLan ?
+            '局域网搜索只适用于同一局域网（UDP 21119 广播）。虚拟组网或 VPN 里的设备搜索不到，请改用“手动地址”。' :
+            '手动地址适用于局域网 IP、虚拟组网 IP、VPN 或域名。使用虚拟组网时请填写对端的虚拟 IP，不要填写 RustDesk ID；' +
+              '端口默认 21118，对端 RustDesk 需开启“允许 IP 直接访问”。')
+            .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 10 })
           if (this.useLan) {
             if (this.lanScanning) {
               Row() {
@@ -320,7 +377,11 @@ export struct RustDeskAddFlow {
               }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 6 })
               .border({ width: this.selectedLanPeerId === peer.peerId ? 1 : 0, color: this.accentColor })
               .onClick((): void => {
-                this.selectedLanPeerId = peer.peerId; this.label = peer.deviceName; this.controlId = peer.peerId;
+                this.selectedLanPeerId = peer.peerId; this.controlId = peer.peerId;
+                // A name the user typed stays; only an empty name or one filled in by an earlier pick is replaced.
+                if (this.label.trim() === '' || this.label === this.lanAutoLabel) {
+                  this.label = peer.deviceName; this.lanAutoLabel = peer.deviceName;
+                }
                 this.directHost = peer.host; this.directPortText = peer.port.toString();
                 this.lanAddressMode = '';
               })
@@ -328,7 +389,7 @@ export struct RustDeskAddFlow {
           }
         }
         Button('下一步').width('100%').height(44).borderRadius(12).margin({ top: 10 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => {
             if (!this.direct && this.selectedRelay() === undefined) { this.errorText = '请选择中继服务器'; return; }
             if (this.direct && this.useLan && this.selectedLanPeerId === '') {
               this.errorText = '请先选择一台已发现的设备'; return;
@@ -338,7 +399,9 @@ export struct RustDeskAddFlow {
       } else {
         if (this.direct && this.useLan) { this.addressPolicyChoice() }
         this.field('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
-        this.field('控制 ID', this.controlId, 'RustDesk 设备 ID',
+        this.field(this.direct ? (this.useLan ? '控制 ID（发现身份）' : '控制 ID（可选）') : '控制 ID',
+          this.controlId,
+          this.direct ? (this.useLan ? '来自局域网搜索' : '直连可留空；使用 IP/域名连接') : 'RustDesk 设备 ID',
           (v: string): void => { this.controlId = v; }, false, !this.useLan)
         if (this.direct && this.useLan) {
           Text('控制 ID、直连 IP 和端口来自已选择的搜索结果；如需修改，请返回重新选择或改用手动配置。')
@@ -365,7 +428,7 @@ export struct RustDeskAddFlow {
             })
         }.width('100%').margin({ bottom: 12 })
         if (this.direct) {
-          this.field('直连 IP', this.directHost, '例如：192.168.1.10',
+          this.field('直连地址', this.directHost, '局域网 IP、虚拟组网 IP 或域名',
             (v: string): void => { this.directHost = v; }, false, !this.useLan)
           this.field('直连端口', this.directPortText, this.defaultDirectPort.toString(),
             (v: string): void => { this.directPortText = v; }, false, !this.useLan)
@@ -376,10 +439,10 @@ export struct RustDeskAddFlow {
         Row() {
           Button('一次性密码').layoutWeight(1).height(36).borderRadius(9)
             .backgroundColor(this.passwordMode === 0 ? this.accentColor : this.pal().surface)
-            .fontColor(this.passwordMode === 0 ? Color.White : this.pal().text2).onClick((): void => { this.passwordMode = 0; })
+            .fontColor(this.passwordMode === 0 ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => { this.passwordMode = 0; })
           Button('永久密码').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
             .backgroundColor(this.passwordMode === 1 ? this.accentColor : this.pal().surface)
-            .fontColor(this.passwordMode === 1 ? Color.White : this.pal().text2).onClick((): void => { this.passwordMode = 1; })
+            .fontColor(this.passwordMode === 1 ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => { this.passwordMode = 1; })
         }.width('100%').margin({ bottom: 14 })
         Column({ space: 6 }) {
           Row() {
@@ -411,7 +474,7 @@ export struct RustDeskAddFlow {
           Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)
             .fontColor(this.accentColor).onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, false); } })
           Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-            .backgroundColor(this.accentColor).fontColor(Color.White)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
             .onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, true); } })
         }.width('100%')
       }

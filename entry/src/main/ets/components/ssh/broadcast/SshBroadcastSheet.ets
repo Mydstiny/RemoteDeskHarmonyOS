@@ -1,3 +1,4 @@
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import {
   sshBroadcastTargetBlockReason,
   sshBroadcastTargetEligible,
@@ -14,6 +15,10 @@ import {
 export struct SshBroadcastSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#341A1A';
+  // > 0: the sheet sizes to its content and only the body scrolls past this height.
+  @Prop maxBodyHeightVp: number = 0;
+  private fitContent(): boolean { return this.maxBodyHeightVp > 0; }
+  private bodyMaxHeight(): number { return this.fitContent() ? this.maxBodyHeightVp : 100000; }
   @Prop targets: Array<SshBroadcastTargetV1> = [];
   @Prop selectedHostIds: Array<string> = [];
   @Prop text: string = '';
@@ -57,7 +62,7 @@ export struct SshBroadcastSheet {
         .padding({ left: 10, right: 8 })
         .borderRadius(9)
         .backgroundColor(this.targetSelected(target.hostId) ?
-          this.accentColor + '38' : 'rgba(255,255,255,0.045)')
+          appUiTint(this.accentColor, '38') : 'rgba(255,255,255,0.045)')
       }, (target: SshBroadcastTargetV1): string => target.hostId)
       if (this.targets.length === 0) {
         Text('没有可见的 SSH 工作台会话；请先连接至少一个标签。')
@@ -110,7 +115,8 @@ export struct SshBroadcastSheet {
             .enabled(this.selectedHostIds.length > 0 && this.text.trim().length > 0)
             .onClick((): void => { this.onSend(); })
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
+      }.layoutWeight(this.fitContent() ? 0 : 1).constraintSize({ maxHeight: this.bodyMaxHeight() })
+        .width('100%').scrollBar(BarState.Auto)
+    }.width('100%').height(this.fitContent() ? 'auto' : '100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

@@ -4,12 +4,15 @@ import {
   HOST_PRESENCE_ONLINE_TTL_MS,
   HOST_PRESENCE_RECENT_WINDOW_MS,
   buildHostGroupCards,
+  filterHostGroupCardsByProVisibility,
   formatRustDeskId,
   hostGroupDetailInsertionRow,
   hostGroupColumnsForBreakpoint,
   hostGroupRowForType,
   hostIdentifier,
   hostPresenceState,
+  HostGroupCardModel,
+  isHostGroupTypeVisibleByPro,
   rustDeskHostId,
   shouldUseGroupedHostCards
 } from '../main/ets/services/HostGroupCardPolicy';
@@ -27,17 +30,35 @@ function makeHost(id: string, protocol: string): RemoteHost {
 
 export default function hostGroupCardPolicyTest(): void {
   describe('HostGroupCardPolicy', (): void => {
-    it('should_keep_four_groups_in_fixed_order_and_keep_empty_groups', 0, (): void => {
+    it('should_keep_existing_group_order_and_add_ai_group', 0, (): void => {
       const hosts: RemoteHost[] = [makeHost('ssh-a', 'ssh'), makeHost('rdp-a', 'rdp')];
       const cards = buildHostGroupCards(hosts, 100000, '');
-      expect(cards.length).assertEqual(4);
+      expect(cards.length).assertEqual(5);
       expect(cards[0].type).assertEqual('rdp');
       expect(cards[1].type).assertEqual('rustdesk');
       expect(cards[2].type).assertEqual('ssh');
       expect(cards[3].type).assertEqual('vnc');
+      expect(cards[4].type).assertEqual('ai');
+      const aiCards = buildHostGroupCards([makeHost('ai:test', 'ai')], 100000, '');
+      expect(aiCards[4].hosts.length).assertEqual(1);
+      expect(aiCards[4].hosts[0].protocol).assertEqual('ai');
       expect(cards[0].hosts.length).assertEqual(1);
       expect(cards[1].hosts.length).assertEqual(0);
       expect(cards[3].summary.unknown).assertEqual(0);
+    });
+
+    it('should_hide_pro_groups_when_entitlement_is_not_visible', 0, (): void => {
+      const cards = buildHostGroupCards([makeHost('ai-a', 'ai'), makeHost('rdp-a', 'rdp')], 100000, '');
+      const freeCards = filterHostGroupCardsByProVisibility(cards, []);
+      expect(freeCards.length).assertEqual(4);
+      expect(freeCards.some((card: HostGroupCardModel): boolean => card.type === 'ai')).assertFalse();
+      expect(isHostGroupTypeVisibleByPro('ai', [])).assertFalse();
+      expect(isHostGroupTypeVisibleByPro('rdp', [])).assertTrue();
+
+      const proCards = filterHostGroupCardsByProVisibility(cards, ['ai']);
+      expect(proCards.length).assertEqual(5);
+      expect(proCards[4].type).assertEqual('ai');
+      expect(isHostGroupTypeVisibleByPro('ai', ['ai'])).assertTrue();
     });
 
     it('should_prefer_pro_peer_id_and_format_numeric_rustdesk_id', 0, (): void => {

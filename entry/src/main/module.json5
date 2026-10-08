@@ -15,6 +15,7 @@
     "abilities": [
       {
         "name": "EntryAbility",
+        "continuable": true,
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
@@ -46,11 +47,44 @@
             "actions": [
               "ohos.want.action.home"
             ]
+          },
+          {
+            "actions": [
+              "ohos.want.action.sendData"
+            ],
+            "uris": [
+              {
+                "scheme": "file",
+                "utd": "general.text",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "com.adobe.pdf",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "org.openxmlformats.wordprocessingml.document",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "org.openxmlformats.spreadsheetml.sheet",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "org.openxmlformats.presentationml.presentation",
+                "maxFileSupported": 5
+              }
+            ]
           }
         ]
       },
       {
         "name": "RemoteSessionAbility",
+        "continuable": true,
         "srcEntry": "./ets/entryability/RemoteSessionAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
@@ -101,7 +135,7 @@
         "reason": "$string:pasteboard_permission_reason",
         "usedScene": {
           "abilities": ["EntryAbility", "RemoteSessionAbility"],
-          "when": "inuse"
+          "when": "always"
         }
       },
       {
@@ -127,6 +161,36 @@
           "abilities": ["EntryAbility"],
           "when": "always"
         }
+      },
+      {
+        "name": "ohos.permission.READ_CALENDAR",
+        "reason": "$string:calendar_read_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:location_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:microphone_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.PUBLISH_AGENT_REMINDER"
+      },
+      {
+        "name": "ohos.permission.PRINT"
       }
     ],
     "extensionAbilities": [

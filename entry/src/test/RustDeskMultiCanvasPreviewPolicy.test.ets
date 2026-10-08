@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@ohos/hypium';
-import { selectRustDeskMultiCanvasPreview } from '../main/ets/services/RustDeskMultiCanvasPreviewPolicy';
+import { selectRustDeskMultiCanvasPreview, RustDeskMultiCanvasDisplayCandidate } from '../main/ets/services/RustDeskMultiCanvasPreviewPolicy';
 
 export default function rustDeskMultiCanvasPreviewPolicyTest(): void {
   describe('RustDeskMultiCanvasPreviewPolicy', (): void => {
-    const displays = [
+    const displays: RustDeskMultiCanvasDisplayCandidate[] = [
       { display: 0, width: 1920, height: 1080, originalWidth: 1920,
         originalHeight: 1080, online: true },
       { display: 1, width: 2560, height: 1440, originalWidth: 2560,

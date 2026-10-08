@@ -35,7 +35,8 @@ export interface CloudSyncRetryRecord {
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
   'unsafe_payload' | 'cloud_service' | 'network' | 'indeterminate' |
-  'restore_pending' | 'no_selection' | 'local_finalize' | 'unknown';
+  'restore_pending' | 'no_selection' | 'local_finalize' | 'unknown' |
+  'crypto_reset_pending';
 
 export type CloudSyncWatchdogTimeoutKind =
   'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
@@ -278,6 +279,10 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'no_selection') {
     return '尚未选择可同步的数据类型；未启动云端传输，也未改变现有同步状态。';
+  }
+  if (kind === 'crypto_reset_pending') {
+    return '主密码已重置：为避免清空云端和其他设备的数据，敏感数据的上传已暂停。' +
+      '可在“云同步”中选择“以本机为准覆盖云端”后再上传。';
   }
   if (kind === 'local_finalize') {
     return '云端下载已结束，但本地事务收尾未完成；数据仍受保护，应用会在前台自动重新核对。';

@@ -20,12 +20,15 @@ export interface RemoteKeyboardPreferences {
   simpleKeyboardEnabled: boolean;
   functionKeysVisible: boolean;
   closePanelAfterShortcut: boolean;
+  autoOpenOnRemoteClick: boolean;
 }
 
 export const REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY: string = 'remoteShortcutPlatformMode';
 export const REMOTE_KEYBOARD_SIMPLE_MODE_KEY: string = 'remoteSimpleKeyboardEnabled';
 export const REMOTE_KEYBOARD_FUNCTION_KEYS_VISIBLE_KEY: string = 'remoteFunctionKeysVisible';
 export const REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY: string = 'remoteShortcutCloseAfterSend';
+export const REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY: string =
+  'remoteKeyboardAutoOpenOnRemoteClick';
 export const REMOTE_KEYBOARD_PREFERENCES_NAME: string = 'RemoteDesktopAppPrefs';
 /** RustDesk FFI marker: send this Harmony key through explicit macOS Map mode. */
 export const RUSTDESK_EXPLICIT_MACOS_MAP_FLAG: number = 0x20000;
@@ -266,7 +269,8 @@ export function defaultRemoteKeyboardPreferences(): RemoteKeyboardPreferences {
     shortcutPlatform: 'windows',
     simpleKeyboardEnabled: false,
     functionKeysVisible: true,
-    closePanelAfterShortcut: false
+    closePanelAfterShortcut: false,
+    autoOpenOnRemoteClick: false
   };
 }
 
@@ -274,13 +278,15 @@ export function normalizeRemoteKeyboardPreferences(
   shortcutPlatform: string,
   simpleKeyboardEnabled: boolean,
   functionKeysVisible: boolean,
-  closePanelAfterShortcut: boolean
+  closePanelAfterShortcut: boolean,
+  autoOpenOnRemoteClick: boolean = false
 ): RemoteKeyboardPreferences {
   return {
     shortcutPlatform: normalizeRemoteShortcutPlatform(shortcutPlatform),
     simpleKeyboardEnabled,
     functionKeysVisible,
-    closePanelAfterShortcut
+    closePanelAfterShortcut,
+    autoOpenOnRemoteClick
   };
 }
 

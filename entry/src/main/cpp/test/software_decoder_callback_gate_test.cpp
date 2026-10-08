@@ -16,7 +16,7 @@ RDP_TEST_CASE(software_decoder_callback_gate_waits_for_inflight_callback) {
     bool release = false;
     std::atomic<int> callCount {0};
 
-    gate.Set([&](const uint8_t*, size_t, int, int, int) {
+    gate.Set([&](const uint8_t*, size_t, int, int, int, const Render::PhoneDecodedFramePtr&) {
         std::unique_lock<std::mutex> lock(stateMutex);
         entered = true;
         stateCv.notify_all();
@@ -59,7 +59,7 @@ RDP_TEST_CASE(software_decoder_callback_gate_waits_for_inflight_callback) {
 
 RDP_TEST_CASE(software_decoder_callback_gate_contains_callback_exception) {
     SoftwareDecoderFrameCallbackGate gate;
-    gate.Set([](const uint8_t*, size_t, int, int, int) -> int {
+    gate.Set([](const uint8_t*, size_t, int, int, int, const Render::PhoneDecodedFramePtr&) -> int {
         throw std::runtime_error("renderer callback failure");
     });
 

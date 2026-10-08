@@ -105,7 +105,8 @@ bool MoonlightProductSessionMediaPort::bindSession(
         }
     }
     const auto owner = sinkOwner(key);
-    if (!Render::ActivateSharedSessionSinks(owner)) {
+    // Moonlight never shares the media path with a remote-desktop session.
+    if (!Render::ActivateSharedSessionSinks(owner, true)) {
         return false;
     }
     const Render::NativeImagePresentationMode presentationMode =

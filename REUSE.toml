@@ -13,7 +13,25 @@ SPDX-FileCopyrightText = "Moonlight Game Streaming Project contributors"
 SPDX-License-Identifier = "GPL-3.0-only"
 
 [[annotations]]
-path = ["freerdp/**", "patches/freerdp-ohos/**", "libs/**", "rustdesk_vendor/**", "LICENSES/**"]
+path = ["freerdp/**", "patches/freerdp-ohos/**", "patches/libfido2-ohos/**", "libs/**", "rustdesk_vendor/**", "LICENSES/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Upstream authors; see THIRD_PARTY_NOTICES.md"
 SPDX-License-Identifier = "LicenseRef-ThirdParty"
+
+[[annotations]]
+path = "entry/src/main/cpp/rdp/rdpewa/rdpewa*"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "FreeRDP contributors; RemoteDesk modifications; see THIRD_PARTY_NOTICES.md"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "server/pro-entitlement/agc/pkix/licenses/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Upstream authors; see included copyright notices and the separate PKIX SBOM"
+SPDX-License-Identifier = "LicenseRef-ThirdParty"
+
+[[annotations]]
+path = "entry/src/main/resources/rawfile/ssh-terminal/fonts/**"
+precedence = "override"
+SPDX-FileCopyrightText = "Authors of the bundled OFL monospace fonts; see docs/compliance/SSH_TERMINAL_FONTS_PROVENANCE.md and the bundled *-LICENSE.txt files"
+SPDX-License-Identifier = "OFL-1.1"

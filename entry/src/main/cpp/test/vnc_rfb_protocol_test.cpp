@@ -207,13 +207,14 @@ RDP_TEST_CASE(vnc_set_encodings_advertises_cursor_and_bounded_zrle_with_raw_fall
     const std::vector<uint8_t> automatic =
         VncRfbProtocol::buildSetEncodings("auto");
     const std::vector<uint8_t> expectedAutomatic = {
-        2, 0, 0, 6,
+        2, 0, 0, 7,
         0, 0, 0, 16,
         0, 0, 0, 1,
         0, 0, 0, 0,
         255, 255, 255, 17,
         255, 255, 255, 33,
         255, 255, 255, 32,
+        255, 255, 128, 5,
     };
     RDP_ASSERT(automatic == expectedAutomatic);
     RDP_ASSERT(VncRfbProtocol::buildSetEncodings("zrle") == expectedAutomatic);
@@ -221,14 +222,31 @@ RDP_TEST_CASE(vnc_set_encodings_advertises_cursor_and_bounded_zrle_with_raw_fall
     const std::vector<uint8_t> raw =
         VncRfbProtocol::buildSetEncodings("raw");
     const std::vector<uint8_t> expectedRaw = {
-        2, 0, 0, 5,
+        2, 0, 0, 6,
         0, 0, 0, 1,
         0, 0, 0, 0,
         255, 255, 255, 17,
         255, 255, 255, 33,
         255, 255, 255, 32,
+        255, 255, 128, 5,
     };
     RDP_ASSERT(raw == expectedRaw);
+}
+
+RDP_TEST_CASE(ultravnc_monitor_selection_wire_contract_is_explicit) {
+    const std::vector<uint8_t> request =
+        VncRfbProtocol::buildUltraVncSetMonitor(2);
+    RDP_ASSERT(request == std::vector<uint8_t>({254, 2, 0, 0}));
+
+    uint8_t monitorCount = 0;
+    const uint8_t info[] = {3, 0, 0};
+    RDP_ASSERT(VncRfbProtocol::parseUltraVncMonitorInfo(
+        info, sizeof(info), monitorCount));
+    RDP_ASSERT_EQ(monitorCount, static_cast<uint8_t>(3));
+    RDP_ASSERT(!VncRfbProtocol::parseUltraVncMonitorInfo(
+        info, sizeof(info) - 1U, monitorCount));
+    RDP_ASSERT(!VncRfbProtocol::parseUltraVncMonitorInfo(
+        nullptr, sizeof(info), monitorCount));
 }
 
 RDP_TEST_CASE(vnc_text_input_uses_key_events_independent_of_clipboard_policy) {

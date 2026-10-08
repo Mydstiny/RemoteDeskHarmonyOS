@@ -14,6 +14,8 @@ import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { sshKeyTypePending, sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
 
 @Component
 export struct SshKeyManagerSheet {
@@ -21,10 +23,14 @@ export struct SshKeyManagerSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
-  onChange?: (updatedKey: SshKey) => void;
+  /** Saves the key; false when it was not saved (the sheet says so instead of 已保存). */
+  onChange?: (updatedKey: SshKey) => boolean;
   onDelete?: (keyId: string) => void;
   onInstallToHost?: (key: SshKey) => void;
-  onManagePassphrase?: (key: SshKey) => void;
+  /** `remove`: 移除密码 (the passphrase form asks only for the current one). */
+  onManagePassphrase?: (key: SshKey, remove: boolean) => void;
+  /** The window's height, so the sheet's scroll area fits a small PC window or split screen. */
+  @Prop viewportHeight: number = 0;
   onDismiss?: () => void;
 
   @State editLabel: string = '';
@@ -47,6 +53,9 @@ export struct SshKeyManagerSheet {
   private font(): string { return AppTheme.fontFamily; }
   /** Scroll 最大高度：按屏幕可用高度动态计算，保证保存按钮不被 Sheet 底部截断。 */
   private scrollMaxHeight(): number {
+    if (this.viewportHeight > 0) {
+      return Math.max(240, Math.min(560, this.viewportHeight - 280));
+    }
     try {
       const d: display.Display = display.getDefaultDisplaySync();
       const heightVp: number = d.height / d.densityPixels;
@@ -54,6 +63,10 @@ export struct SshKeyManagerSheet {
     } catch (_err) {
       return 560;
     }
+  }
+
+  private publicKeyMissing(): boolean {
+    return this.sshKey.publicKey === '' && this.sshKey.privateKey !== '' && !this.sshKey.isLegacyFormat();
   }
 
   aboutToAppear(): void {
@@ -85,8 +98,8 @@ export struct SshKeyManagerSheet {
     updated.userId = this.sshKey.userId;
     updated.formatVersion = this.sshKey.formatVersion;
     updated.privateKeyEncrypted = this.sshKey.privateKeyEncrypted;
-    if (this.onChange) { this.onChange(updated); }
-    promptAction.showToast({ message: '已保存', duration: 1500 });
+    const saved: boolean = this.onChange ? this.onChange(updated) : false;
+    promptAction.showToast({ message: saved ? '已保存' : '没有保存，请重试', duration: saved ? 1500 : 2200 });
     this.saving = false;
   }
 
@@ -127,9 +140,13 @@ export struct SshKeyManagerSheet {
     updated.userId = this.sshKey.userId;
     updated.formatVersion = 1;
     updated.privateKeyEncrypted = info.encrypted;
-    if (this.onChange) { this.onChange(updated); }
-    promptAction.showToast({ message: '私钥已保存', duration: 1500 });
+    const saved: boolean = this.onChange ? this.onChange(updated) : false;
     this.savingPrivateKey = false;
+    if (!saved) {
+      this.editKeyError = '私钥没有保存，请重试';
+      return;
+    }
+    promptAction.showToast({ message: '私钥已保存', duration: 1500 });
     this.showPrivateKeyEditor = false;
     this.editKeyPassphrase = '';
     this.editKeyError = '';
@@ -145,6 +162,10 @@ export struct SshKeyManagerSheet {
 
   // ====== 复制公钥 ======
   private async copyPublicKey(): Promise<void> {
+    if (this.publicKeyMissing()) {
+      promptAction.showToast({ message: sshPublicKeyMissingHint(), duration: 3200 });
+      return;
+    }
     if (this.sshKey.locked) {
       const r = await showLockGate(this.sshKey.label, 'biometric');
       if (!r.ok) { const m = lockGateErrorMessage(r); if (m !== '') { promptAction.showToast({ message: m, duration: 2000 }); } return; }
@@ -160,6 +181,10 @@ export struct SshKeyManagerSheet {
 
   // ====== 导出公钥文件 ======
   private async exportPublicKey(): Promise<void> {
+    if (this.publicKeyMissing()) {
+      promptAction.showToast({ message: sshPublicKeyMissingHint(), duration: 3200 });
+      return;
+    }
     try {
       const pickerInstance = new picker.DocumentViewPicker();
       const safeName: string = this.sshKey.label.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -176,7 +201,7 @@ export struct SshKeyManagerSheet {
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       if (be.code !== 0) {
-        promptAction.showToast({ message: '[CC-SSHKEY-05] 导出失败: ' + be.message, duration: 2000 });
+        promptAction.showToast({ message: '公钥没有导出：' + be.message, duration: 2200 });
       }
     }
   }
@@ -203,7 +228,7 @@ export struct SshKeyManagerSheet {
           const result: Record<string, number> = r as Record<string, number>;
           if (result['index'] === 2) { resolve(true); }
           else if (result['index'] === 1) {
-            if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey); }
+            if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey, false); }
             resolve(false);
           } else { resolve(false); }
         });
@@ -226,7 +251,7 @@ export struct SshKeyManagerSheet {
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       if (be.code !== 0) {
-        promptAction.showToast({ message: '[CC-SSHKEY-06] 导出失败: ' + be.message, duration: 2000 });
+        promptAction.showToast({ message: '私钥没有导出：' + be.message, duration: 2200 });
       }
     }
   }
@@ -259,7 +284,7 @@ export struct SshKeyManagerSheet {
           // Legacy warning
           if (this.sshKey.isLegacyFormat()) {
             Row() {
-              Text('此密钥为旧格式 (cryptoFramework 生成), 不支持安装到主机和导出。请重新生成标准 OpenSSH 密钥或导入 OpenSSH 格式私钥。')
+              Text('这把密钥是旧版本生成的格式，不能安装到主机或导出。请重新生成密钥，或导入 OpenSSH 格式的私钥。')
                 .fontSize(13).fontColor('#FF9500').fontFamily(this.font())
             }
             .width('100%').padding(10).borderRadius(8)
@@ -269,8 +294,10 @@ export struct SshKeyManagerSheet {
 
           // 类型 + 指纹
           Row() {
-            Text(this.sshKey.isLegacyFormat() ? '类型' : this.sshKey.keyType === 1 ? 'ED25519' : 'RSA')
-              .fontSize(12).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+            Text(this.sshKey.isLegacyFormat() ? '旧格式' :
+              (sshKeyTypePending(this.sshKey.privateKey, this.sshKey.publicKey) ? '类型待识别' : SshKey.typeLabel(this.sshKey.keyType)))
+              .fontSize(12).fontWeight(FontWeight.Medium)
+              .fontColor(this.sshKey.isLegacyFormat() ? '#FFFFFF' : appUiOnAccentText(this.accentColor))
               .padding({ left: 10, right: 10, top: 4, bottom: 4 })
               .borderRadius(6)
               .backgroundColor(this.sshKey.isLegacyFormat() ? '#FF9500' : this.accentColor)
@@ -312,7 +339,7 @@ export struct SshKeyManagerSheet {
 
           Button('保存修改')
             .width('100%').height(44).fontSize(14).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
             .enabled(!this.saving)
             .onClick(() => { this.saveBasicInfo(); })
         }
@@ -326,7 +353,7 @@ export struct SshKeyManagerSheet {
           this.sectionHeader('私钥内容')
           Column() {
             Row() {
-              Text(this.sshKey.privateKeyEncrypted ? '已有密码保护，编辑后需密码验证' : '未加密私钥，可安全编辑')
+              Text(this.sshKey.privateKeyEncrypted ? '私钥设有密码，保存修改时需要输入密码' : '私钥未设密码')
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 .layoutWeight(1).margin({ right: 8 })
               this._actionBtn(this.showPrivateKeyEditor ? '收起' : '编辑私钥', () => {
@@ -365,7 +392,7 @@ export struct SshKeyManagerSheet {
 
               Button('保存私钥')
                 .width('100%').height(40).fontSize(13).fontWeight(FontWeight.Medium)
-                .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
+                .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8)
                 .margin({ top: 10 }).enabled(!this.savingPrivateKey)
                 .onClick(() => { this.savePrivateKey(); })
             }
@@ -380,6 +407,10 @@ export struct SshKeyManagerSheet {
         if (!this.sshKey.isLegacyFormat()) {
           this.sectionHeader('公钥')
           Column() {
+            if (this.publicKeyMissing()) {
+              Text(sshPublicKeyMissingHint()).fontSize(12).fontColor('#B66A00').lineHeight(18)
+                .width('100%').padding(8).borderRadius(6).backgroundColor('#B66A0015').margin({ bottom: 8 })
+            }
             if (this.showFullPublicKey && this.sshKey.publicKey !== '') {
               Text(this.sshKey.publicKey)
                 .fontSize(11).fontColor(this.pal().text2)
@@ -389,9 +420,14 @@ export struct SshKeyManagerSheet {
                 .width('100%').margin({ bottom: 8 })
             }
 
-            Row() {
+            // Wraps on a phone, where four buttons in one row would push 展开 out of the card.
+            Flex({ wrap: FlexWrap.Wrap }) {
               this._actionBtn('复制', () => { this.copyPublicKey(); })
               this._actionBtn('安装到主机', () => {
+                if (this.publicKeyMissing()) {
+                  promptAction.showToast({ message: sshPublicKeyMissingHint(), duration: 3200 });
+                  return;
+                }
                 if (this.onInstallToHost) { this.onInstallToHost(this.sshKey); }
               })
               this._actionBtn('导出.pub', () => { this.exportPublicKey(); })
@@ -422,14 +458,21 @@ export struct SshKeyManagerSheet {
             Row() {
               if (this.sshKey.privateKeyEncrypted) {
                 this._actionBtn('修改密码', () => {
-                  if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey); }
+                  if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey, false); }
                 })
                 this._actionBtn('移除密码', () => {
-                  if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey); }
+                  promptAction.showDialog({
+                    title: '移除私钥密码？',
+                    message: '移除后，这把私钥不再需要密码就能使用。下一步需要输入当前密码确认。',
+                    buttons: [{ text: '取消', color: this.pal().text2 }, { text: '继续', color: this.pal().danger }]
+                  }).then((result: Object): void => {
+                    const r: Record<string, number> = result as Record<string, number>;
+                    if (r['index'] === 1 && this.onManagePassphrase) { this.onManagePassphrase(this.sshKey, true); }
+                  }).catch((): void => {});
                 })
               } else {
                 this._actionBtn('设置密码', () => {
-                  if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey); }
+                  if (this.onManagePassphrase) { this.onManagePassphrase(this.sshKey, false); }
                 })
               }
             }.width('100%')
@@ -500,7 +543,7 @@ export struct SshKeyManagerSheet {
     Button(label).fontSize(13)
       .height(36).padding({ left: 12, right: 12 })
       .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-      .borderRadius(8).margin({ right: 6 })
+      .borderRadius(8).margin({ right: 6, bottom: 6 })
       .onClick(onClick)
   }
 
@@ -512,7 +555,7 @@ export struct SshKeyManagerSheet {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
       Button('导出').fontSize(13).height(34).padding({ left: 14, right: 14 })
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8)
         .onClick(onClick)
     }.width('100%').padding({ top: 4, bottom: 4 })
   }
@@ -524,13 +567,26 @@ export struct SshKeyManagerSheet {
 @Component
 export struct SshKeyPassphraseSubSheet {
   @Prop sshKey: SshKey;
+  /** 移除密码: only the current password is asked for. */
+  @Prop removeMode: boolean = false;
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   onComplete?: (newPrivateKey: string, newEncrypted: boolean) => void;
+  /** Whether a passphrase has been typed (the page asks before throwing it away). */
+  onDirtyChange?: (dirty: boolean) => void;
 
-  @State oldPass: string = '';
-  @State newPass: string = '';
-  @State confirmPass: string = '';
+  @State @Watch('reportDirty') oldPass: string = '';
+  @State @Watch('reportDirty') newPass: string = '';
+  @State @Watch('reportDirty') confirmPass: string = '';
+  private typedDirty: boolean = false;
+
+  private reportDirty(): void {
+    const dirty: boolean = this.oldPass !== '' || this.newPass !== '' || this.confirmPass !== '';
+    if (dirty !== this.typedDirty) {
+      this.typedDirty = dirty;
+      if (this.onDirtyChange) { this.onDirtyChange(dirty); }
+    }
+  }
   @State showOldPass: boolean = false;
   @State showNewPass: boolean = false;
   @State error: string = '';
@@ -546,13 +602,21 @@ export struct SshKeyPassphraseSubSheet {
     this.error = '';
 
     // 验证
-    if (this.newPass !== this.confirmPass) {
+    if (!this.removeMode && this.newPass !== this.confirmPass) {
       this.error = '两次输入的新密码不一致';
+      return;
+    }
+    if (!this.removeMode && this.newPass === '') {
+      this.error = '请输入新密码';
+      return;
+    }
+    if (this.sshKey.privateKeyEncrypted && this.oldPass === '') {
+      this.error = '请输入当前密码';
       return;
     }
 
     const oldPass: string = this.sshKey.privateKeyEncrypted ? this.oldPass : '';
-    const newPass: string = this.newPass; // "" means remove
+    const newPass: string = this.removeMode ? '' : this.newPass; // "" means remove
 
     const result: string = this.loader.changeSshPrivateKeyPassphrase(
       this.sshKey.privateKey, oldPass, newPass);
@@ -576,13 +640,10 @@ export struct SshKeyPassphraseSubSheet {
           () => { this.showOldPass = !this.showOldPass; })
       }
 
-      this._pwField(
-        this.sshKey.privateKeyEncrypted ? '新密码 (留空=移除密码)' : '新密码 (留空=不设密码)',
-        '输入新密码', this.newPass,
-        this.showNewPass, (v: string) => { this.newPass = v; },
-        () => { this.showNewPass = !this.showNewPass; })
-
-      if (this.newPass !== '') {
+      if (!this.removeMode) {
+        this._pwField('新密码', '输入新密码', this.newPass,
+          this.showNewPass, (v: string) => { this.newPass = v; },
+          () => { this.showNewPass = !this.showNewPass; })
         this._pwField('确认新密码', '再次输入新密码', this.confirmPass,
           false, (v: string) => { this.confirmPass = v; }, undefined)
       }
@@ -592,15 +653,15 @@ export struct SshKeyPassphraseSubSheet {
           .fontFamily(this.font()).width('100%').margin({ top: 8, bottom: 8 })
       }
 
-      Button(this.newPass === '' && this.sshKey.privateKeyEncrypted ? '移除密码'
-        : this.sshKey.privateKeyEncrypted ? '修改密码' : '设置密码')
+      Button(this.removeMode ? '移除密码' : this.sshKey.privateKeyEncrypted ? '修改密码' : '设置密码')
         .width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+        .backgroundColor(this.removeMode ? this.pal().danger : this.accentColor)
+        .fontColor(this.removeMode ? '#FFFFFF' : appUiOnAccentText(this.accentColor)).borderRadius(10)
         .margin({ top: 12 })
         .onClick(() => { this.submit(); })
 
-      if (this.newPass === '' && this.sshKey.privateKeyEncrypted) {
-        Text('移除密码后, 私钥将以明文存储')
+      if (this.removeMode) {
+        Text('移除后，这把私钥不再需要密码就能使用')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .margin({ top: 8 }).width('100%').textAlign(TextAlign.Center)
       }

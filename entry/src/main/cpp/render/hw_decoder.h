@@ -15,6 +15,8 @@
 #include "callback_admission_context.h"
 #include "extensions/protocol_adapter.h"
 #include "native_image_context_policy.h"
+#include "video_stream_inspection.h"
+#include "decoder_attempt_diagnostics.h"
 #include "video_perf_counters.h"
 #include "video_backpressure_controller.h"
 #include <GLES3/gl3.h>
@@ -210,7 +212,7 @@ enum class REMOTEDESK_DECODER_INTERNAL HardwareDecodeAdmission : uint8_t {
 
 /** 解码帧就绪回调 */
 using DecoderFrameCallback = std::function<void(GLuint textureId, int width, int height,
-    const Render::NativeImageTransform& textureTransform)>;
+    const Render::NativeImageTransform& textureTransform, const Render::PhoneDecodedFramePtr& phoneFrame)>;
 using DecoderMakeCurrentCallback = std::function<void()>;
 using DecoderReleaseCurrentCallback = std::function<void()>;
 
@@ -276,10 +278,11 @@ public:
      * @param timestamp  时间戳 (微秒)
      * @return 0=成功
      */
-    int Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame = false);
+    int Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame = false,
+               const Render::PhoneFrameReceiptPtr& phoneReceipt = {});
     REMOTEDESK_DECODER_INTERNAL int DecodeOwned(
         const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame,
-        HardwareDecodeAdmission& admission);
+        HardwareDecodeAdmission& admission, const Render::PhoneFrameReceiptPtr& phoneReceipt = {});
 
     /** Bind the opaque DecoderContext token before OH_AVCodec is started. */
     bool SetCallbackIdentity(int64_t token, const DecoderSessionIdentity& owner,
@@ -412,12 +415,27 @@ private:
     Render::NativeImageTransformClass appliedTransformClass_ =
         Render::NativeImageTransformClass::NotSampled;
     std::atomic<bool> textureTransformLogged_ {false};
+    // The resolved producer transform before the orientation correction.
+    Render::NativeImageTransform resolvedTextureTransform_ = Render::IdentityNativeImageTransform();
+    // Orientation self-test correction composed on the PC desktop path, as the
+    // NativeImageTransformClass value it undoes (-1 none); logged on change.
+    int32_t orientationCorrectionLogged_ = -1;
+    // The texture has held a decoded image since Init (set by Init before the render thread starts, then by it).
+    bool surfaceImageReady_ = false;
+    bool producerExtrasLogged_ = false;
+    int32_t lastBufferTransform_ = -2;
+    // First key frames of this decoder: NAL / SEI summary for diagnostics.
+    std::mutex streamInspectionMutex_;
+    Render::VideoStreamInspection streamInspection_ {};
+    int32_t streamInspectedFrames_ = 0;
     int             width_ = 0;
     int             height_ = 0;
     CodecType       codecType_ = CodecType::H264;
     bool            initialized_ = false;
 
     DecoderCallbackGate<DecoderFrameCallback> frameCallbackGate_;
+    std::shared_ptr<Render::PhoneFrameTracker> phoneFrameTracker_;
+    Render::PhoneDecodedFramePtr phoneRetainedFrame_;
     DecoderCallbackGate<DecoderMakeCurrentCallback> makeCurrentCallbackGate_;
     DecoderCallbackGate<DecoderReleaseCurrentCallback> releaseCurrentCallbackGate_;
     DecoderCallbackGate<DecoderErrorCallback> errorCallbackGate_;
@@ -476,6 +494,10 @@ private:
     // Stable callback context. Platform userData never points at this object.
     std::shared_ptr<Render::CallbackAdmissionContext> callbackContext_;
     DecoderSessionIdentity callbackOwner_;
+    uint64_t diagnosticAttemptSerial_ = 0;
+    uint64_t diagnosticDecoderGeneration_ = 0;
+    std::atomic<bool> diagnosticFirstOutput_ {false};
+    void recordAttempt(Render::DecoderAttemptStage stage, int result = 0, int32_t code = 0);
     std::shared_ptr<std::atomic<int>> callbackResourceDestroyCount_ =
         std::make_shared<std::atomic<int>>(0);
     std::shared_ptr<std::atomic<int>> callbackResourceStopCount_ =
@@ -495,6 +517,8 @@ private:
 
     /** 获取 OH_AVCodec MIME 类型字符串 */
     static const char* GetMimeType(CodecType codec);
+    void inspectStream(const uint8_t* data, size_t size);
+    void recordProducerExtras();
 
     // OH_AVCodec 回调 (static, 通过 userData → this 转发)
     static void OnError(OH_AVCodec* codec, int32_t errorCode, void* userData);
@@ -605,6 +629,8 @@ namespace DecoderNapi {
     void DeactivateDecoder(int64_t decoderHandle, const DecoderSessionIdentity& owner);
     void DestroyDecoderHandle(int64_t decoderHandle);
     void DestroyDecoderHandle(int64_t decoderHandle, const DecoderSessionIdentity& owner);
+    /** The session a decoder handle is bound to (invalid when the handle is unknown). */
+    DecoderSessionIdentity BoundOwnerForDecoderHandle(int64_t decoderHandle);
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     std::shared_ptr<HardwareDecoder> RegisterCallbackTestDecoder(
         const DecoderSessionIdentity& owner, int64_t& handle);

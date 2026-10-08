@@ -1,7 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   SshWebMessagePortChannel,
-  SshWebMessagePortLike
+  SshWebMessagePortLike,
+  SshWebMessagePortChannelCallbacks
 } from '../main/ets/services/ssh/web/SshWebMessagePortChannel';
 import {
   decodeSshWebMessage,
@@ -86,7 +87,7 @@ export default function sshWebMessagePortChannelTest(): void {
       const errors: Array<string> = [];
       const channel = new SshWebMessagePortChannel();
       let ready: number = 0;
-      const callbacks = {
+      const callbacks: SshWebMessagePortChannelCallbacks = {
         onReady: (): void => { ready++; },
         onEnvelope: (_envelope: SshWebMessageEnvelopeV1): void => {},
         onError: (code: string): void => { errors.push(code); }

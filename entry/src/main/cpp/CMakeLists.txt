@@ -38,6 +38,8 @@ add_custom_target(remotedesk_build_identity ALL
 set(COMMON_SOURCES
     common/endpoint_address_policy.cpp
     common/happy_eyeballs_connector.cpp
+    common/local_name_resolver.cpp
+    common/local_name_resolver_napi.cpp
     common/network_generation_fence.cpp
     common/safe_log.cpp
     input/remote_cursor_snapshot.cpp
@@ -60,8 +62,14 @@ set(PROTOCOL_SOURCES
     rdp/rdp_frame_scheduler.cpp
     rdp/rdp_gl_upload_gate.cpp
     rdp/rdp_graphics_lifecycle.cpp
+    rdp/rdp_gfx_wire_evidence.cpp
     rdp/rdp_frame_pump.cpp
     rdp/rdp_file_clipboard_bridge.cpp
+    rdp/rdp_channel_observer.cpp
+    rdp/rdp_remote_file_offer.cpp
+    rdp/rdp_clipboard_receive.cpp
+    transfer/transfer_export_files.cpp
+    rdp/rdp_clipboard_content.cpp
     rdp/rdp_file_clipboard_offer.cpp
     rustdesk/rustdesk_bridge.cpp
 )
@@ -70,6 +78,7 @@ set(PROTOCOL_SOURCES
 set(RENDER_SOURCES
     render/gl_renderer.cpp
     render/hw_decoder.cpp
+    render/video_orientation_self_test.cpp
     render/software_decoder.cpp
     video/video_activity_state.cpp
     render/video_backpressure_controller.cpp
@@ -120,9 +129,13 @@ set(TERMINAL_SOURCES
 
 # -- 安全管理 --
 set(SECURITY_SOURCES
+    ai/ai_tls.cpp
+    ai/ai_napi.cpp
     security/crypto_utils.cpp
     security/host_locker.cpp
     security/security_napi.cpp
+    pro/fido_probe_napi.cpp
+    rdp/rdp_security_key_napi.cpp
 )
 
 # -- Moonlight native ownership and bounded Host API protocol core --
@@ -300,6 +313,7 @@ if(RDP_BUILD_TESTS)
         test/software_decode_latency_policy_test.cpp
         test/remote_cursor_snapshot_test.cpp
         test/rustdesk_display_switch_gate_test.cpp
+        test/rustdesk_phone_frame_receipt_test.cpp
         test/video_perf_counters_test.cpp
         test/ssh_terminal_diagnostics_test.cpp
         test/ssh_auth_policy_test.cpp
@@ -339,6 +353,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_transform_refresh_policy_test.cpp
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
+        test/rdp_gfx_wire_evidence_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_gateway_policy_test.cpp
         test/rdp_network_recovery_policy_test.cpp
@@ -352,6 +367,15 @@ if(RDP_BUILD_TESTS)
         test/transfer_runtime_status_test.cpp
         test/rdp_input_queue_test.cpp
         test/rdp_file_clipboard_offer_test.cpp
+        test/rdp_clipboard_codec_test.cpp
+        test/transfer_export_files_test.cpp
+        test/rdp_clipboard_content_test.cpp
+        test/rdp_clipboard_format_queue_test.cpp
+        test/rdp_clipboard_state_test.cpp
+        test/rdp_clipboard_publication_queue_test.cpp
+        test/rdp_clipboard_receive_test.cpp
+        test/rdp_channel_observer_test.cpp
+        test/rdp_remote_file_offer_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
         test/renderer_resize_redraw_policy_test.cpp
@@ -369,6 +393,8 @@ if(RDP_BUILD_TESTS)
         test/endpoint_address_policy_test.cpp
         test/connection_port_policy_test.cpp
         test/happy_eyeballs_connector_test.cpp
+        test/video_orientation_policy_test.cpp
+        test/local_name_resolver_test.cpp
         test/network_generation_fence_test.cpp
         test/native_network_observer_state_test.cpp
         test/moonlight_host_api_test.cpp
@@ -422,6 +448,7 @@ if(RDP_BUILD_TESTS)
         rdp/rdp_frame_scheduler.cpp
         rdp/rdp_gl_upload_gate.cpp
         rdp/rdp_graphics_lifecycle.cpp
+        rdp/rdp_gfx_wire_evidence.cpp
         rdp/rdp_file_clipboard_offer.cpp
         audio/audio_queue_policy.cpp
         audio/audio_activity_state.cpp
@@ -1216,6 +1243,37 @@ target_link_libraries(rdpnapi PUBLIC
     ssl
     crypto
 )
+
+# Debug-only USB capability verification. Release retains inert NAPI stubs and
+# links neither the worker nor either FIDO dependency. Device access is supplied
+# solely by the explicitly authorized USBManager owner, never by a HID backend.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(PRO_FIDO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/fido2-ohos/${OHOS_ARCH}")
+    foreach(PRO_FIDO_ARCHIVE libfido2.a libcbor.a)
+        if(NOT EXISTS "${PRO_FIDO_DIR}/lib/${PRO_FIDO_ARCHIVE}")
+            message(FATAL_ERROR "Missing pinned FIDO probe archive; run scripts/build_fido2_ohos.py")
+        endif()
+    endforeach()
+    add_library(pro_fido2 STATIC IMPORTED)
+    set_target_properties(pro_fido2 PROPERTIES IMPORTED_LOCATION "${PRO_FIDO_DIR}/lib/libfido2.a")
+    add_library(pro_cbor STATIC IMPORTED)
+    set_target_properties(pro_cbor PROPERTIES IMPORTED_LOCATION "${PRO_FIDO_DIR}/lib/libcbor.a")
+    target_sources(rdpnapi PRIVATE pro/fido_probe_transport.cpp)
+    target_include_directories(rdpnapi PRIVATE "${PRO_FIDO_DIR}/include")
+    target_compile_definitions(rdpnapi PRIVATE REMOTEDESK_DEBUG_FIDO_PROBE=1)
+    target_link_libraries(rdpnapi PRIVATE pro_fido2 pro_cbor crypto libz.so)
+    # MS-RDPEWA security-key redirection: the vendored FreeRDP client channel and its session broker.
+    # Debug only, like the probe: Release keeps inert NAPI stubs and links no FIDO code.
+    if(USE_REAL_FREERDP)
+        target_sources(rdpnapi PRIVATE
+            rdp/rdp_security_key_broker.cpp
+            rdp/rdp_security_key_provider.cpp
+            rdp/rdpewa/rdpewa_main.c
+            rdp/rdpewa/rdpewa_cbor.c
+            rdp/rdpewa/rdpewa_fido.c)
+        target_compile_definitions(rdpnapi PRIVATE REMOTEDESK_RDP_SECURITY_KEY=1)
+    endif()
+endif()
 
 # N1-02 build-only Moonlight boundary. The pinned common-c/ENet archives are
 # linked privately and expose no NAPI or runtime registration. Product sources

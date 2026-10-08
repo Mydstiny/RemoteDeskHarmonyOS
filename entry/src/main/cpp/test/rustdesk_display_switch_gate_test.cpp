@@ -1,4 +1,6 @@
 #include "test_runner.h"
+#include "rustdesk/rustdesk_phone_geometry_gate.h"
+#include "rustdesk/rustdesk_phone_scope.h"
 #include "rustdesk/rustdesk_display_control_plane.h"
 #include "rustdesk/rustdesk_display_switch_gate.h"
 #include "rustdesk/rustdesk_multi_canvas_policy.h"
@@ -587,4 +589,93 @@ RDP_TEST_CASE(rustdesk_outbound_lanes_fail_closed_behind_network_retirement) {
     RDP_ASSERT_EQ(fileCalls.load(std::memory_order_acquire), 0);
     RDP_ASSERT_EQ(clipboardCalls.load(std::memory_order_acquire), 0);
     RDP_ASSERT_EQ(control.detachHandle(), static_cast<void*>(&fakeHandle));
+}
+
+RDP_TEST_CASE(rustdesk_existing_jobs_remain_manageable_until_handle_detaches) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 31;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    std::mutex admissionMutex;
+    int sends = 0;
+    int managementCalls = 0;
+
+    // Main-stream loss closes producers while a dedicated file worker may
+    // still own the retained context. It must be possible to cancel and drain.
+    RDP_ASSERT(!control.dispatchOutbound(admissionMutex, []() { return false; },
+        [&](void*) { ++sends; return true; }));
+    RDP_ASSERT(control.dispatchExistingWork(admissionMutex, [&](void* handle) {
+        RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+        ++managementCalls;
+        return true;
+    }));
+    RDP_ASSERT_EQ(sends, 0);
+    RDP_ASSERT_EQ(managementCalls, 1);
+
+    RDP_ASSERT_EQ(control.detachHandle(), static_cast<void*>(&fakeHandle));
+    RDP_ASSERT(!control.dispatchExistingWork(admissionMutex, [&](void*) {
+        ++managementCalls;
+        return true;
+    }));
+    RDP_ASSERT_EQ(managementCalls, 1);
+}
+
+RDP_TEST_CASE(explicit_phone_geometry_needs_display_frame_swap_and_page) {
+    RustDeskPhoneGeometryGate gate;
+    RDP_ASSERT(gate.allowed()); // Non-phone default has no barrier.
+    gate.reset(true);
+    RDP_ASSERT(!gate.allowed());
+    RDP_ASSERT(gate.observeDisplay(0, 1, 1080, 2400));
+    gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
+    RDP_ASSERT(!gate.commit(1)); // Texture without encoded-frame agreement.
+    RDP_ASSERT(gate.observeFrame(0, 1080, 2400));
+    RDP_ASSERT(!gate.commit(1)); // A queued frame is not a presented frame.
+    gate.observePresented(1, 0, 1080, 2400, 2400, 1080);
+    RDP_ASSERT(!gate.commit(1));
+    gate.observePresented(1, 0, 1080, 2400, 540, 1200); // Downscaled software decoding.
+    RDP_ASSERT(!gate.commit(2)); // Stale page geometry.
+    RDP_ASSERT(gate.commit(1));
+    RDP_ASSERT(gate.allowed());
+}
+
+RDP_TEST_CASE(explicit_phone_geometry_rotation_notification_first_and_frame_first) {
+    for (bool frameFirst : {false, true}) {
+        RustDeskPhoneGeometryGate gate;
+        gate.reset(true);
+        gate.observeDisplay(0, 1, 1080, 2400);
+        gate.observeFrame(0, 1080, 2400);
+        gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
+        RDP_ASSERT(gate.commit(1));
+        if (frameFirst) gate.observeFrame(0, 2400, 1080);
+        else gate.observeDisplay(0, 2, 2400, 1080);
+        RDP_ASSERT(!gate.allowed());
+        gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
+        RDP_ASSERT(!gate.commit(1));
+        if (frameFirst) gate.observeDisplay(0, 2, 2400, 1080);
+        else gate.observeFrame(0, 2400, 1080);
+        gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
+        RDP_ASSERT(!gate.commit(2));
+        gate.observePresented(2, 0, 2400, 1080, 2400, 1080);
+        RDP_ASSERT(gate.commit(2));
+        gate.observeDisplay(0, 3, 1080, 2400);
+        RDP_ASSERT(!gate.allowed());
+        RDP_ASSERT(!gate.commit(2));
+        gate.reset(true); // Same logical session can replace its transport.
+        RDP_ASSERT(!gate.commit(3));
+        gate.reset(false);
+        RDP_ASSERT(gate.allowed());
+        RDP_ASSERT(!gate.observeDisplay(0, 4, 2400, 1080));
+        RDP_ASSERT(gate.allowed());
+    }
+}
+
+RDP_TEST_CASE(explicit_phone_actions_reject_nonselected_stale_owner_and_stream) {
+    for (int operation = -2; operation <= 13; ++operation) {
+        RDP_ASSERT(!RustDeskPhoneRequestAllowed(false, 1, 2, 3, 1, 2, 3, operation));
+        RDP_ASSERT(!RustDeskPhoneRequestAllowed(true, 1, 2, 3, 9, 2, 3, operation));
+        RDP_ASSERT(!RustDeskPhoneRequestAllowed(true, 1, 2, 3, 1, 9, 3, operation));
+        RDP_ASSERT(RustDeskPhoneRequestAllowed(true, 1, 2, 3, 1, 2, 3, operation));
+        if (operation != -2) RDP_ASSERT(!RustDeskPhoneRequestAllowed(true, 1, 2, 4, 1, 2, 3, operation));
+    }
+    RDP_ASSERT(!RustDeskPhoneRequestAllowed(true, 1, 2, 3, 1, 2, 3, 14));
+    RDP_ASSERT(!RustDeskPhoneRequestAllowed(true, 1, 2, 3, 1, 2, 3, -3));
 }

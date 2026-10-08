@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { Environment, fileIo, fileShare, fileUri, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -124,6 +124,11 @@ export function probeSshLocalProviderCapabilities(): SshLocalProviderCapabilityP
  * asynchronous so callers can keep them outside ArkUI event callbacks.
  */
 export class SshLocalFileProvider {
+  private readonly managedTransferRoots: Set<string> = new Set<string>();
+  private static transferSequence: number = 0;
+  private transferCleanupBase: string = '';
+  private transferCleanup: Promise<void> | null = null;
+  private transferPreferences: preferences.Preferences | null = null;
   private static instance: SshLocalFileProvider | null = null;
   private context: common.UIAbilityContext | null = null;
   private plan: SshLocalProviderPlan = resolveSshLocalProviderPlan({
@@ -153,6 +158,17 @@ export class SshLocalFileProvider {
   init(context: common.UIAbilityContext): void {
     if (this.context === context) { return; }
     this.context = context;
+    // Incoming sources have no restart-safe engine binding. Remove only our
+    // old generated directories at a cold initialization; retained task
+    // records can request a fresh source, but cannot pin orphaned files forever.
+    if (this.transferCleanupBase !== context.filesDir) {
+      this.transferCleanupBase = context.filesDir;
+      this.transferCleanup = this.cleanOrphanedTransferRoots(context);
+      void this.transferCleanup.catch((_err: Error): void => {
+        hilog.warn(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
+          '[SFTP-INCOMING-CLEANUP] deferred; new incoming staging remains unavailable');
+      });
+    }
     const probe: SshLocalProviderCapabilityProbe = probeSshLocalProviderCapabilities();
     this.plan = probe.plan;
     this.authorization = 'unknown';
@@ -303,6 +319,94 @@ export class SshLocalFileProvider {
     return root;
   }
 
+  /** A batch-owned sandbox source does not expand the user's folder grant. */
+  async createTransferStagingRoot(): Promise<string> {
+    try { await this.transferCleanup; } catch (_err) { return ''; }
+    const base: string = await this.transferBoxRoot();
+    if (base.length === 0) { return ''; }
+    const root: string = base + '/incoming-' + Date.now().toString(36) + '-' +
+      (++SshLocalFileProvider.transferSequence).toString(36);
+    let created: boolean = false;
+    try {
+      await fileIo.mkdir(root);
+      created = true;
+      // Persist ownership before exposing the directory to any file copy.
+      this.rememberTransferRoot(root.substring(base.length + 1));
+      this.managedTransferRoots.add(root);
+      return root;
+    } catch (_err) {
+      if (created) { try { await fileIo.rmdir(root); } catch (_cleanupError) { /* ownership retry or empty directory */ } }
+      return '';
+    }
+  }
+
+  private transferRootNames(): string[] {
+    if (this.transferPreferences === null) { throw new Error('incoming ownership unavailable'); }
+    const value: Object = this.transferPreferences.getSync('ownedRootsV1', '');
+    if (typeof value !== 'string' || value.length > 128 * 1024) { throw new Error('invalid incoming ownership'); }
+    const names: string[] = value.length === 0 ? [] : value.split('\n');
+    if (names.length > 2048 || names.some((name: string): boolean =>
+      !/^incoming-[a-z0-9]+-[a-z0-9]+$/.test(name) || name.length > 100)) {
+      throw new Error('invalid incoming ownership');
+    }
+    return names;
+  }
+
+  private rememberTransferRoot(name: string): void {
+    const names: string[] = this.transferRootNames();
+    if (names.indexOf(name) < 0) { names.push(name); }
+    if (names.length > 2048 || this.transferPreferences === null) { throw new Error('incoming ownership full'); }
+    this.transferPreferences.putSync('ownedRootsV1', names.join('\n'));
+    this.transferPreferences.flushSync();
+  }
+
+  private forgetTransferRoot(root: string): void {
+    this.managedTransferRoots.delete(root);
+    const name: string = this.baseName(root);
+    try {
+      const names: string[] = this.transferRootNames().filter((item: string): boolean => item !== name);
+      this.transferPreferences?.putSync('ownedRootsV1', names.join('\n'));
+      this.transferPreferences?.flushSync();
+    } catch (_err) { /* retained ownership can safely retry deletion after restart */ }
+  }
+
+  private async cleanOrphanedTransferRoots(context: common.UIAbilityContext): Promise<void> {
+    this.transferPreferences = preferences.getPreferencesSync(context, { name: 'RemoteDesktopSshIncomingOwnership' });
+    const base: string = context.filesDir + '/' + TRANSFER_BOX_DIR;
+    try { await fileIo.mkdir(base, true); } catch (_err) { /* validate below */ }
+    const baseInfo: fileIo.Stat = await fileIo.lstat(base);
+    if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) { throw new Error('invalid transfer box'); }
+    // A name pattern alone is not ownership: ordinary user folders with the
+    // same prefix must survive. Only previously recorded app-created roots qualify.
+    const names: string[] = this.transferRootNames();
+    for (let index: number = 0; index < names.length; index++) {
+      const name: string = names[index];
+      const root: string = base + '/' + name;
+      if (this.managedTransferRoots.has(root)) { continue; }
+      try {
+        const info: fileIo.Stat = await fileIo.lstat(root);
+        if (info.isSymbolicLink()) { await fileIo.unlink(root); }
+        else if (info.isDirectory()) { await fileIo.rmdir(root); }
+      } catch (err) {
+        if ((err as BusinessError).code !== 13900002) { throw new Error('incoming cleanup failed'); }
+      }
+      this.forgetTransferRoot(root);
+    }
+  }
+
+  private async accessRoot(target: string): Promise<string> {
+    const roots: string[] = Array.from(this.managedTransferRoots);
+    for (let index: number = 0; index < roots.length; index++) {
+      if (target === roots[index]) { return roots[index]; }
+      if (target.startsWith(roots[index] + '/')) {
+        const parts: string[] = target.substring(roots[index].length + 1).split('/');
+        return parts.every((part: string): boolean => part.length > 0 && part !== '.' &&
+          part !== '..' && !/[\\\x00-\x1f]/.test(part)) ? roots[index] : '';
+      }
+    }
+    return await this.currentRoot();
+  }
+
   async currentRoot(): Promise<string> {
     if (this.plan.kind === 'directory' && this.state !== 'ready') { return ''; }
     if (this.plan.kind === 'directory') { return this.rootPath; }
@@ -326,7 +430,7 @@ export class SshLocalFileProvider {
     const requested: string = root.trim().length > 0 ? root.trim() : await this.currentRoot();
     const base: string = this.pathFromUri(requested);
     if (base.length === 0) { return []; }
-    const currentRoot: string = await this.currentRoot();
+    const currentRoot: string = await this.accessRoot(base);
     if (currentRoot.length === 0 || !this.isWithinRoot(currentRoot, base)) { return []; }
     const names: Array<string> = await fileIo.listFile(base, { recursion: false });
     const result: SshLocalFileEntry[] = [];
@@ -345,7 +449,7 @@ export class SshLocalFileProvider {
 
   async stat(uri: string): Promise<SshLocalFileEntry | null> {
     const target: string = this.pathFromUri(uri);
-    const root: string = await this.currentRoot();
+    const root: string = await this.accessRoot(target);
     if (target.length === 0 || root.length === 0 || !this.isWithinRoot(root, target)) { return null; }
     try {
       const info = await fileIo.stat(target);
@@ -357,8 +461,8 @@ export class SshLocalFileProvider {
 
   /** Resolve a relative file path without leaving an authorized provider root. */
   async resolveRelative(root: string, relativePath: string): Promise<string | null> {
-    const providerRoot: string = await this.currentRoot();
     const base: string = this.pathFromUri(root);
+    const providerRoot: string = await this.accessRoot(base);
     if (providerRoot.length === 0 || base.length === 0 || !this.isWithinRoot(providerRoot, base)) {
       return null;
     }
@@ -411,9 +515,10 @@ export class SshLocalFileProvider {
   }
 
   async remove(uri: string, recursive: boolean = false): Promise<boolean> {
-    const root: string = await this.currentRoot();
     const target: string = this.pathFromUri(uri);
-    if (root.length === 0 || target.length === 0 || target === root ||
+    const root: string = await this.accessRoot(target);
+    if (root.length === 0 || target.length === 0 ||
+      (target === root && !this.managedTransferRoots.has(target)) ||
       !this.isWithinRoot(root, target)) { return false; }
     const entry: SshLocalFileEntry | null = await this.stat(target);
     if (entry === null || entry.isSpecialFile) { return false; }
@@ -431,6 +536,7 @@ export class SshLocalFileProvider {
         if (!await this.remove(children[index].uri, true)) { return false; }
       }
       await fileIo.rmdir(target);
+      if (this.managedTransferRoots.has(target)) { this.forgetTransferRoot(target); }
       return true;
     } catch (_err) {
       return false;

@@ -12,8 +12,10 @@ import {
   SSH_FORWARDING_PROFILE_PREFERENCES_NAME,
   forwardingProfilePreferenceKey,
   serializeSshForwardingProfilesEnvelope,
-  setSshForwardingPreferenceAdapterForTest
+  setSshForwardingPreferenceAdapterForTest,
+  SshForwardingProfilesEnvelopeV1
 } from '../main/ets/services/SshForwardingProfileStore';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 class MemoryForwardingPreferences implements SshForwardingPreferenceAdapter {
   readonly values: Map<string, string> = new Map<string, string>();
@@ -58,7 +60,7 @@ function forwardingProfile(id: string): SshForwardingProfile {
 export default function sshForwardingProfileStoreTest(): void {
   describe('SshForwardingProfileStore', (): void => {
     let adapter: MemoryForwardingPreferences = new MemoryForwardingPreferences();
-    const context: common.Context = undefined as common.Context;
+    const context: common.Context = {} as common.Context;
 
     beforeEach((): void => {
       adapter = new MemoryForwardingPreferences();
@@ -111,7 +113,7 @@ export default function sshForwardingProfileStoreTest(): void {
         '{not-json',
         JSON.stringify({ schemaVersion: 2, profiles: [valid], updatedAtMs: 1 }),
         JSON.stringify({ schemaVersion: 1, profiles: [valid, valid], updatedAtMs: 1 }),
-        JSON.stringify({ schemaVersion: 1, profiles: [{ ...valid, password: 'secret' }], updatedAtMs: 1 })
+        JSON.stringify({ schemaVersion: 1, profiles: [withOverrides(valid, { 'password': 'secret' })], updatedAtMs: 1 })
       ];
       for (let index: number = 0; index < invalidPayloads.length; index++) {
         adapter = new MemoryForwardingPreferences();
@@ -128,7 +130,7 @@ export default function sshForwardingProfileStoreTest(): void {
     });
 
     it('serializes_only_the_schema_versioned_forwarding_wrapper', 0, (): void => {
-      const envelope = {
+      const envelope: SshForwardingProfilesEnvelopeV1 = {
         schemaVersion: 1 as 1,
         profiles: [forwardingProfile('rule-a')],
         updatedAtMs: 12

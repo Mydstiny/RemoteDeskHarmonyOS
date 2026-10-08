@@ -1,4 +1,72 @@
+import { NativeVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 declare module 'librdpnapi.so' {
+
+  export interface ProFidoNativePoll {
+    status: number;
+    requestId: number;
+    timeoutMs: number;
+    write: boolean;
+    data: Uint8Array;
+  }
+  /** Debug-only capability probe. Release returns false/zero/invalid and has no worker. */
+  export function proFidoProbeAvailable(): boolean;
+  export function proFidoProbeStart(): number;
+  export function proFidoProbePoll(operationId: number): ProFidoNativePoll;
+  export function proFidoProbeReply(operationId: number, requestId: number, data: Uint8Array, success: boolean): boolean;
+  export function proFidoProbeCancel(operationId: number): void;
+
+  /** RDP security-key redirection (MS-RDPEWA) request from the session broker. */
+  export interface RdpSecurityKeyRequest {
+    id: number;
+    /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key,
+     *  8 dismiss: id names a prompt that ended unanswered, 9 passkey for the phone */
+    kind: number;
+    /** Confirm: relying party ID. */
+    text: string;
+    /** Confirm: 1 register, 2 sign in. Touch: 1 show, 0 hide. */
+    operation: number;
+    /** PIN: remaining attempts, or -1 when unknown. */
+    retries: number;
+    timeoutMs: number;
+    /** Write: the 64-byte output report. */
+    report: Uint8Array;
+    /** Passkey (kind 9): the CTAP command byte and CBOR request for the paired phone. */
+    payload: Uint8Array;
+  }
+  /** Debug-only; Release returns false and links no FIDO code. */
+  export function rdpSecurityKeyAvailable(): boolean;
+  /** Watches a session across reconnects; returns the watch ID, or 0 when the session has no broker. */
+  export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): number;
+  /** True when watchId was still the session's watcher (a newer page may have taken over). */
+  export function rdpSecurityKeyUnwatch(sessionId: number, watchId: number): boolean;
+  export function rdpSecurityKeyPoll(sessionId: number): RdpSecurityKeyRequest | null;
+  export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean,
+    report: Uint8Array | null, text: string | null): boolean;
+  export function rdpSecurityKeyCancel(sessionId: number): void;
+  /** ArkTS released the session's key on its own; the next request asks for a key again. */
+  export function rdpSecurityKeyReleased(sessionId: number): void;
+  /** Passkey replies carry the phone's CTAP response; Select replies name the authenticator (1 USB key, 2 phone). */
+  export function rdpSecurityKeyRespondEx(sessionId: number, id: number, ok: boolean, payload: Uint8Array | null,
+    authenticator: number): boolean;
+
+  export interface AiTlsRequestOptions {
+    id: string;
+    address: string;
+    serverName: string;
+    port: number;
+    ca: string;
+    caSha256?: string;
+    certificate?: string;
+    privateKey?: string;
+    path: string;
+    body?: string;
+    timeoutMs: number;
+  }
+  export interface AiTlsResponse { status: number; body: ArrayBuffer; }
+  export interface AiGeneratedIdentity { csr: string; privateKey: string; }
+  export function aiTlsRequest(options: AiTlsRequestOptions, onChunk?: (data: ArrayBuffer) => void): Promise<AiTlsResponse>;
+  export function aiGenerateIdentity(request: { id: string }): Promise<AiGeneratedIdentity>;
+  export function aiCancelRequest(request: { id: string }): void;
   export const VERSION: SessionVersionInfo;
 
   export function listProtocols(): ProtocolInfo[];
@@ -30,6 +98,9 @@ declare module 'librdpnapi.so' {
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
   export function setRustDeskImageQuality(sessionId: number, quality: number): boolean;
+  export function toggleRustDeskPrivacyMode(sessionId: number, on: boolean): boolean;
+  export function toggleRustDeskVirtualDisplay(sessionId: number, display: number, on: boolean): boolean;
+  export function setRustDeskStreamOptions(sessionId: number, codec: number, audioEnabled: boolean): boolean;
   export function sendText(sessionId: number, text: string): void;
   export function enqueueSshTerminalInput(sessionId: number, text: string,
     expectedGeneration?: number, control?: boolean, ordered?: boolean,
@@ -57,11 +128,19 @@ declare module 'librdpnapi.so' {
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
   export function renameRemotePathAsync(sessionId: number, oldPath: string,
     newPath: string, atomic?: boolean, expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
-  export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
+  export function sendClipboard(sessionId: number, data: ArrayBuffer): boolean;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
   export function setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean;
+  /** Returns a fresh positive safe-integer token, or 0. Automatic claims never replace a live owner. */
+  export function claimSessionClipboardAuthority(sessionId: number, nativeGeneration: number,
+    replaceExisting?: boolean): number;
+  export function ownsSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean;
+  export function revokeSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean;
+  /** Final synchronous write only; Promise/async callbacks are not supported. */
+  export function withSessionClipboardAuthority(sessionId: number, nativeGeneration: number,
+    token: number, commit: () => boolean): boolean;
 
   export function getConnectionState(sessionId: number): number;
   export function getSshAuthPrompt(sessionId: number, sessionGeneration: number): SshAuthPromptRequest | null;
@@ -132,6 +211,8 @@ declare module 'librdpnapi.so' {
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function getVncDisplayCapabilities(sessionId: number): VncDisplayCapabilities;
+  export function switchVncDisplay(sessionId: number, monitor: number): boolean;
   export function attachRustDeskMultiCanvasPreview(sessionId: number, display: number,
     surfaceId: string, surfaceWidth: number, surfaceHeight: number, sourceWidth: number,
     sourceHeight: number, codec: number, visualFlipX?: boolean,
@@ -147,9 +228,17 @@ declare module 'librdpnapi.so' {
   export function changeRustDeskDisplayResolution(sessionId: number, display: number,
     width: number, height: number): boolean;
   export function sendRustDeskTouchScale(sessionId: number, scale: number): boolean;
+  export function rustDeskPhoneControl(sessionId: number, generation: number, ownerToken: number, operation: number, x: number, y: number, streamEpoch: number): number;
   export function sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean;
   export function getLocalResourceStats(includePro?: boolean): LocalResourceStats;
   export function getSessionTransferStatus(sessionId: number): SessionTransferStatus;
+  export function getSessionClipboardSnapshot(sessionId: number): SessionClipboardSnapshot;
+  export function sendSessionFileFromFd(sessionId: number, generation: number, remotePath: string, fd: number, conflictPolicy: number): number;
+  export function getSessionFileTransfer(sessionId: number, generation: number, transferId: number): SessionTransferStatus;
+  export function cancelSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean;
+  export function releaseSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean;
+  export function publishSessionClipboard(sessionId: number, generation: number, data: ArrayBuffer): ClipboardPublicationResult;
+  export function getSessionClipboardPublicationState(sessionId: number, generation: number, publicationId: number): number;
   export function setRdpBackgroundVideoPrewarm(sessionId: number, enabled: boolean, intervalMs: number): boolean;
   export function presentRdpCachedFrame(sessionId: number): boolean;
 
@@ -186,7 +275,8 @@ declare module 'librdpnapi.so' {
     operationId: number, timeoutMs: number): Promise<SshPublicKeyInstallResult> & { operationId: number };
   export function cancelSshOperation(operationId: number): boolean;
 
-  export function initRenderer(xcId: string, width: number, height: number): number;
+  // ownerSessionId: > 0 the page's live session; < 0 a session not live yet (pending renderer).
+  export function initRenderer(xcId: string, width: number, height: number, ownerSessionId?: number): number;
   export function destroyRenderer(handle: number): void;
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
@@ -197,11 +287,15 @@ declare module 'librdpnapi.so' {
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
   export function markXComponentSurfaceDestroyed(): void;
-  export function requestFrameRefresh(): void;
+  export function markRendererSurfaceDestroyed(handle: number): void;
+  // The process XComponent surface belongs to one picture page at a time (process-wide, every window).
+  export function claimProcessSurface(pageToken: number): boolean;
+  export function releaseProcessSurface(pageToken: number): void;
+  export function requestFrameRefresh(sessionId?: number): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
 
   export function initDecoder(width: number, height: number, codecType: number,
-    rendererHandle?: number, desktopSurfaceCompatibility?: boolean): number;
+    rendererHandle?: number, desktopSurfaceCompatibility?: boolean, ownerSessionId?: number): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;
@@ -209,7 +303,7 @@ declare module 'librdpnapi.so' {
   export function bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
-  export function rebindActiveVideoPipeline(): boolean;
+  export function rebindActiveVideoPipeline(sessionId?: number): boolean;
   export interface HardwareVideoDecoderCapability {
     available: boolean;
     name: string;
@@ -229,13 +323,30 @@ declare module 'librdpnapi.so' {
     av1: HardwareVideoDecoderCapability;
   }
   export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
+  /**
+   * Decode a known four-colour H.264 (0) / H.265 (1) picture through this
+   * device's hardware decoder → NativeImage → GPU path in the background and
+   * keep how it lands on screen; once per codec and mode per process.
+   */
+  export function ensureVideoOrientationSelfTest(codec: number, desktop: boolean): void;
+  export interface LocalHostNameResolution {
+    addresses: string[];
+    /** 'mdns' | 'llmnr' | 'netbios' | '' */
+    method: string;
+  }
+  /** Resolve a computer name or "<name>.local" on the local network (mDNS, LLMNR, NetBIOS). */
+  export function resolveLocalHostName(name: string, timeoutMs: number): Promise<LocalHostNameResolution>;
 
-  export function initAudioPlayer(sampleRate?: number, channels?: number): number;
+  export function initAudioPlayer(sampleRate?: number, channels?: number, sessionId?: number): number;
   export function destroyAudioPlayer(handle: number): void;
   export function setAudioMute(handle: number, mute: boolean): void;
-  export function setActiveAudioMute(mute: boolean): void;
-  export function isAudioPlaybackActive(): boolean;
+  export function setActiveAudioMute(mute: boolean, sessionId?: number): void;
+  export function isAudioPlaybackActive(sessionId?: number): boolean;
+  // Only the focused window's picture session plays sound while several are live; 0 lets every session play.
+  export function setAudioFocusSession(sessionId: number): void;
   export function isVideoPlaybackActive(): boolean;
+  // Live RDP, RustDesk and VNC sessions in this process (every window).
+  export function getLivePictureSessionCount(): number;
 
   export function handleKeyEvent(scancode: number, pressed: boolean, keyCode: number, modifiers: number): void;
   export function handleMouseEvent(x: number, y: number, button: number, pressed: boolean, wheelDelta: number): void;
@@ -277,6 +388,17 @@ declare module 'librdpnapi.so' {
   export function sshTerminalRendererMode(handle: number): TerminalCoreMode;
 }
 
+export interface VncDisplayCapabilities {
+  supported: boolean;
+  mode: 'serverSelection' | 'unsupported';
+  monitorCount: number;
+  currentMonitor: number;
+  pendingMonitor: number;
+  switchGeneration: number;
+  inputBlocked: boolean;
+  lastResult: string;
+}
+
 interface SessionVersionInfo {
   moduleName: string;
   version: string;
@@ -298,6 +420,8 @@ interface ProtocolInfo {
 
 export interface RendererViewport {
   transformVersion: number;
+  /** EGL swap succeeded for this exact geometry/version; zero while pending. */
+  presentedTransformVersion: number;
   sourceWidth: number;
   sourceHeight: number;
   surfaceWidth: number;
@@ -326,6 +450,10 @@ export interface RdpCertificateInfo {
   errorMessage: string;
   preflightStatus: RdpPreflightStatus;
   riskFlags: string[];
+  /** TLS version the probe negotiated, e.g. "TLSv1"; empty without a handshake. */
+  tlsProtocol?: string;
+  /** Numeric address the probe reached (runtime only). */
+  connectedAddress?: string;
 }
 
 export type RdpPreflightStatus = 'completed' | 'inconclusive' | 'unavailable' | 'transportFailed';
@@ -414,6 +542,12 @@ export interface RdpPreflightResult {
   gatewayTransportSelected: string;
   requiresGatewayAuth: boolean;
   requiresUserDecision: boolean;
+  /**
+   * Runtime-only numeric transport override from the direct DNS fallback.
+   * The configured hostname remains the RDP/TLS identity and this value is
+   * never persisted in RemoteHost or sent through cloud sync.
+   */
+  transportHost?: string;
   gatewayCertificate: RdpCertificateRecord;
   targetCertificate: RdpCertificateRecord;
 }
@@ -554,6 +688,39 @@ export interface RdpRenderStats {
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+  /** Absent on native builds that predate graphics evidence. */
+  gfxEvidence?: RdpGfxEvidenceStats;
+}
+
+/**
+ * Observed RDP graphics negotiation. `requested*`/`h264Advertised` describe
+ * what the client offered; `capsConfirmed*` and `wireCodec` are what the
+ * server actually confirmed and sent. `wireCodec` is 'none' until the first
+ * RDPGFX surface command arrives.
+ */
+export interface RdpGfxEvidenceStats {
+  requestedApplied: boolean;
+  compiledGfx: boolean;
+  compiledH264: boolean;
+  h264PathSafe: boolean;
+  supportGraphicsPipeline: boolean;
+  remoteFxCodec: boolean;
+  h264Advertised: boolean;
+  fallbackConsumed: boolean;
+  fallbackReason: string;
+  capsAdvertisedCount: number;
+  capsAdvertisedMaxVersion: string;
+  capsAdvertisedAvc: boolean;
+  capsConfirmed: boolean;
+  capsConfirmedVersion: string;
+  capsConfirmedFlags: number;
+  capsConfirmedAvc: boolean;
+  surfaceCommands: number;
+  surfaceCommandBytes: number;
+  avcSurfaceCommands: number;
+  unknownCodecCommands: number;
+  wireCodecMask: number;
+  wireCodec: string;
 }
 
 export interface RdpDisplayLayoutRequest {
@@ -572,7 +739,7 @@ export interface RdpDisplayLayoutResult {
   message: string;
 }
 
-export interface RustDeskDiagnosticsSnapshot {
+export interface RustDeskDiagnosticsSnapshot extends NativeVideoDiagnosticEvidence {
   supported: boolean;
   sessionActive: boolean;
   protocolSnapshotAvailable: boolean;
@@ -597,6 +764,17 @@ export interface RustDeskDiagnosticsSnapshot {
   qualityRequestedGeneration: number;
   qualityAppliedGeneration: number;
   qualityUpdateStatus: number;
+  /** RustDesk peer extras (PeerInfo.platform_additions) and the last privacy-mode answer. */
+  peerInstalled?: boolean;
+  /** Virtual display driver on a Windows peer: 0 none, 1 rustdesk_idd, 2 amyuni_idd. */
+  virtualDisplayImpl?: number;
+  /** rustdesk_idd: bit n set = virtual display n (1..4) plugged in. */
+  rustdeskVirtualDisplayMask?: number;
+  amyuniVirtualDisplayCount?: number;
+  privacySupported?: boolean;
+  /** BackNotification.PrivacyModeState (0 unknown, 4 on, 8 off, 3 unsupported, 5 denied …) and its counter. */
+  privacyState?: number;
+  privacyGeneration?: number;
   videoMessages: number;
   receivedFrames: number;
   keyframes: number;
@@ -701,6 +879,11 @@ export interface RustDeskDisplayCapabilities {
   originalHeight: number;
   scaleMilli: number;
   geometryEpoch: number;
+  peerVersion?: string;
+  peerPlatform?: string;
+  hasDisplayIndex?: boolean;
+  hasPermission?: boolean;
+  hasVirtualDisplay?: boolean;
   resolutions: RustDeskDisplayResolution[];
   displays: RustDeskDisplayInfo[];
 }
@@ -763,6 +946,186 @@ export interface RemoteCursorSnapshot {
   rgba: ArrayBuffer;
 }
 
+export interface SessionRdpClipboardFileEntry {
+  index: number;
+  relativeName: string;
+  directory: boolean;
+  sizeKnown: boolean;
+  size: number;
+}
+export interface SessionRdpClipboardContent {
+  textUtf8?: string;
+  png?: ArrayBuffer;
+  htmlUtf8?: string;
+  rtfBytes?: ArrayBuffer;
+  rgbaStraight?: ArrayBuffer;
+  width?: number;
+  height?: number;
+}
+export interface SessionRdpClipboardFormats { sequence: number; formats: number[]; }
+export interface SessionRdpClipboardFormatResult {
+  requestId: number;
+  sequence: number;
+  format: number;
+  state: string;
+  diagnosticCode: string;
+  content: SessionRdpClipboardContent;
+}
+export const publishSessionRdpClipboardContent: (sessionId: number, generation: number, content: SessionRdpClipboardContent) => ClipboardPublicationResult;
+export const getSessionRdpClipboardFormats: (sessionId: number, generation: number) => SessionRdpClipboardFormats;
+export const requestSessionRdpClipboardFormat: (sessionId: number, generation: number, sequence: number, format: number) => number;
+export const getSessionRdpClipboardFormatResult: (sessionId: number, generation: number, requestId: number) => SessionRdpClipboardFormatResult;
+export const releaseSessionRdpClipboardFormat: (sessionId: number, generation: number, requestId: number) => boolean;
+
+export interface SessionRdpClipboardFiles {
+  sequence: number;
+  state: string;
+  streamSupported: boolean;
+  lockSupported: boolean;
+  totalKnown: boolean;
+  totalBytes: number;
+  diagnosticCode: string;
+  entries: SessionRdpClipboardFileEntry[];
+}
+export interface SessionRdpClipboardArtifact {
+  index: number;
+  relativeName: string;
+  directory: boolean;
+  size: number;
+}
+export interface SessionRdpClipboardReceive {
+  taskId: number;
+  sequence: number;
+  phase: string;
+  transferredBytes: number;
+  totalBytes: number;
+  totalKnown: boolean;
+  diagnosticCode: string;
+  artifacts: SessionRdpClipboardArtifact[];
+}
+export const getSessionRdpClipboardFiles: (sessionId: number, generation: number) => SessionRdpClipboardFiles;
+export const requestSessionRdpClipboardFiles: (sessionId: number, generation: number, sequence: number) => boolean;
+export const startSessionRdpClipboardReceive: (sessionId: number, generation: number, sequence: number, selectedIndices: number[], directoryFd: number) => number;
+export const getSessionRdpClipboardReceive: (sessionId: number, generation: number, id: number) => SessionRdpClipboardReceive;
+export const cancelSessionRdpClipboardReceive: (sessionId: number, generation: number, id: number) => boolean;
+export const releaseSessionRdpClipboardReceive: (sessionId: number, generation: number, id: number) => boolean;
+export const publishSessionClipboardFiles: (sessionId: number, generation: number, paths: string[]) => ClipboardPublicationResult;
+
+export interface SessionRdpReceivedFileFact {
+  relativePath: string;
+  writeGeneration: number;
+  writtenBytes: number;
+  activeHandles: number;
+  remoteClosed: boolean;
+  uncertain: boolean;
+}
+/** How far the remote has read the files offered on its clipboard (requestedBytes may pass a file's end). */
+export interface SessionRdpFileOfferProgress {
+  generation: number;
+  requestedBytes: number;
+  requests: number;
+  lastRequestAgoMs: number;
+}
+export interface SessionRdpDrive {
+  phase: string;
+  generation: number;
+  evidenceComplete: boolean;
+  diagnosticCode: string;
+  entries: SessionRdpReceivedFileFact[];
+}
+export const getSessionRdpDrive: (sessionId: number, generation: number) => SessionRdpDrive;
+export const getSessionRdpFileOfferProgress: (sessionId: number, generation: number) => SessionRdpFileOfferProgress;
+export const disableSessionRdpDrive: (sessionId: number, generation: number) => boolean;
+
+/** Only accepts a directory FD already opened through the authorized local provider. */
+export const openExclusiveTransferDirectory: (parentFd: number, leaf: string) => number;
+export const openExclusiveTransferFile: (rootFd: number, relativePath: string) => number;
+export const ensureTransferExportDirectory: (rootFd: number, relativePath: string) => boolean;
+
+export interface RustDeskClipboardSnapshot {
+  revision: number; state: number; capable: boolean; enabled: boolean; entryCount: number; diagnosticCode: number;
+}
+export interface RustDeskClipboardEntry {
+  index: number; name: string; isDirectory: boolean; size: number; modifiedTime: number;
+}
+export interface RustDeskClipboardSource { name: string; fd: number; isDirectory: boolean; }
+export interface RustDeskClipboardPublication {
+  publicationId: number; state: number; diagnosticCode: number; requestedBytes: number; drained: boolean;
+}
+export const configureSessionRustDeskFileClipboard: (sid: number, generation: number, enabled: boolean) => boolean;
+export const getSessionRustDeskFileClipboard: (sid: number, generation: number) => RustDeskClipboardSnapshot;
+export const getSessionRustDeskClipboardEntries: (sid: number, generation: number, revision: number) => RustDeskClipboardEntry[];
+export const publishSessionRustDeskClipboardFiles: (sid: number, generation: number, sources: RustDeskClipboardSource[]) => number;
+export const getSessionRustDeskClipboardPublication: (sid: number, generation: number, id: number) => RustDeskClipboardPublication;
+export const revokeSessionRustDeskClipboardPublication: (sid: number, generation: number, id: number) => boolean;
+export const receiveSessionRustDeskClipboardFile: (sid: number, generation: number, revision: number, index: number, fd: number) => number;
+
+export interface SessionTransferAuthentication {
+  transferId: number;
+  challengeId: number;
+  kind: number;
+  state: number;
+  expiresInMs: number;
+  attemptsRemaining: number;
+  diagnosticCode: number;
+}
+export interface SessionTransferResult {
+  operationKind: number;
+  sourceMetadataAvailable: boolean;
+  sourceSize: number;
+  sourceModifiedTime: number;
+  remoteOperationAcknowledged: boolean;
+}
+export const createSessionRemoteDirectory: (sessionId: number, generation: number, path: string) => number;
+export const getSessionTransferAuthentication: (sessionId: number, generation: number, transferId: number) => SessionTransferAuthentication;
+export const submitSessionTransferAuthentication: (sessionId: number, generation: number, transferId: number, challengeId: number, kind: number, secret: string) => boolean;
+export const getSessionTransferResult: (sessionId: number, generation: number, transferId: number) => SessionTransferResult;
+
+export interface SessionRemoteFileEntry {
+  name: string;
+  type: number;
+  size: number;
+  modifiedTime: number;
+}
+export interface SessionRemoteDirectory {
+  path: string;
+  entries: SessionRemoteFileEntry[];
+}
+export const requestSessionRemoteDirectory: (sessionId: number, generation: number, path: string) => number;
+/** A folder listing, optionally with hidden entries; read with getSessionRemoteDirectory. */
+export const requestSessionRemoteListing: (sessionId: number, generation: number, path: string,
+  includeHidden: boolean) => number;
+/** Every file below a folder (names relative to it, '/' separated); read with getSessionRemoteDirectory. */
+export const requestSessionRemoteTree: (sessionId: number, generation: number, path: string,
+  includeHidden: boolean) => number;
+/** Removes a file, or a folder with everything in it. */
+export const removeSessionRemotePath: (sessionId: number, generation: number, path: string,
+  directory: boolean) => number;
+/** Renames a file or folder within its folder. */
+export const renameSessionRemotePath: (sessionId: number, generation: number, path: string,
+  newName: string) => number;
+export const getSessionRemoteDirectory: (sessionId: number, generation: number, transferId: number) => SessionRemoteDirectory;
+export const downloadSessionFileToFd: (sessionId: number, generation: number, path: string, fd: number, size: number, modifiedTime: number) => number;
+
+export interface SessionTransferPermissions {
+  available: boolean;
+  knownMask: number;
+  enabledMask: number;
+}
+export const getSessionTransferPermissions: (sessionId: number, generation: number) => SessionTransferPermissions;
+
+export interface ClipboardPublicationResult {
+  publicationId: number;
+  state: number;
+}
+
+export interface SessionClipboardSnapshot {
+  sequence: number;
+  kind: string;
+  text: string;
+  ready: boolean;
+}
+
 export interface SessionTransferStatus {
   rdpDriveMounted: boolean;
   rustdeskTransferState: number;
@@ -796,6 +1159,8 @@ export interface SessionConfig {
   /** RDP /client-hostname:, never used as a transport or certificate identity. */
   clientHostname?: string;
   rdpDesktopScaleFactor?: number;
+  /** Debug + Pro only: load the MS-RDPEWA channel so the remote session can use a local USB security key. */
+  rdpSecurityKeyRedirect?: boolean;
   rdpDeviceScaleFactor?: number;
   rdpDesktopPhysicalWidthMm?: number;
   rdpDesktopPhysicalHeightMm?: number;
@@ -835,7 +1200,11 @@ export interface SessionConfig {
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
   rdpCertificateAllowUnpinnedOnce?: boolean;
+  /** Skip independent preflight; live callback accepts an unpinned peer only via strict PKI validation. */
+  rdpVerifyCertificateOnConnect?: boolean;
   rdpAllowStandardSecurityOnce?: boolean;
+  /** The user agreed to legacy TLS (1.0/1.1, security level 0) for this host. */
+  rdpAllowLegacyTls?: boolean;
   /** Explicit direct TLS compatibility mode. Default false; never enables Standard RDP Security. */
   rdpTlsWithoutNla?: boolean;
   rdpCertificateAllowTimeAnomalyOnce?: boolean;
@@ -846,6 +1215,7 @@ export interface SessionConfig {
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式
+  rdExplicitPhone?: boolean; // session-only verified manual target choice
   rdConnectionStrategy?: 'force_relay' | 'direct_ip' | 'auto';
   rdDirectPort?: number;     // 直连端口
   rdLanDiscovery?: boolean;  // LAN发现

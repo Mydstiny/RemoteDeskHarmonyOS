@@ -22,9 +22,15 @@ import {
   rustDeskTopBarSubMenuForItem,
   reduceRustDeskTopBarSubMenuState,
   rustDeskTouchpadSpeedOptions,
-  remoteSessionActionAvailability
+  remoteSessionActionAvailability,
+  remoteSessionEdgeRailWidth
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
+import {
+  normalizeRemoteWheelSpeed,
+  remoteWheelSessionSpeedChoices,
+  remoteWheelSpeedLabel
+} from '../services/RemoteWheelPreferencePolicy';
 import {
   RustDeskDisplayCapabilities,
   RustDeskDisplayInfo,
@@ -45,6 +51,16 @@ import {
   remoteSessionSidebarMenuWidth,
   remoteSessionSidebarVisibleRailHeight
 } from '../services/RemoteSessionSidebarLayoutPolicy';
+import {
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightPx,
+  normalizeRemotePortraitSidebarHeightMode
+} from '../services/RemotePortraitSidebarPolicy';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { AI_SESSION_PANEL_REQUEST, AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -82,6 +98,8 @@ const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
 };
 
 export interface RemoteSessionTopBarActions {
+  onPhoneAction: (action: number) => void;
+  onPhoneOrientation: (enabled: boolean) => void;
   onDisconnect: () => void;
   onHideTopBar: () => void;
   onRefreshFrame: () => void;
@@ -92,12 +110,16 @@ export interface RemoteSessionTopBarActions {
   onCtrlAltDel: () => void;
   onLockRemote: () => void;
   onTogglePrivacy: (on: boolean) => void;
+  /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all of them). */
+  onToggleRustDeskVirtualDisplay: (display: number, on: boolean) => void;
   onToggleAudio: (on: boolean) => void;
   onToggleClipboard: (on: boolean) => void;
   onToggleFilePaste: (on: boolean) => void;
   onSetViewScaleMode: (mode: string) => void;
   onResetCanvasTransform: () => void;
   onRotateRemoteDisplay: () => void;
+  onTogglePortraitDisplay: () => void;
+  onObserveVideoOrientation: (orientation: number) => void;
   onSetRustDeskDesktopFlipMode: (mode: RustDeskDesktopFlipMode) => void;
   onOpenRustDeskResolution: () => void;
   onSelectRustDeskDisplay: (display: number) => void;
@@ -108,15 +130,81 @@ export interface RemoteSessionTopBarActions {
   onToggleBrowseMode: (on: boolean) => void;
   onToggleRelativeMouse: (on: boolean) => void;
   onToggleReverseWheel: (on: boolean) => void;
+  onToggleWheelDirectionFollowsKeyboard: (on: boolean) => void;
   onToggleSwapMouseButtons: (on: boolean) => void;
   onSetTouchpadSpeed: (speed: number) => void;
+  /** 滚轮速度 (percent): the same setting as 设置 › 远程滚轮 for this protocol. */
+  onSetWheelSpeed: (speed: number) => void;
   onToggleDiagnostics: (on: boolean) => void;
   onUnsupported: (actionId: string, reason: string) => void;
+  /** The rail's AI button: the session's AI (SessionAiHost) appears as the orb with its small chat. */
+  onOpenAi: () => void;
+}
+
+/** The session's toggles the AI's session actions flip (read from the page that owns them). */
+export interface RemoteSessionAiToggles {
+  privacyMode: boolean;
+  audioEnabled: boolean;
+  clipboardEnabled: boolean;
+  filePasteEnabled: boolean;
+  imageQuality: number;
+  codec: number;
+  showLocalCursor: boolean;
+  browseMode: boolean;
+  relativeMouseMode: boolean;
+  reverseWheel: boolean;
+  swapMouseButtons: boolean;
+  diagnosticsEnabled: boolean;
+  /** The host's 画面翻转 mode (RustDesk on a HarmonyOS PC). */
+  desktopFlipMode: RustDeskDesktopFlipMode;
+}
+
+/**
+ * The AI's session actions (session.*) on a RustDesk session, through the same guarded toolbar callbacks as a tap.
+ * False for an action the session does not have.
+ */
+export function runRemoteSessionAiAction(action: DiagnosticAiAppActionId, actions: RemoteSessionTopBarActions,
+  s: RemoteSessionAiToggles): boolean {
+  switch (action) {
+    case 'session.keyboard': actions.onOpenKeyboard(); return true;
+    case 'session.modifiers': actions.onOpenModifiers(); return true;
+    case 'session.fileTransfer': actions.onOpenFileTransfer(); return true;
+    case 'session.ctrlAltDel': actions.onCtrlAltDel(); return true;
+    case 'session.lock': actions.onLockRemote(); return true;
+    case 'session.privacy': actions.onTogglePrivacy(!s.privacyMode); return true;
+    case 'session.audio': actions.onToggleAudio(!s.audioEnabled); return true;
+    case 'session.clipboard': actions.onToggleClipboard(!s.clipboardEnabled); return true;
+    case 'session.filePaste': actions.onToggleFilePaste(!s.filePasteEnabled); return true;
+    case 'session.resetCanvas': actions.onResetCanvasTransform(); return true;
+    case 'session.rotate': actions.onRotateRemoteDisplay(); return true;
+    case 'session.portrait': actions.onTogglePortraitDisplay(); return true;
+    case 'session.display': actions.onOpenRustDeskResolution(); return true;
+    case 'session.quality': actions.onSetRustDeskImageQuality((s.imageQuality + 1) % 3); return true;
+    // Auto → VP8 → VP9 → AV1 → H264 → H265 → auto, switched live.
+    case 'session.codec': actions.onSetRustDeskCodec((s.codec + 1) % 6); return true;
+    case 'session.cursor': actions.onToggleShowLocalCursor(!s.showLocalCursor); return true;
+    case 'session.browseMode': actions.onToggleBrowseMode(!s.browseMode); return true;
+    case 'session.relativeMouse': actions.onToggleRelativeMouse(!s.relativeMouseMode); return true;
+    case 'session.reverseWheel': actions.onToggleReverseWheel(!s.reverseWheel); return true;
+    case 'session.swapButtons': actions.onToggleSwapMouseButtons(!s.swapMouseButtons); return true;
+    case 'session.diagnostics': actions.onToggleDiagnostics(!s.diagnosticsEnabled); return true;
+    // 画面翻转 is the PC's: elsewhere the flip callback says so instead of changing anything.
+    case 'session.flipVertical':
+      actions.onSetRustDeskDesktopFlipMode(toggleRustDeskDesktopFlipAxis(s.desktopFlipMode, 'visual_y')); return true;
+    case 'session.flipReset': actions.onSetRustDeskDesktopFlipMode('reset'); return true;
+    case 'session.markUpsideDown': actions.onObserveVideoOrientation(2); return true;
+    case 'session.disconnect': actions.onDisconnect(); return true;
+    default: return false;
+  }
 }
 
 @Component
 export struct RemoteSessionTopBar {
   @Prop protocol: string = 'rustdesk';
+  @Prop explicitPhone: boolean = false;
+  @Prop phoneStatus: string = '';
+  @Prop phoneCapabilities: number = 0;
+  @Prop phoneAdaptiveOrientation: boolean = false;
   @Prop layout: RemoteTopBarLayout = {
     deviceClass: 'pc',
     iconSize: 44,
@@ -127,23 +215,35 @@ export struct RemoteSessionTopBar {
   };
   @Prop @Watch('onEdgeRailChanged') edgeRail: boolean = false;
   @Prop privacyMode: boolean = false;
+  /** A Windows peer's virtual display driver (0 none, 1 rustdesk_idd, 2 amyuni_idd) and what is plugged in. */
+  @Prop virtualDisplayImpl: number = 0;
+  @Prop virtualDisplayMask: number = 0;
+  @Prop amyuniVirtualDisplayCount: number = 0;
   @Prop audioEnabled: boolean = true;
   @Prop clipboardEnabled: boolean = true;
   @Prop filePasteEnabled: boolean = true;
   @Prop viewScaleMode: string = 'fit';
   @Prop imageQuality: number = 1;
+  /** Physical pixels shown per remote pixel, percent; -1 when unknown. */
+  @Prop localScalePercent: number = -1;
   @Prop codec: number = 0;
   @Prop showLocalCursor: boolean = true;
   @Prop browseMode: boolean = false;
   @Prop relativeMouseMode: boolean = false;
   @Prop reverseWheel: boolean = false;
+  @Prop wheelDirectionFollowsKeyboard: boolean = true;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
+  @Prop wheelSpeed: number = 100;
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
+  @Prop portraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
   @Prop @Watch('onRustDeskPhoneTargetChange') rustDeskPhoneTarget: boolean = false;
   @Prop rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
@@ -157,17 +257,21 @@ export struct RemoteSessionTopBar {
     multiDisplay: { enabled: false, reason: '远程会话尚未连接' }
   };
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @State private collapsed: boolean = false;
+  /** The AI orb keeps clear of the rail while it is open, and may use the edge while it is only the handle. */
+  @State @Watch('publishAiRail') private collapsed: boolean = false;
   @State private pinned: boolean = false;
   @State private activeMenu: string = '';
   @State private activeSubMenu: string = '';
   @State private subMenuPinned: boolean = false;
+  @State private menuItemRenderRevision: number = 0;
   @State private railSwipeX: number = 0;
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
   private autoCollapseTimer: number = -1;
 
   actions: RemoteSessionTopBarActions = {
+    onPhoneAction: (_action: number): void => {},
+    onPhoneOrientation: (_enabled: boolean): void => {},
     onDisconnect: (): void => {},
     onHideTopBar: (): void => {},
     onRefreshFrame: (): void => {},
@@ -178,12 +282,15 @@ export struct RemoteSessionTopBar {
     onCtrlAltDel: (): void => {},
     onLockRemote: (): void => {},
     onTogglePrivacy: (_on: boolean): void => {},
+    onToggleRustDeskVirtualDisplay: (_display: number, _on: boolean): void => {},
     onToggleAudio: (_on: boolean): void => {},
     onToggleClipboard: (_on: boolean): void => {},
     onToggleFilePaste: (_on: boolean): void => {},
     onSetViewScaleMode: (_mode: string): void => {},
     onResetCanvasTransform: (): void => {},
     onRotateRemoteDisplay: (): void => {},
+    onTogglePortraitDisplay: (): void => {},
+    onObserveVideoOrientation: (_orientation: number): void => {},
     onSetRustDeskDesktopFlipMode: (_mode: RustDeskDesktopFlipMode): void => {},
     onOpenRustDeskResolution: (): void => {},
     onSelectRustDeskDisplay: (_display: number): void => {},
@@ -194,10 +301,13 @@ export struct RemoteSessionTopBar {
     onToggleBrowseMode: (_on: boolean): void => {},
     onToggleRelativeMouse: (_on: boolean): void => {},
     onToggleReverseWheel: (_on: boolean): void => {},
+    onToggleWheelDirectionFollowsKeyboard: (_on: boolean): void => {},
     onToggleSwapMouseButtons: (_on: boolean): void => {},
     onSetTouchpadSpeed: (_speed: number): void => {},
+    onSetWheelSpeed: (_speed: number): void => {},
     onToggleDiagnostics: (_on: boolean): void => {},
-    onUnsupported: (_actionId: string, _reason: string): void => {}
+    onUnsupported: (_actionId: string, _reason: string): void => {},
+    onOpenAi: (): void => {}
   };
 
   private runAction(actionId: string, action: () => void): void {
@@ -207,6 +317,9 @@ export struct RemoteSessionTopBar {
     if (!availability.enabled) {
       this.actions.onUnsupported(actionId, availability.reason);
       return;
+    }
+    if (actionId === 'fileTransfer') {
+      this.closeMenus();
     }
     action();
   }
@@ -298,6 +411,12 @@ export struct RemoteSessionTopBar {
     }
   }
 
+  private diagnosticAiVisible(): boolean {
+    // Keep the AI entrance resident for entitled users; the legacy hide/show preference no longer gates the icon.
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+
   private onKeyboardSurfaceChange(): void {
     this.scheduleAutoCollapse();
   }
@@ -319,6 +438,7 @@ export struct RemoteSessionTopBar {
 
   aboutToAppear(): void {
     this.collapsed = false;
+    this.publishAiRail();
     this.activeMenu = '';
     this.resetSubMenu();
     this.scheduleAutoCollapse();
@@ -328,10 +448,16 @@ export struct RemoteSessionTopBar {
     this.clearAutoCollapseTimer();
   }
 
+  /**
+   * The bar's width for exactly the buttons primaryActionButtons draws (the same list, portrait and AI included).
+   * Capping it at maxVisibleButtons let the PC bar (nine tools plus the AI) draw past its own frame.
+   */
   private toolbarWidth(): number {
     const actionCount: number = remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length;
-    const count: number = Math.max(1, Math.min(this.layout.maxVisibleButtons, actionCount));
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, this.portraitDisplayEnabled,
+      this.diagnosticAiVisible()).length +
+      (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
+    const count: number = Math.max(1, actionCount);
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
   }
 
@@ -357,7 +483,7 @@ export struct RemoteSessionTopBar {
 
   private keyboardButtonIndex(): number {
     const actions: RemoteSessionPrimaryActionId[] = remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget);
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, false, this.diagnosticAiVisible());
     const index: number = actions.indexOf('keyboard');
     return index >= 0 ? index : 0;
   }
@@ -385,7 +511,11 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailWidth(): number {
-    return this.layout.iconSize + 12;
+    return remoteSessionEdgeRailWidth(this.layout.iconSize);
+  }
+
+  private publishAiRail(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, !this.collapsed);
   }
 
   private sidebarMenuWidth(): number {
@@ -399,7 +529,8 @@ export struct RemoteSessionTopBar {
 
   private edgeRailButtonCount(): number {
     return remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length;
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, false, this.diagnosticAiVisible()).length +
+      (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
   }
 
   private edgeRailHeight(): number {
@@ -410,7 +541,11 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailCanvasHeight(): number {
-    return remoteSessionSidebarCanvasHeight(this.viewportHeight);
+    const available: number = remoteSessionSidebarCanvasHeight(this.viewportHeight);
+    if (!this.portraitDisplayActive) { return available; }
+    return remotePortraitSidebarHeightPx(
+      normalizeRemotePortraitSidebarHeightMode(this.portraitSidebarHeightMode),
+      available, this.edgeRailHeight());
   }
 
   private edgeRailVisibleHeight(): number {
@@ -449,6 +584,28 @@ export struct RemoteSessionTopBar {
 
   private menuScrollMaxHeight(): number {
     return Math.max(1, this.sidebarMenuMaxHeight() - this.menuHeaderHeight());
+  }
+
+  /** Everything the 显示 menu's rows show: a change rebuilds them (their ticks are passed by value). */
+  private displayMenuSignature(): string {
+    const caps: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    const flags: string = (this.privacyMode ? '1' : '0') + (this.audioEnabled ? '1' : '0') +
+      (this.filePasteEnabled ? '1' : '0') + (this.canvasResetAvailable ? '1' : '0');
+    return 'display|' + this.activeSubMenu + '|' + this.viewScaleMode + '|' + this.imageQuality.toString() + '|' +
+      this.codec.toString() + '|' + flags + '|' + this.localScalePercent.toString() + '|' +
+      this.virtualDisplayImpl.toString() + '|' + this.virtualDisplayMask.toString() + '|' +
+      this.amyuniVirtualDisplayCount.toString() + '|' + caps.currentDisplay.toString() + '|' +
+      caps.pendingDisplay.toString() + '|' + caps.width.toString() + 'x' + caps.height.toString() + '|' +
+      caps.displays.length.toString() + '|' + caps.resolutions.length.toString() + '|' +
+      this.pendingDisplayResolution.width.toString() + 'x' + this.pendingDisplayResolution.height.toString();
+  }
+
+  private keyboardMouseMenuSignature(): string {
+    const flags: string = (this.showLocalCursor ? '1' : '0') + (this.browseMode ? '1' : '0') +
+      (this.relativeMouseMode ? '1' : '0') + (this.reverseWheel ? '1' : '0') +
+      (this.wheelDirectionFollowsKeyboard ? '1' : '0') + (this.swapMouseButtons ? '1' : '0');
+    return 'mouse|' + this.activeSubMenu + '|' + flags + '|' + this.touchpadSpeed.toString() + '|' +
+      this.wheelSpeed.toString();
   }
 
   private qualityLabel(value: number): string {
@@ -573,7 +730,7 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private iconButton(icon: Resource, bgColor: string, action: () => void, fontSize?: number,
-    accessibilityLabel: string = 'RustDesk 会话工具栏操作') {
+    accessibilityLabel: string = 'RustDesk 会话工具栏操作', longAction: () => void = action) {
     Button() {
       SymbolGlyph(icon)
         .fontSize(fontSize ?? 20)
@@ -587,26 +744,21 @@ export struct RemoteSessionTopBar {
       .focusable(false)
       .focusOnTouch(false)
       .accessibilityText(accessibilityLabel)
-      .bindTips(accessibilityLabel, {
-        appearingTime: 300,
-        disappearingTime: 0,
-        appearingTimeWithContinuousOperation: 100,
-        disappearingTimeWithContinuousOperation: 0,
-        enableArrow: true
-      })
       .onClick((): void => {
         this.noteUserActivity();
         action();
       })
+      .gesture(LongPressGesture({ duration: 500 }).onAction((): void => {
+        this.noteUserActivity();
+        longAction();
+      }))
   }
 
-  private openSubMenu(itemId: string, hovered: boolean, clicked: boolean): void {
-    if (!hovered && !clicked) {
-      return;
-    }
+  // Sub-menus open on click only: hovering must not expand them (PC pointer users found that disorienting).
+  private openSubMenu(itemId: string): void {
     const next: RustDeskTopBarSubMenuState = reduceRustDeskTopBarSubMenuState(
       { active: this.activeSubMenu as RustDeskTopBarSubMenuId | '', pinned: this.subMenuPinned },
-      itemId, clicked ? 'click' : 'hover-enter');
+      itemId, 'click');
     this.activeSubMenu = next.active;
     this.subMenuPinned = next.pinned;
     this.noteUserActivity();
@@ -654,13 +806,8 @@ export struct RemoteSessionTopBar {
     .borderRadius(6)
     .focusable(false)
     .focusOnTouch(false)
-    .onHover((isHover: boolean): void => {
-      if (remoteSessionActionAvailability(actionId, this.protocol, this.capabilities).enabled) {
-        this.openSubMenu(itemId, isHover, false);
-      }
-    })
     .onClick((): void => {
-      this.runAction(actionId, (): void => { this.openSubMenu(itemId, false, true); });
+      this.runAction(actionId, (): void => { this.openSubMenu(itemId); });
     })
   }
 
@@ -691,8 +838,12 @@ export struct RemoteSessionTopBar {
     .borderRadius(6)
     .focusable(false)
     .focusOnTouch(false)
+    .id('remote-session-menu-item|' + actionId + '|' + label + '|' +
+      (checked === undefined ? 'none' : (checked ? '1' : '0')) + '|' +
+      this.menuItemRenderRevision.toString())
     .onClick((): void => {
       this.runAction(actionId, action);
+      this.menuItemRenderRevision++;
     })
   }
 
@@ -717,6 +868,49 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
+  private phoneButton(label: string, action: number) {
+    Button(label).width('100%').height(this.menuItemHeight())
+      .fontSize(15).fontColor('#222222').backgroundColor(Color.Transparent)
+      .enabled((this.phoneCapabilities & 3) === 3 && !this.browseMode &&
+        (action !== 0 || (this.phoneCapabilities & 4) !== 0))
+      .onClick((): void => { this.noteUserActivity(); this.actions.onPhoneAction(action); })
+  }
+
+  @Builder
+  private phoneMenu() {
+    Column() {
+      this.menuHeader('手机操作', $r('sys.symbol.gearshape_fill'))
+      Scroll() {
+        Column() {
+          Text(this.phoneStatus).fontSize(12).fontColor('#555555').width('100%').padding(8)
+          this.phoneButton('返回', 0)
+          this.phoneButton('主页', 1)
+          this.phoneButton('最近应用', 2)
+          this.phoneButton('音量 +', 4)
+          this.phoneButton('音量 −', 6)
+          this.phoneButton('电源菜单', 8)
+          if (this.layout.deviceClass !== 'pc') {
+            Button(this.phoneAdaptiveOrientation ? '方向：跟随设备' : '方向：横屏')
+              .width('100%').height(this.menuItemHeight()).fontSize(15)
+              .onClick((): void => {
+                this.actions.onPhoneOrientation(!this.phoneAdaptiveOrientation);
+                this.noteUserActivity();
+              })
+          }
+          Text('缩放只改变本地画布。方向选择仅用于本次会话。')
+            .fontSize(12).fontColor('#666666').width('100%').padding(8)
+        }.width('100%').padding(this.menuPadding())
+      }.width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+        .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
+    }.width(this.effectiveMenuWidth())
+      .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
+      .backgroundColor('rgba(255,255,255,0.96)').borderRadius(16).clip(true)
+      .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+      .position({ x: this.menuLeft(), y: this.menuTop() })
+      .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+  }
+
+  @Builder
   private controlMenu() {
     Column() {
       this.menuHeader('会话控制', $r('sys.symbol.gearshape_fill'))
@@ -725,7 +919,9 @@ export struct RemoteSessionTopBar {
           this.menuItem('发送剪贴板按键', 'toggleClipboard', (): void => {
             this.actions.onToggleClipboard(!this.clipboardEnabled);
           }, this.clipboardEnabled)
-          this.menuItem('传输文件', 'fileTransfer', (): void => { this.actions.onOpenFileTransfer(); })
+          this.menuItem('传输文件', 'fileTransfer', (): void => {
+            this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
+          })
           this.menuItem('插入 Ctrl + Alt + Del', 'ctrlAltDel', (): void => { this.actions.onCtrlAltDel(); })
           this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
           if (this.protocol === 'rustdesk') {
@@ -797,13 +993,21 @@ export struct RemoteSessionTopBar {
       if (this.activeSubMenu === 'codec') {
         this.codecSubMenuContent()
       }
-      this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
+      if (this.virtualDisplayImpl > 0) {
+        this.subMenuItem('虚拟显示器', this.virtualDisplayStatusLabel(), 'displaySettings', 'virtualDisplay')
+        if (this.activeSubMenu === 'virtualDisplay') {
+          this.virtualDisplaySubMenuContent()
+        }
+      } else {
+        // Shown greyed with its reason: only Windows peers with RustDesk installed and a virtual display driver.
+        this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
+      }
       this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
         this.actions.onTogglePrivacy(!this.privacyMode);
       }, this.privacyMode)
-      this.menuItem('静音', 'toggleAudio', (): void => {
+      this.menuItem('远端音频', 'toggleAudio', (): void => {
         this.actions.onToggleAudio(!this.audioEnabled);
-      }, !this.audioEnabled)
+      }, this.audioEnabled)
       this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
         this.actions.onToggleFilePaste(!this.filePasteEnabled);
       }, this.filePasteEnabled)
@@ -888,15 +1092,76 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private imageQualitySubMenuContent() {
-    this.menuItem('速度优先', 'displaySettings', (): void => {
+    // The tier only changes the remote encoder bitrate; text sharpness also
+    // depends on remote resolution, local scaling and 4:2:0 chroma.
+    this.menuItem('速度优先（降低码率）', 'displaySettings', (): void => {
       this.actions.onSetRustDeskImageQuality(0);
     }, this.imageQuality === 0)
     this.menuItem('平衡', 'displaySettings', (): void => {
       this.actions.onSetRustDeskImageQuality(1);
     }, this.imageQuality === 1)
-    this.menuItem('画质优先', 'displaySettings', (): void => {
+    this.menuItem('画质优先（提高码率）', 'displaySettings', (): void => {
       this.actions.onSetRustDeskImageQuality(2);
     }, this.imageQuality === 2)
+    if (this.localScalePercent > 0 && this.localScalePercent < 100) {
+      this.menuNote('当前缩小到 ' + this.localScalePercent.toString() +
+        '% 显示，清晰度主要受缩放影响')
+    }
+  }
+
+  @Builder
+  private menuNote(text: string) {
+    Text(text)
+      .fontSize(11)
+      .fontColor('#6B7280')
+      .width('100%')
+      .padding({ left: 38, right: 8, top: 2, bottom: 4 })
+  }
+
+  /** How many virtual displays are plugged in on the peer. */
+  private virtualDisplayCount(): number {
+    if (this.virtualDisplayImpl === 2) { return Math.max(0, this.amyuniVirtualDisplayCount); }
+    let count: number = 0;
+    for (let index = 1; index <= 4; index++) {
+      if ((this.virtualDisplayMask & (1 << index)) !== 0) { count++; }
+    }
+    return count;
+  }
+
+  private virtualDisplayStatusLabel(): string {
+    const count: number = this.virtualDisplayCount();
+    return count > 0 ? '已插入 ' + count.toString() + ' 个' : '未插入';
+  }
+
+  @Builder
+  private virtualDisplaySubMenuContent() {
+    if (this.virtualDisplayImpl === 1) {
+      // RustDesk's own driver: four slots, each switched on and off by itself.
+      ForEach([1, 2, 3, 4], (index: number): void => {
+        this.menuItem('虚拟显示器 ' + index.toString(), 'displaySettings', (): void => {
+          this.actions.onToggleRustDeskVirtualDisplay(index, (this.virtualDisplayMask & (1 << index)) === 0);
+        }, (this.virtualDisplayMask & (1 << index)) !== 0)
+      }, (index: number): string => 'vd-' + index.toString() + '-' +
+        ((this.virtualDisplayMask & (1 << index)) !== 0 ? 'on' : 'off'))
+    } else {
+      // Amyuni's driver: plug one more in, or one out (at most four).
+      if (this.amyuniVirtualDisplayCount < 4) {
+        this.menuItem('添加一个虚拟显示器', 'displaySettings', (): void => {
+          this.actions.onToggleRustDeskVirtualDisplay(0, true);
+        })
+      }
+      if (this.amyuniVirtualDisplayCount > 0) {
+        this.menuItem('移除一个虚拟显示器', 'displaySettings', (): void => {
+          this.actions.onToggleRustDeskVirtualDisplay(0, false);
+        })
+      }
+    }
+    if (this.virtualDisplayCount() > 0) {
+      this.menuItem('拔出全部虚拟显示器', 'displaySettings', (): void => {
+        this.actions.onToggleRustDeskVirtualDisplay(-1, false);
+      })
+    }
+    this.menuNote('插入后在「远端显示器」里切换到它；最后一个连接断开后远端会自动拔出')
   }
 
   @Builder
@@ -927,7 +1192,10 @@ export struct RemoteSessionTopBar {
       this.menuHeader('显示与画质', $r('sys.symbol.display'))
       Scroll() {
         Column() {
-          this.displayRootMenuContent()
+          // The rows take their ticks by value: rebuild them whenever a value they show changes.
+          ForEach([this.displayMenuSignature()], (_signature: string): void => {
+            this.displayRootMenuContent()
+          }, (signature: string): string => signature)
         }.width('100%').padding(this.menuPadding())
       }
       .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
@@ -963,6 +1231,15 @@ export struct RemoteSessionTopBar {
         this.menuItem('复位', 'desktopFlip', (): void => {
           this.actions.onSetRustDeskDesktopFlipMode('reset');
         }, this.rustDeskDesktopFlipMode === 'reset')
+        this.menuItem('日志标记：画面正常', 'desktopFlip', (): void => {
+          this.actions.onObserveVideoOrientation(1);
+        })
+        this.menuItem('日志标记：上下倒置', 'desktopFlip', (): void => {
+          this.actions.onObserveVideoOrientation(2);
+        })
+        this.menuItem('日志标记：左右镜像', 'desktopFlip', (): void => {
+          this.actions.onObserveVideoOrientation(3);
+        })
       }
       .width('100%').padding(this.menuPadding())
     }
@@ -1010,13 +1287,21 @@ export struct RemoteSessionTopBar {
       this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
       }, this.showLocalCursor)
-      this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
+      this.menuItem('相对鼠标模式', 'relativeMouse', (): void => {
         this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
       }, this.relativeMouseMode)
+      this.menuItem('滚轮方向跟随键盘映射', 'keyboardMouseSettings', (): void => {
+        this.actions.onToggleWheelDirectionFollowsKeyboard(!this.wheelDirectionFollowsKeyboard);
+      }, this.wheelDirectionFollowsKeyboard)
     }
     this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
       this.actions.onToggleReverseWheel(!this.reverseWheel);
     }, this.reverseWheel)
+    this.subMenuItem('滚轮速度', remoteWheelSpeedLabel(normalizeRemoteWheelSpeed(this.wheelSpeed, this.protocol)),
+      'keyboardMouseSettings', 'wheelSpeed')
+    if (this.activeSubMenu === 'wheelSpeed') {
+      this.wheelSpeedSubMenuContent()
+    }
     if (this.protocol === 'rustdesk') {
       this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
@@ -1027,6 +1312,15 @@ export struct RemoteSessionTopBar {
         this.touchpadSpeedSubMenuContent()
       }
     }
+  }
+
+  @Builder
+  private wheelSpeedSubMenuContent() {
+    ForEach(remoteWheelSessionSpeedChoices(this.protocol), (speed: number): void => {
+      this.menuItem(remoteWheelSpeedLabel(speed), 'keyboardMouseSettings', (): void => {
+        this.actions.onSetWheelSpeed(speed);
+      }, normalizeRemoteWheelSpeed(this.wheelSpeed, this.protocol) === speed)
+    }, (speed: number): string => 'wheel-' + speed.toString())
   }
 
   @Builder
@@ -1045,7 +1339,9 @@ export struct RemoteSessionTopBar {
       this.menuHeader('鼠标与触控', $r('sys.symbol.mouse'))
       Scroll() {
         Column() {
-          this.keyboardMouseRootMenuContent()
+          ForEach([this.keyboardMouseMenuSignature()], (_signature: string): void => {
+            this.keyboardMouseRootMenuContent()
+          }, (signature: string): string => signature)
         }.width('100%').padding(this.menuPadding())
       }
       .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
@@ -1077,7 +1373,12 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private primaryActionButton(actionId: RemoteSessionPrimaryActionId) {
-    if (actionId === 'pin') {
+    if (actionId === 'ai') {
+      this.iconButton($r('sys.symbol.wand_and_stars'), this.accentColor, (): void => {
+        this.actions.onOpenAi();
+        this.scheduleAutoCollapse();
+      }, 18, 'AI 助理，长按打开 AI 设置', (): void => { AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now()); })
+    } else if (actionId === 'pin') {
       this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
         this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
           this.pinned = !this.pinned;
@@ -1095,6 +1396,11 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.rectangle_rotate'),
         this.rustDeskDesktopFlipMode === 'reset' ? this.accentColor : '#2A9D8F',
         (): void => { this.toggleMenu('desktopFlip'); }, 18, '打开画面翻转选项')
+    } else if (actionId === 'portrait') {
+      this.iconButton($r('sys.symbol.rectangle_rotate'),
+        this.portraitDisplayActive ? '#2A9D8F' : this.accentColor,
+        (): void => { this.actions.onTogglePortraitDisplay(); }, 18,
+        this.portraitDisplayActive ? '竖屏显示，已开启' : '竖屏显示，已关闭')
     } else if (actionId === 'keyboardMouse') {
       this.iconButton($r('sys.symbol.mouse'), this.accentColor,
         (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
@@ -1120,23 +1426,51 @@ export struct RemoteSessionTopBar {
     }
   }
 
+  private primaryActionRenderKey(actionId: RemoteSessionPrimaryActionId): string {
+    // Several primary buttons derive their label/colour from parent @Prop
+    // state. Include that visible state in the ForEach key so a retained
+    // toolbar node cannot keep a stale action presentation.
+    return actionId + '|' + (this.keyboardOpen ? '1' : '0') + '|' +
+      (this.shortcutsOpen ? '1' : '0') + '|' + (this.diagnosticsEnabled ? '1' : '0') + '|' +
+      (this.pinned ? '1' : '0') + '|' + (this.canvasResetAvailable ? '1' : '0') + '|' +
+      this.rustDeskDesktopFlipMode + '|' + this.accentColor + '|' +
+      (this.rustDeskPhoneTarget ? '1' : '0') + '|' + this.protocol + '|' +
+      (this.capabilities.connect.enabled ? '1' : '0') + '|' +
+      (this.capabilities.fileUpload.enabled ? '1' : '0') + '|' +
+      (this.capabilities.clipboardSend.enabled ? '1' : '0') + '|' +
+      (this.portraitDisplayEnabled ? '1' : '0') + '|' +
+      (this.portraitDisplayActive ? '1' : '0');
+  }
+
   @Builder
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: this.layout.itemGap }) {
         ForEach(remoteSessionPrimaryActionIds(
-          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget),
+          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget,
+          this.portraitDisplayEnabled, this.diagnosticAiVisible()),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
-          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
+        if (this.protocol === 'rustdesk' && this.explicitPhone) {
+          this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+            (): void => { this.toggleMenu('phone'); }, 18, '打开手机操作')
+        }
       }
     } else {
       Row({ space: this.layout.itemGap }) {
         ForEach(remoteSessionPrimaryActionIds(
-          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget),
+          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget,
+          this.portraitDisplayEnabled, this.diagnosticAiVisible()),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
-          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
+        if (this.protocol === 'rustdesk' && this.explicitPhone) {
+          this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+            (): void => { this.toggleMenu('phone'); }, 18, '打开手机操作')
+        }
       }
     }
   }
@@ -1175,6 +1509,9 @@ export struct RemoteSessionTopBar {
         this.closeMenus();
       })
 
+      if (this.protocol === 'rustdesk' && this.explicitPhone && this.activeMenu === 'phone') {
+        this.phoneMenu()
+      }
       if (this.activeMenu === 'control') {
         this.controlMenu()
       }
@@ -1248,6 +1585,9 @@ export struct RemoteSessionTopBar {
         .onActionCancel((): void => { this.resetRailSwipe(); }))
       .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
 
+      if (this.protocol === 'rustdesk' && this.explicitPhone && this.activeMenu === 'phone') {
+        this.phoneMenu()
+      }
       if (this.activeMenu === 'control') {
         this.controlMenu()
       }
@@ -1349,7 +1689,7 @@ export struct RemoteSessionTopBar {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopEnd }) {
       if (this.edgeRail) {
         if (this.collapsed) {
           this.edgeRailHandle()

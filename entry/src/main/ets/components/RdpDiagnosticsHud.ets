@@ -1,4 +1,12 @@
 import { RdpRenderStats } from '../types/rdpnapi';
+import {
+  DiagnosticRdpGraphicsFacts,
+  rdpGfxCapsLabel,
+  rdpGraphicsFactsFromRenderStats,
+  rdpGraphicsPresentationLabel,
+  rdpH264StatusLabel,
+  rdpWireCodecLabel
+} from '../services/RdpGraphicsEvidencePolicy';
 import { Palette, buildDark } from '../common/Theme';
 
 export const EMPTY_RDP_RENDER_STATS: RdpRenderStats = {
@@ -110,6 +118,17 @@ function resultLabel(value: number, lastRemoteUpdateAgeMs: number): string {
   return '送显恢复中';
 }
 
+/** Panel width when there is room; the tucked tab's size; how close to an edge a drop tucks it. */
+const PANEL_WIDTH: number = 272;
+const TAB_WIDTH: number = 46;
+const TAB_HEIGHT: number = 40;
+const TUCK_DISTANCE: number = 28;
+
+/**
+ * RDP 性能监视: a floating card like RustDesk's. Drag it by its header; dropped near the left or right edge (or with its
+ * 收起 button) it tucks into a small tab on that edge, which a tap brings back. Expanded, the details scroll and a
+ * long value wraps under its own column instead of running into its label.
+ */
 @Component
 export struct RdpDiagnosticsHud {
   @Prop stats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
@@ -118,6 +137,8 @@ export struct RdpDiagnosticsHud {
   @Prop @Watch('onViewportChange') topInset: number = 0;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @State private expanded: boolean = false;
+  @State private tucked: boolean = false;
+  @State private side: string = 'left';
   @State private panelX: number = 10;
   @State private panelY: number = 62;
   @State private dragX: number = 0;
@@ -125,66 +146,146 @@ export struct RdpDiagnosticsHud {
 
   private pal(): Palette { return buildDark(this.accentColor); }
 
+  private panelWidth(): number {
+    return Math.max(44, Math.min(PANEL_WIDTH, this.availableWidth - 16));
+  }
+
+  /** Collapsed: header and three lines. Expanded: as tall as the details, at most what the window has. */
   private panelHeight(expanded: boolean = this.expanded): number {
-    return expanded ? 248 : 116;
-  }
-
-  private visiblePanelWidth(): number {
-    return Math.max(44, Math.min(236, this.availableWidth));
-  }
-
-  private visiblePanelHeight(expanded: boolean = this.expanded): number {
-    return Math.max(44, Math.min(this.panelHeight(expanded), this.availableHeight));
-  }
-
-  private canExpand(): boolean {
-    return this.availableWidth >= 236 && this.availableHeight >= 248;
+    const wanted: number = expanded ? 420 : 116;
+    return Math.max(44, Math.min(wanted, this.availableHeight - 16));
   }
 
   private clampPosition(expanded: boolean = this.expanded): void {
-    this.panelX = Math.max(0, Math.min(this.panelX,
-      Math.max(0, this.availableWidth - this.visiblePanelWidth())));
-    this.panelY = Math.max(0, Math.min(this.panelY,
-      Math.max(0, this.availableHeight - this.visiblePanelHeight(expanded))));
+    this.panelX = Math.max(0, Math.min(this.panelX, Math.max(0, this.availableWidth - this.panelWidth())));
+    this.panelY = Math.max(0, Math.min(this.panelY, Math.max(0, this.availableHeight - this.panelHeight(expanded))));
   }
 
   private onViewportChange(): void {
-    if (!this.canExpand()) { this.expanded = false; }
     this.clampPosition();
   }
 
+  private tuck(side: string): void {
+    this.getUIContext().animateTo({ duration: 240, curve: Curve.FastOutSlowIn }, (): void => {
+      this.side = side;
+      this.tucked = true;
+      this.panelY = Math.max(0, Math.min(this.panelY, this.availableHeight - TAB_HEIGHT));
+    });
+  }
+
+  private untuck(): void {
+    this.getUIContext().animateTo({ duration: 240, curve: Curve.FastOutSlowIn }, (): void => {
+      this.tucked = false;
+      this.panelX = this.side === 'left' ? 10 : Math.max(0, this.availableWidth - this.panelWidth() - 10);
+      this.clampPosition();
+    });
+  }
+
   private finishDrag(): void {
-    this.panelX += this.dragX;
+    const x: number = this.panelX + this.dragX;
+    this.panelX = x;
     this.panelY += this.dragY;
     this.dragX = 0;
     this.dragY = 0;
+    if (x <= TUCK_DISTANCE) { this.tuck('left'); return; }
+    if (x + this.panelWidth() >= this.availableWidth - TUCK_DISTANCE) { this.tuck('right'); return; }
     this.clampPosition();
+  }
+
+  private finishTabDrag(): void {
+    this.panelY = Math.max(0, Math.min(this.panelY + this.dragY, this.availableHeight - TAB_HEIGHT));
+    this.dragX = 0;
+    this.dragY = 0;
   }
 
   @Builder
   private metric(metric: RdpDiagnosticMetric) {
     Row() {
-      Text(metric.label).fontSize(10).fontColor('rgba(255,255,255,0.62)').layoutWeight(1)
+      Text(metric.label).fontSize(10).fontColor('rgba(255,255,255,0.62)')
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1).margin({ right: 8 })
       Text(metric.value).fontSize(10).fontColor('#FFFFFF').fontFamily('monospace')
-    }.width('100%').height(19)
+        .textAlign(TextAlign.End).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .constraintSize({ maxWidth: '58%' })
+    }.width('100%').constraintSize({ minHeight: 19 }).alignItems(VerticalAlign.Top).padding({ top: 2, bottom: 2 })
   }
 
-  build() {
+  private graphicsFacts(): DiagnosticRdpGraphicsFacts {
+    return rdpGraphicsFactsFromRenderStats(this.stats);
+  }
+
+  private graphicsBadge(): string {
+    const facts: DiagnosticRdpGraphicsFacts = this.graphicsFacts();
+    return facts.wireCodec !== 'none' ? rdpWireCodecLabel(facts) :
+      this.stats.graphicsMode.toUpperCase();
+  }
+
+  private statusColor(): string {
+    return this.stats.lastRemoteUpdateAgeMs < 0 ? '#A8B0BF' :
+      (this.stats.lastRenderResult < 0 ? this.pal().danger : '#66DD7A');
+  }
+
+  @Builder
+  private details() {
+    this.metric({ label: '状态', value: resultLabel(this.stats.lastRenderResult, this.stats.lastRemoteUpdateAgeMs) })
+    this.metric({ label: '队列 P95', value: durationUs(this.stats.queueP95Us) })
+    this.metric({ label: '远端更新年龄', value: ageMs(this.stats.lastRemoteUpdateAgeMs) })
+    if (this.expanded) {
+      Divider().color('rgba(255,255,255,0.14)').margin({ top: 3, bottom: 3 })
+      this.metric({
+        label: '送显 / 替换',
+        value: this.stats.presentationWindowSamples.toString() + ' / ' + this.stats.pumpReplaced.toString()
+      })
+      this.metric({ label: '事件循环年龄', value: ageMs(this.stats.eventLoopAgeMs) })
+      this.metric({ label: '事件循环阻塞', value: durationUs(this.stats.eventLoopBlockMaxUs) })
+      this.metric({ label: '上传 P95', value: durationUs(this.stats.uploadP95Us) })
+      this.metric({ label: '绘制 P95', value: durationUs(this.stats.drawP95Us) })
+      this.metric({ label: 'swap P95', value: durationUs(this.stats.swapP95Us) })
+      this.metric({
+        label: '画面尺寸',
+        value: this.stats.desktopWidth.toString() + ' × ' + this.stats.desktopHeight.toString()
+      })
+      this.metric({ label: '图形管线', value: rdpGraphicsPresentationLabel(this.graphicsFacts()) })
+      this.metric({
+        label: '动态布局',
+        value: this.stats.displayControlDisabled ? 'fallback' :
+          (this.stats.displayControlReady ? this.stats.displayLastResult : 'unavailable')
+      })
+      this.metric({ label: 'GFX 能力', value: rdpGfxCapsLabel(this.graphicsFacts()) })
+      this.metric({ label: '线上编码', value: rdpWireCodecLabel(this.graphicsFacts()) })
+      this.metric({ label: 'H.264', value: rdpH264StatusLabel(this.graphicsFacts()) })
+      this.metric({
+        label: '停滞 / 拒绝',
+        value: this.stats.pumpRejected.toString() + ' / ' + this.stats.presentationRejected.toString()
+      })
+      this.metric({
+        label: '输入失败 / 网络检查',
+        value: this.stats.inputPostFailures.toString() + ' / ' + this.stats.networkCheckFailures.toString()
+      })
+    }
+  }
+
+  @Builder
+  private panel() {
     Column() {
       Row() {
-        Column().width(7).height(7).borderRadius(4)
-          .backgroundColor(this.stats.lastRemoteUpdateAgeMs < 0 ? '#A8B0BF' :
-            (this.stats.lastRenderResult < 0 ? this.pal().danger : '#66DD7A'))
+        Column().width(7).height(7).borderRadius(4).backgroundColor(this.statusColor())
         Text('RDP 性能监视').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-          .margin({ left: 7 })
+          .margin({ left: 7 }).maxLines(1)
         Blank().layoutWeight(1)
-        Text(this.stats.graphicsMode.toUpperCase()).fontSize(9).fontColor(this.accentColor)
-          .fontWeight(FontWeight.Bold)
+        Text(this.graphicsBadge()).fontSize(9).fontColor(this.accentColor).fontWeight(FontWeight.Bold).maxLines(1)
         SymbolGlyph(this.expanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
           .fontSize(12).fontColor(['rgba(255,255,255,0.72)']).margin({ left: 8 })
+        // 收起到边 (the nearer edge).
+        SymbolGlyph(this.panelX + this.panelWidth() / 2 < this.availableWidth / 2 ?
+          $r('sys.symbol.chevron_left') : $r('sys.symbol.chevron_right'))
+          .fontSize(12).fontColor(['rgba(255,255,255,0.72)']).margin({ left: 6 })
+          .padding(6).accessibilityText('收起到边上')
+          .onClick((): void => {
+            this.tuck(this.panelX + this.panelWidth() / 2 < this.availableWidth / 2 ? 'left' : 'right');
+          })
       }.width('100%').height(28).margin({ bottom: 4 })
         .onClick((): void => {
-          const next: boolean = !this.expanded && this.canExpand();
+          const next: boolean = !this.expanded;
           this.expanded = next;
           this.clampPosition(next);
         })
@@ -195,57 +296,13 @@ export struct RdpDiagnosticsHud {
           })
           .onActionEnd((): void => { this.finishDrag(); })
           .onActionCancel((): void => { this.dragX = 0; this.dragY = 0; }))
-      this.metric({
-        label: '状态',
-        value: resultLabel(this.stats.lastRenderResult, this.stats.lastRemoteUpdateAgeMs)
-      })
-      this.metric({
-        label: '队列 P95',
-        value: durationUs(this.stats.queueP95Us)
-      })
-      this.metric({
-        label: '远端更新年龄',
-        value: ageMs(this.stats.lastRemoteUpdateAgeMs)
-      })
-      if (this.expanded) {
-        this.metric({
-          label: '送显 / 替换',
-          value: this.stats.presentationWindowSamples.toString() + ' / ' +
-            this.stats.pumpReplaced.toString()
-        })
-        this.metric({
-          label: '事件循环年龄 / 阻塞',
-          value: ageMs(this.stats.eventLoopAgeMs) + ' / ' + durationUs(this.stats.eventLoopBlockMaxUs)
-        })
-        this.metric({
-          label: '上传 / 绘制 / swap',
-          value: durationUs(this.stats.uploadP95Us) + ' / ' +
-            durationUs(this.stats.drawP95Us) + ' / ' + durationUs(this.stats.swapP95Us)
-        })
-        this.metric({
-          label: '画面尺寸',
-          value: this.stats.desktopWidth.toString() + ' x ' + this.stats.desktopHeight.toString()
-        })
-        this.metric({
-          label: 'GFX / 动态布局',
-          value: (this.stats.gfxChannelConnected ? 'connected' : 'gdi') + ' / ' +
-            (this.stats.displayControlDisabled ? 'fallback' :
-              (this.stats.displayControlReady ? this.stats.displayLastResult : 'unavailable'))
-        })
-        this.metric({
-          label: '停滞/拒绝',
-          value: this.stats.pumpRejected.toString() + ' / ' + this.stats.presentationRejected.toString()
-        })
-        this.metric({
-          label: '输入失败 / 网络检查',
-          value: this.stats.inputPostFailures.toString() + ' / ' +
-            this.stats.networkCheckFailures.toString()
-        })
-      }
+      Scroll() {
+        Column() { this.details() }.width('100%')
+      }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
     }
-    .width(this.visiblePanelWidth()).height(this.visiblePanelHeight())
+    .width(this.panelWidth()).height(this.panelHeight())
     .padding(12)
-    .backgroundColor('rgba(12,16,24,0.78)').backdropBlur(18)
+    .backgroundColor('rgba(12,16,24,0.82)').backdropBlur(18)
     .border({ width: 0.5, color: this.pal().floatBorder })
     .borderRadius(16)
     .shadow({ radius: 16, color: this.pal().fabShadow, offsetY: 4 })
@@ -253,5 +310,38 @@ export struct RdpDiagnosticsHud {
     .translate({ x: this.dragX, y: this.dragY })
     .clip(true)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+  }
+
+  /** Tucked: a small tab on the edge with the status dot; tap to bring the card back, drag to move it up or down. */
+  @Builder
+  private tab() {
+    Row({ space: 5 }) {
+      Column().width(7).height(7).borderRadius(4).backgroundColor(this.statusColor())
+      Text('RDP').fontSize(9).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+    }
+    .width(TAB_WIDTH).height(TAB_HEIGHT).justifyContent(FlexAlign.Center)
+    .backgroundColor('rgba(12,16,24,0.82)').backdropBlur(18)
+    .border({ width: 0.5, color: this.pal().floatBorder })
+    .borderRadius(this.side === 'left' ? { topRight: 12, bottomRight: 12 } : { topLeft: 12, bottomLeft: 12 })
+    .shadow({ radius: 8, color: 'rgba(0,0,0,0.30)', offsetY: 2 })
+    .position({ x: this.side === 'left' ? 0 : this.availableWidth - TAB_WIDTH, y: this.topInset + this.panelY })
+    .translate({ y: this.dragY })
+    .accessibilityText('展开 RDP 性能监视')
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .gesture(
+      GestureGroup(GestureMode.Exclusive,
+        TapGesture({ count: 1 }).onAction((): void => { this.untuck(); }),
+        PanGesture({ fingers: 1, direction: PanDirection.All, distance: 5 })
+          .onActionUpdate((event: GestureEvent): void => { this.dragY = event.offsetY; })
+          .onActionEnd((): void => { this.finishTabDrag(); })
+          .onActionCancel((): void => { this.dragY = 0; })))
+  }
+
+  build() {
+    if (this.tucked) {
+      this.tab()
+    } else {
+      this.panel()
+    }
   }
 }

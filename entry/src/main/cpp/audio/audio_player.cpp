@@ -21,12 +21,67 @@
 #define LOG_DOMAIN 0x0010
 #define LOG_TAG "AUDIO_PLAYER"
 
+// One slot per live picture session (several may be live: Pad split screen, PC windows): its lazily created player
+// and its own activity/mute state. Guarded by g_activeAudioMutex; the activity state itself is atomic.
+struct ActiveAudioSlot {
+    Render::DecoderSessionIdentity owner;
+    std::shared_ptr<AudioPlayer> player;
+    int64_t handle = 0;
+    std::shared_ptr<AudioActivityState> activity = std::make_shared<AudioActivityState>();
+};
 static std::mutex g_activeAudioMutex;
-static std::shared_ptr<AudioPlayer> g_activeAudioPlayer = nullptr;
-static Render::DecoderSessionIdentity g_activeAudioOwner;
-static int64_t g_activeAudioHandle = 0;
-static AudioActivityState g_audioActivityState;
+static std::vector<ActiveAudioSlot> g_activeAudio;
+// The session whose window has focus: only it plays while several sessions are live (0 = none chosen, all play).
+static std::atomic<uint64_t> g_audioFocusSessionId {0};
 static OpaqueHandleRegistry<AudioPlayer> g_audioRegistry;
+
+static ActiveAudioSlot* AudioSlotLocked(const Render::DecoderSessionIdentity& owner) {
+    if (!owner.valid()) {
+        return nullptr;
+    }
+    for (ActiveAudioSlot& slot : g_activeAudio) {
+        if (slot.owner == owner) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+static ActiveAudioSlot* SoleAudioSlotLocked() {
+    return g_activeAudio.size() == 1 ? &g_activeAudio.front() : nullptr;
+}
+
+static std::shared_ptr<AudioActivityState> AudioActivityFor(const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+    ActiveAudioSlot* slot = AudioSlotLocked(owner);
+    return slot != nullptr ? slot->activity : nullptr;
+}
+
+// Another live session holding the audio focus silences this one (its PCM is dropped, not queued).
+static bool AudioFocusAllows(const Render::DecoderSessionIdentity& owner) {
+    const uint64_t focus = g_audioFocusSessionId.load(std::memory_order_acquire);
+    if (focus == 0 || focus == owner.sessionId) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+    for (const ActiveAudioSlot& slot : g_activeAudio) {
+        if (slot.owner.sessionId == focus) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Entry points that carry only a player handle act for the session that handle is bound to.
+static Render::DecoderSessionIdentity OwnerForAudioHandle(int64_t handle) {
+    if (handle > 0) {
+        const auto metadata = g_audioRegistry.snapshot(handle);
+        if (metadata.found && metadata.boundOwner.valid()) {
+            return metadata.boundOwner;
+        }
+    }
+    return Render::SharedSessionSinkOwnerLease().snapshot();
+}
 
 struct AudioPlayerRegistration {
     std::shared_ptr<AudioPlayer> player;
@@ -82,7 +137,7 @@ static AudioPlayerRegistration CreateAudioPlayer(
     int sampleRate, int channels, const Render::DecoderSessionIdentity& owner) {
     const int safeRate = sampleRate > 0 ? sampleRate : 48000;
     const int safeChannels = channels > 0 ? channels : 2;
-    auto player = std::shared_ptr<AudioPlayer>(new AudioPlayer(owner));
+    auto player = std::shared_ptr<AudioPlayer>(new AudioPlayer(owner, AudioActivityFor(owner)));
     const int64_t handle = g_audioRegistry.registerObject(player, owner);
     if (handle <= 0 || !player->BindCallbackHandle(handle)) {
         if (handle > 0) {
@@ -116,10 +171,11 @@ static AudioPlayerRegistration CreateAudioPlayer(
 // AudioPlayer 实现 (OHAudio)
 // ============================================================
 
-AudioPlayer::AudioPlayer(Render::DecoderSessionIdentity owner)
+AudioPlayer::AudioPlayer(Render::DecoderSessionIdentity owner,
+                         std::shared_ptr<AudioActivityState> activity)
     : renderer_(nullptr), builder_(nullptr),
       sampleRate_(48000), channels_(2),
-      owner_(owner),
+      owner_(owner), activity_(std::move(activity)),
       state_(AudioPlayerState::IDLE) {
     callbackContext_ = std::make_shared<Render::CallbackAdmissionContext>(owner_);
     writeCallbackGate_.Set([this](void* audioData, int32_t audioDataSize) {
@@ -429,7 +485,9 @@ int AudioPlayer::Write(const uint8_t* data, size_t size) {
                 suspendedForInactivity_ = false;
                 rendererStopped_ = false;
                 state_ = AudioPlayerState::RUNNING;
-                g_audioActivityState.markResumed();
+                if (activity_) {
+                    activity_->markResumed();
+                }
                 OH_LOG_INFO(LOG_APP,
                     "[AudioDiag] inactivity resume after prebuffer queued=%{public}zu prebufferMs=%{public}u",
                     queuedBytes, queueConfig_.prebufferMs);
@@ -719,17 +777,71 @@ static void QuiesceRegisteredAudioPlayer(
     }
 }
 
+// Optional trailing session id argument: names the picture session (several may be live); absent means the only one.
+// A positive session id names that session; a negative one names a session that is not live yet (none); absent or 0
+// keeps the single-session behavior (the only live session).
+static Render::DecoderSessionIdentity OwnerFromSessionArg(napi_env env, napi_value arg) {
+    if (arg != nullptr) {
+        napi_valuetype type = napi_undefined;
+        int64_t sessionId = 0;
+        if (napi_typeof(env, arg, &type) == napi_ok && type == napi_number &&
+            napi_get_value_int64(env, arg, &sessionId) == napi_ok && sessionId != 0) {
+            return sessionId > 0 ?
+                Render::SharedSessionSinkOwnerLease().ownerForSession(static_cast<uint64_t>(sessionId)) :
+                Render::DecoderSessionIdentity {};
+        }
+    }
+    return Render::SharedSessionSinkOwnerLease().snapshot();
+}
+
+// Installs `player` as the session's player; false when the session is gone or already has another one.
+static bool InstallSessionPlayer(const Render::DecoderSessionIdentity& owner,
+                                 const std::shared_ptr<AudioPlayer>& player, int64_t handle,
+                                 int64_t expectedPrevious) {
+    std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+    ActiveAudioSlot* slot = AudioSlotLocked(owner);
+    if (slot == nullptr || (slot->handle != 0 && slot->handle != expectedPrevious)) {
+        return false;
+    }
+    slot->player = player;
+    slot->handle = handle;
+    return true;
+}
+
+static void EnsureAudioSlot(const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+    if (owner.valid() && AudioSlotLocked(owner) == nullptr) {
+        ActiveAudioSlot slot;
+        slot.owner = owner;
+        g_activeAudio.push_back(std::move(slot));
+    }
+}
+
+static void DestroyRegisteredPlayer(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                                    std::shared_ptr<AudioPlayer> fallback) {
+    if (handle > 0) {
+        QuiesceRegisteredAudioPlayer(handle, owner.valid() ? &owner : nullptr);
+        const std::shared_ptr<AudioPlayer> registered = owner.valid() ?
+            g_audioRegistry.destroy(handle, owner) : g_audioRegistry.destroy(handle);
+        if (registered) {
+            fallback = registered;
+        }
+    }
+    if (fallback) {
+        fallback->Destroy();
+    }
+}
+
 napi_value NapiInitAudioPlayer(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     int32_t sampleRate = 48000, channels = 2;
     if (argc >= 1) { napi_get_value_int32(env, args[0], &sampleRate); }
     if (argc >= 2) { napi_get_value_int32(env, args[1], &channels); }
 
-    const Render::DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
+    const Render::DecoderSessionIdentity owner = OwnerFromSessionArg(env, argc >= 3 ? args[2] : nullptr);
     const auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     if (!sinkLease) {
         napi_value errVal;
@@ -737,23 +849,37 @@ napi_value NapiInitAudioPlayer(napi_env env, napi_callback_info info) {
         return errVal;
     }
 
-    g_audioActivityState.reset();
+    EnsureAudioSlot(owner);
+    if (const auto activity = AudioActivityFor(owner)) {
+        activity->reset();
+    }
+    // A player this session already had is replaced, as before (one player per session).
+    std::shared_ptr<AudioPlayer> previous;
+    int64_t previousHandle = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+        if (ActiveAudioSlot* slot = AudioSlotLocked(owner)) {
+            previous = std::move(slot->player);
+            previousHandle = slot->handle;
+            slot->handle = 0;
+        }
+    }
+    if (previousHandle > 0 || previous) {
+        DestroyRegisteredPlayer(previousHandle, owner, std::move(previous));
+    }
     auto registration = CreateAudioPlayer(sampleRate, channels, owner);
     auto player = registration.player;
-    if (!player || registration.handle <= 0) {
+    if (!player || registration.handle <= 0 ||
+        !InstallSessionPlayer(owner, player, registration.handle, 0)) {
+        if (registration.handle > 0) {
+            DestroyRegisteredPlayer(registration.handle, owner, player);
+        }
         napi_value errVal;
         napi_create_int32(env, -1, &errVal);
         return errVal;
     }
-    const int64_t handle = registration.handle;
-    {
-        std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        g_activeAudioPlayer = player;
-        g_activeAudioOwner = owner;
-        g_activeAudioHandle = handle;
-    }
     napi_value result;
-    napi_create_int64(env, handle, &result);
+    napi_create_int64(env, registration.handle, &result);
     return result;
 }
 
@@ -774,8 +900,7 @@ napi_value NapiDestroyAudioPlayer(napi_env env, napi_callback_info info) {
         return undefined;
     }
 
-    const Render::DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
+    const Render::DecoderSessionIdentity owner = OwnerForAudioHandle(handleVal);
     if (!owner.valid()) {
         return undefined;
     }
@@ -792,10 +917,11 @@ napi_value NapiDestroyAudioPlayer(napi_env env, napi_callback_info info) {
     player->Destroy();
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioHandle == handleVal) {
-            g_activeAudioPlayer = nullptr;
-            g_activeAudioOwner = Render::DecoderSessionIdentity {};
-            g_activeAudioHandle = 0;
+        if (ActiveAudioSlot* slot = AudioSlotLocked(owner)) {
+            if (slot->handle == handleVal) {
+                slot->player = nullptr;
+                slot->handle = 0;
+            }
         }
     }
     return undefined;
@@ -822,8 +948,7 @@ napi_value NapiSetAudioMute(napi_env env, napi_callback_info info) {
 
     bool mute = false;
     napi_get_value_bool(env, args[1], &mute);
-    const Render::DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
+    const Render::DecoderSessionIdentity owner = OwnerForAudioHandle(handleVal);
     if (!owner.valid()) {
         OH_LOG_WARN(LOG_APP, "[Audio] setAudioMute: no active session owner");
         return undefined;
@@ -838,7 +963,9 @@ napi_value NapiSetAudioMute(napi_env env, napi_callback_info info) {
         OH_LOG_WARN(LOG_APP, "[Audio] setAudioMute: null context or player");
         return undefined;
     }
-    g_audioActivityState.setMuted(mute);
+    if (const auto activity = AudioActivityFor(owner)) {
+        activity->setMuted(mute);
+    }
 
     if (mute) {
         playerLease->Pause();
@@ -854,8 +981,8 @@ napi_value NapiSetActiveAudioMute(napi_env env, napi_callback_info info) {
     napi_value undefined;
     napi_get_undefined(env, &undefined);
 
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     if (argc < 1) {
@@ -865,15 +992,35 @@ napi_value NapiSetActiveAudioMute(napi_env env, napi_callback_info info) {
 
     bool mute = false;
     napi_get_value_bool(env, args[0], &mute);
-    AudioPlayerNapi::SetActiveAudioMuted(mute);
+    // setActiveAudioMute(mute, sessionId?): the page's own session when named.
+    AudioPlayerNapi::SetActiveAudioMuted(OwnerFromSessionArg(env, argc >= 2 ? args[1] : nullptr), mute);
     OH_LOG_INFO(LOG_APP, "[Audio] setActiveAudioMute: muted=%{public}s", mute ? "true" : "false");
     return undefined;
 }
 
-napi_value NapiIsAudioPlaybackActive(napi_env env, napi_callback_info /*info*/) {
+napi_value NapiIsAudioPlaybackActive(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     napi_value active;
-    napi_get_boolean(env, AudioPlayerNapi::IsActivePlaybackReceiving(), &active);
+    napi_get_boolean(env, AudioPlayerNapi::IsActivePlaybackReceiving(
+        OwnerFromSessionArg(env, argc >= 1 ? args[0] : nullptr)), &active);
     return active;
+}
+
+// setAudioFocusSession(sessionId): the focused window's session plays; 0 lets every live session play.
+napi_value NapiSetAudioFocusSession(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t sessionId = 0;
+    if (argc >= 1 && args[0] != nullptr) {
+        napi_get_value_int64(env, args[0], &sessionId);
+    }
+    AudioPlayerNapi::SetAudioFocusSession(sessionId > 0 ? static_cast<uint64_t>(sessionId) : 0);
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 } // anonymous namespace
@@ -890,6 +1037,8 @@ napi_value AudioPlayerNapi::Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "setActiveAudioMute", fn);
     napi_create_function(env, "isAudioPlaybackActive", NAPI_AUTO_LENGTH, NapiIsAudioPlaybackActive, nullptr, &fn);
     napi_set_named_property(env, exports, "isAudioPlaybackActive", fn);
+    napi_create_function(env, "setAudioFocusSession", NAPI_AUTO_LENGTH, NapiSetAudioFocusSession, nullptr, &fn);
+    napi_set_named_property(env, exports, "setAudioFocusSession", fn);
     return exports;
 }
 
@@ -933,8 +1082,24 @@ int AudioPlayerNapi::DispatchActiveNative(
         }
     }
 
-    g_audioActivityState.recordPcmFrame(writableSize);
-    if (g_audioActivityState.shouldDropIncomingPcm()) {
+    // RustDesk audio is intentionally lazy: SetActiveSessionOwner installs
+    // the session slot before the first PCM arrives, while the player
+    // handle is still zero. Reject only a session without a slot and let the
+    // normal create/install path handle that first frame.
+    std::shared_ptr<AudioActivityState> activity;
+    int64_t handle = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+        ActiveAudioSlot* slot = AudioSlotLocked(owner);
+        if (slot == nullptr) {
+            return -1;
+        }
+        activity = slot->activity;
+        handle = slot->handle;
+    }
+
+    activity->recordPcmFrame(writableSize);
+    if (activity->shouldDropIncomingPcm() || !AudioFocusAllows(owner)) {
         static std::atomic<uint64_t> mutedDropCount {0};
         const uint64_t mutedDrop =
             mutedDropCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -947,19 +1112,6 @@ int AudioPlayerNapi::DispatchActiveNative(
                 safeChannels);
         }
         return 0;
-    }
-
-    int64_t handle = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        // RustDesk audio is intentionally lazy: SetActiveSessionOwner installs
-        // the session identity before the first PCM arrives, while the player
-        // handle is still zero. Reject only a stale owner and let the normal
-        // create/install path handle that first frame.
-        if (g_activeAudioOwner != owner) {
-            return -1;
-        }
-        handle = g_activeAudioHandle;
     }
 
     auto playerLease = g_audioRegistry.acquire(handle, owner);
@@ -981,9 +1133,11 @@ int AudioPlayerNapi::DispatchActiveNative(
             oldPlayer->Destroy();
         }
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioHandle == handle && g_activeAudioOwner == owner) {
-            g_activeAudioPlayer = nullptr;
-            g_activeAudioHandle = 0;
+        if (ActiveAudioSlot* slot = AudioSlotLocked(owner)) {
+            if (slot->handle == handle) {
+                slot->player = nullptr;
+                slot->handle = 0;
+            }
         }
     }
 
@@ -993,17 +1147,7 @@ int AudioPlayerNapi::DispatchActiveNative(
     if (!newPlayer || newHandle <= 0) {
         return -3;
     }
-    bool installed = false;
-    {
-        std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioOwner == owner &&
-            (g_activeAudioHandle == 0 || g_activeAudioHandle == handle)) {
-            g_activeAudioPlayer = newPlayer;
-            g_activeAudioHandle = newHandle;
-            installed = true;
-        }
-    }
-    if (!installed) {
+    if (!InstallSessionPlayer(owner, newPlayer, newHandle, handle)) {
         QuiesceRegisteredAudioPlayer(newHandle, &owner);
         const std::shared_ptr<AudioPlayer> discarded = g_audioRegistry.destroy(newHandle, owner);
         if (discarded) {
@@ -1025,18 +1169,25 @@ void AudioPlayerNapi::DestroyActiveNative() {
     }
 }
 
-std::shared_ptr<AudioPlayer> AudioPlayerNapi::TakeActiveNative() {
+// Takes a session's player out of its slot (`target` null: the only live session's); the slot itself stays until the
+// session is deactivated.
+static std::shared_ptr<AudioPlayer> TakeSlotPlayer(const Render::DecoderSessionIdentity* target) {
     std::shared_ptr<AudioPlayer> player;
     int64_t handle = 0;
     Render::DecoderSessionIdentity owner;
+    std::shared_ptr<AudioActivityState> activity;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        player = g_activeAudioPlayer;
-        handle = g_activeAudioHandle;
-        owner = g_activeAudioOwner;
-        g_activeAudioPlayer = nullptr;
-        g_activeAudioOwner = Render::DecoderSessionIdentity {};
-        g_activeAudioHandle = 0;
+        ActiveAudioSlot* slot = target != nullptr ? AudioSlotLocked(*target) : SoleAudioSlotLocked();
+        if (slot == nullptr) {
+            return nullptr;
+        }
+        player = std::move(slot->player);
+        handle = slot->handle;
+        owner = slot->owner;
+        activity = slot->activity;
+        slot->player = nullptr;
+        slot->handle = 0;
     }
     if (handle > 0) {
         const Render::DecoderSessionIdentity* ownerPtr = owner.valid() ? &owner : nullptr;
@@ -1047,92 +1198,63 @@ std::shared_ptr<AudioPlayer> AudioPlayerNapi::TakeActiveNative() {
             player = registered;
         }
     }
-    g_audioActivityState.reset();
+    if (activity) {
+        activity->reset();
+    }
     return player;
+}
+
+std::shared_ptr<AudioPlayer> AudioPlayerNapi::TakeActiveNative() {
+    return TakeSlotPlayer(nullptr);
 }
 
 std::shared_ptr<AudioPlayer> AudioPlayerNapi::TakeActiveNative(
     const Render::DecoderSessionIdentity& owner) {
-    std::shared_ptr<AudioPlayer> player;
-    int64_t handle = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioOwner != owner) {
-            return nullptr;
-        }
-        player = g_activeAudioPlayer;
-        handle = g_activeAudioHandle;
-        g_activeAudioPlayer = nullptr;
-        g_activeAudioOwner = Render::DecoderSessionIdentity {};
-        g_activeAudioHandle = 0;
-    }
-    if (handle > 0) {
-        QuiesceRegisteredAudioPlayer(handle, &owner);
-        const std::shared_ptr<AudioPlayer> registered = g_audioRegistry.destroy(handle, owner);
-        if (registered) {
-            player = registered;
-        }
-    }
-    g_audioActivityState.reset();
-    return player;
+    return TakeSlotPlayer(&owner);
 }
 
 void AudioPlayerNapi::SetActiveSessionOwner(
     const Render::DecoderSessionIdentity& owner) {
-    std::shared_ptr<AudioPlayer> stalePlayer;
-    int64_t staleHandle = 0;
-    Render::DecoderSessionIdentity staleOwner;
+    if (!owner.valid()) {
+        return;
+    }
     int64_t activeHandle = 0;
-    bool ownerChanged = false;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioOwner != owner) {
-            // The active player is a sink, not a reusable process-global
-            // session object. Do not let S2 inherit S1's OHAudio renderer
-            // merely because the adapter singleton changed owners.
-            stalePlayer = std::move(g_activeAudioPlayer);
-            staleHandle = g_activeAudioHandle;
-            staleOwner = g_activeAudioOwner;
-            g_activeAudioOwner = owner;
-            g_activeAudioHandle = 0;
-            ownerChanged = true;
+        if (ActiveAudioSlot* slot = AudioSlotLocked(owner)) {
+            // Same session again (a RustDesk transport reconnect): keep its player.
+            activeHandle = slot->handle;
         } else {
-            activeHandle = g_activeAudioHandle;
+            // Another live session keeps its own player; this one starts without (created lazily on first PCM).
+            ActiveAudioSlot fresh;
+            fresh.owner = owner;
+            g_activeAudio.push_back(std::move(fresh));
         }
     }
-    if (staleHandle > 0) {
-        const Render::DecoderSessionIdentity* ownerPtr = staleOwner.valid() ? &staleOwner : nullptr;
-        QuiesceRegisteredAudioPlayer(staleHandle, ownerPtr);
-        const std::shared_ptr<AudioPlayer> registered = staleOwner.valid() ?
-            g_audioRegistry.destroy(staleHandle, staleOwner) :
-            g_audioRegistry.destroy(staleHandle);
-        if (registered) {
-            stalePlayer = registered;
-        }
-    }
-    if (stalePlayer) {
-        stalePlayer->Destroy();
-    }
-    if (ownerChanged || stalePlayer) {
-        g_audioActivityState.reset();
-    }
-    if (activeHandle > 0 && owner.valid()) {
+    if (activeHandle > 0) {
         g_audioRegistry.activate(activeHandle, owner);
     }
 }
 
 void AudioPlayerNapi::ClearActiveSessionOwner(
     const Render::DecoderSessionIdentity& owner) {
-    bool cleared = false;
+    std::shared_ptr<AudioPlayer> leftover;
+    int64_t leftoverHandle = 0;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioOwner == owner) {
-            g_activeAudioOwner = Render::DecoderSessionIdentity {};
-            cleared = true;
+        for (auto it = g_activeAudio.begin(); it != g_activeAudio.end(); ++it) {
+            if (it->owner == owner) {
+                leftover = std::move(it->player);
+                leftoverHandle = it->handle;
+                g_activeAudio.erase(it);
+                break;
+            }
         }
     }
-    if (cleared) {
-        g_audioActivityState.reset();
+    // Teardown normally takes the player first (TakeActiveNative); one still here goes with its session, so it can
+    // neither keep playing nor be inherited by another session.
+    if (leftoverHandle > 0 || leftover) {
+        DestroyRegisteredPlayer(leftoverHandle, owner, std::move(leftover));
     }
 }
 
@@ -1170,7 +1292,14 @@ void AudioPlayerNapi::DestroyDetachedNative(
 }
 
 bool AudioPlayerNapi::IsActivePlaybackReceiving() {
-    return g_audioActivityState.hasReceivedPcm();
+    std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+    const ActiveAudioSlot* slot = SoleAudioSlotLocked();
+    return slot != nullptr && slot->activity->hasReceivedPcm();
+}
+
+bool AudioPlayerNapi::IsActivePlaybackReceiving(const Render::DecoderSessionIdentity& owner) {
+    const auto activity = AudioActivityFor(owner);
+    return activity != nullptr && activity->hasReceivedPcm();
 }
 
 bool AudioPlayerNapi::SuspendActiveNative(
@@ -1182,10 +1311,11 @@ bool AudioPlayerNapi::SuspendActiveNative(
     std::shared_ptr<AudioPlayer> player;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioOwner != owner || g_activeAudioHandle <= 0) {
+        const ActiveAudioSlot* slot = AudioSlotLocked(owner);
+        if (slot == nullptr || slot->handle <= 0) {
             return false;
         }
-        const auto playerLease = g_audioRegistry.acquire(g_activeAudioHandle, owner);
+        const auto playerLease = g_audioRegistry.acquire(slot->handle, owner);
         if (!playerLease) {
             return false;
         }
@@ -1200,29 +1330,40 @@ bool AudioPlayerNapi::SuspendActiveNative(
 
 bool AudioPlayerNapi::PollActiveAudioInactivity(
     const Render::DecoderSessionIdentity& owner, uint64_t nowMs) {
-    if (!g_audioActivityState.pollInactivity(nowMs)) {
+    const auto activity = AudioActivityFor(owner);
+    if (!activity || !activity->pollInactivity(nowMs)) {
         return false;
     }
     if (!SuspendActiveNative(owner)) {
-        g_audioActivityState.markResumed();
+        activity->markResumed();
         return false;
     }
     return true;
 }
 
 bool AudioPlayerNapi::IsActiveAudioMuted() {
-    return g_audioActivityState.isMuted();
+    std::lock_guard<std::mutex> lock(g_activeAudioMutex);
+    const ActiveAudioSlot* slot = SoleAudioSlotLocked();
+    return slot != nullptr && slot->activity->isMuted();
 }
 
 void AudioPlayerNapi::SetActiveAudioMuted(bool muted) {
-    g_audioActivityState.setMuted(muted);
+    SetActiveAudioMuted(Render::SharedSessionSinkOwnerLease().snapshot(), muted);
+}
+
+void AudioPlayerNapi::SetActiveAudioMuted(const Render::DecoderSessionIdentity& owner, bool muted) {
     int64_t handle = 0;
-    Render::DecoderSessionIdentity owner;
+    std::shared_ptr<AudioActivityState> activity;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        handle = g_activeAudioHandle;
-        owner = g_activeAudioOwner;
+        const ActiveAudioSlot* slot = AudioSlotLocked(owner);
+        if (slot == nullptr) {
+            return;
+        }
+        handle = slot->handle;
+        activity = slot->activity;
     }
+    activity->setMuted(muted);
     const auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     if (!sinkLease) {
         return;
@@ -1236,6 +1377,10 @@ void AudioPlayerNapi::SetActiveAudioMuted(bool muted) {
     } else {
         playerLease->Resume();
     }
+}
+
+void AudioPlayerNapi::SetAudioFocusSession(uint64_t sessionId) {
+    g_audioFocusSessionId.store(sessionId, std::memory_order_release);
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)

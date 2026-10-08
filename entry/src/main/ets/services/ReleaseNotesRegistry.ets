@@ -1,15 +1,31 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.5.1';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001006;
+import { PRO_TRIAL_STORY } from './ProTrialStory';
+
+export const CURRENT_RELEASE_VERSION: string = '1.2.0';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001008;
 
 export interface ReleaseNotePage {
   id: string;
   symbol: ResourceStr;
   title: string;
   desc: string;
+  /** 新功能 / 改进 / 修复 / 即将推出 — shown as a small label. */
+  tag?: string;
+  points?: string[];
+  /** HarmonyOS system symbol drawn instead of `symbol` when present. */
+  glyph?: Resource;
+}
+
+/** One-line summary shown under the version in the 1.1.6+ 「新功能」 list. */
+export function releaseHeadline(version: string): string {
+  if (version === '1.2.0') { return 'AI 助理与远程 AI 登场，全新视觉默认开启，SSH 与 PC 体验全面打磨；所有 Pro 功能免费试用。'; }
+  if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换、竖屏会话更顺手，连接、终端与设置体验全面打磨。'; }
+  return '';
 }
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version === CURRENT_RELEASE_VERSION) { return currentReleasePages(); }
+  if (version === '1.1.6') { return release116Pages(); }
+  if (version === '1.1.5.1') { return release1151Pages(); }
   if (version === '1.1.5') { return release115Pages(); }
   if (version === '1.1.4') { return release114Pages(); }
   if (version === '1.1.3') { return release113Pages(); }
@@ -20,7 +36,166 @@ export function currentReleasePageCount(): number {
   return currentReleasePages().length;
 }
 
+// 1.2.0: the free Pro trial leads, then AI 助理 and everything it can now do; 1.1.6 is summed up last for anyone
+// updating straight from an older version.
 function currentReleasePages(): ReleaseNotePage[] {
+  return [
+    {
+      id: 'release-pro-trial', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.star_fill'),
+      tag: '免费试用', title: 'Pro 全部功能免费试用',
+      desc: '所有用户都能免费使用已开发的全部 Pro 功能：AI 助理、远程 AI、工作区、高级主机管理、远端显示方案、个性化、同账号接续等。' +
+        PRO_TRIAL_STORY
+    },
+    {
+      id: 'release-ai-assistant', symbol: $rawfile('icons/cloud.svg'), glyph: $r('sys.symbol.wand_and_stars'),
+      tag: '新功能', title: 'AI 助理：聊天与助理',
+      desc: '聊天能写作、翻译、总结，读你添加的文档并生成 Word 和 Excel；助理专管 RemoteDesktop 的连接、设置和诊断。问题该归谁，它们会自己转交。'
+    },
+    {
+      id: 'release-ai-voice', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.mic_fill_waves_left_and_right'),
+      tag: 'Beta', title: 'AI 语音',
+      desc: '在「设置 → AI 语音」打开后，可以像 Siri 一样和 AI 说话：回答时随时插话打断，连续对话，说“回到文字”“拜拜”就切换或退出。朗读和识别都可选本机或云端。'
+    },
+    {
+      id: 'release-ai-tools', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.checkmark_shield'),
+      tag: '新功能', title: 'AI 能帮你动手',
+      desc: '设提醒、查日程、联网搜索、分享、改设置、连接主机；它生成的文档、设的提醒、记住的事、对话记录和主机，也能查看、修改和删除。会改动数据的操作都先给你确认。'
+    },
+    {
+      id: 'release-ai-session', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.smal_window_playback'),
+      tag: '新功能', title: '连接中也能用 AI',
+      desc: 'RDP、RustDesk、VNC、Moonlight 的侧栏和 SSH 的「更多」里都有 AI。它以悬浮球加小对话框出现：单击退出、双击说话、长按拖动，横竖屏都会避开侧栏。'
+    },
+    {
+      id: 'release-ai-feedback', symbol: $rawfile('icons/shield-check.svg'), glyph: $r('sys.symbol.envelope_fill'),
+      tag: '新功能', title: '需求收集与反馈邮件',
+      desc: '你随口提的想法，AI 会记下来；说一声“把需求发给开发者”，就整理成邮件。诊断邮件也重新排版：初步诊断、详细诊断、逐条建议，诊断日志作为附件。'
+    },
+    {
+      id: 'release-ai-layout', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_on_rectangle'),
+      tag: '改进', title: 'AI 始终在最上层，新增小艺风格',
+      desc: '语音模式、AI 面板和悬浮球不再被设置页等弹窗挡住，手机横屏、平板分屏和 PC 小窗口里也不会超出窗口；PC 大屏上，AI 按钮移到左下角，和「+」并排。设置 › AI 动效里可以换成小艺风格：蓝紫渐变和随声音起伏的彩色光环。'
+    },
+    {
+      id: 'release-remote-ai', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.code_square'),
+      tag: '新功能', title: '远程 AI：Codex、DSH、Pi',
+      desc: '在手机和平板上接着用电脑上的 Codex、DSH 和 Pi：回复逐字显示，命令和改动可展开查看，操作审批直接点；运行中可以补充要求或打断重来。切到后台不再断开，审批也不会丢。电脑端插件可从 GitHub 或 Gitee 安装。'
+    },
+    {
+      id: 'release-new-look', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.paintpalette_fill'),
+      tag: '改进', title: '全新视觉默认开启',
+      desc: '设置按用途分组、顶部可搜索、直接显示当前值；远程主机、密钥保险库和中继页一起换新外观，搜索框统一成玻璃胶囊。想要原来的样子，在「设置 → 个性化 → 全新视觉」关掉即可。应用图标里也多了一款「流光」。'
+    },
+    {
+      id: 'release-touch-scroll', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.mouse'),
+      tag: '改进', title: '三指滚动，滚轮随手调',
+      desc: '开启双指缩放后，双指只用来缩放和移动画面，滚动改为三指上下滑动，不再和缩放抢手势；三指轻点不再打开控制面板。每个协议的滚轮方向和速度可以分别设置，RDP、RustDesk、VNC 连接中也能直接调。'
+    },
+    {
+      id: 'release-rustdesk-display', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
+      tag: '新功能', title: 'RustDesk 连接中调整显示',
+      desc: '侧栏里直接切换远端显示器、分辨率、编解码和画质；Windows 被控端还能开隐私模式、插入虚拟显示器，断开后自动恢复。'
+    },
+    {
+      id: 'release-ssh-polish', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.folder_fill'),
+      tag: '改进', title: 'SSH 与 SFTP 焕新',
+      desc: 'SFTP 回到弹窗并重新设计，带过渡动画，可以直接把文件拖进来上传；命令面板的搜索框不再被输入法挡住；画中画多次退出到后台也都能出现。PC 上默认开启 SSH 工作台，「更多」里可以直接调终端字号。'
+    },
+    {
+      id: 'release-pc-polish', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
+      tag: '改进', title: 'PC 上更顺手',
+      desc: 'RDP 默认按整块屏幕的分辨率连接，窗口怎么缩放都按比例显示；想让远端分辨率跟着窗口变，在 RDP 控制里打开「分辨率跟随窗口」。RDP、VNC、Moonlight 的顶栏不再把「断开」挤出框外，高级主机管理的弹窗居中显示，顶栏子菜单改为点按展开。修复部分 PC 上 RustDesk 硬件解码画面倒置。'
+    },
+    {
+      id: 'release-pro-clarity', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.checkmark_shield'),
+      tag: '改进', title: 'Pro 写得更清楚',
+      desc: 'Pro 页面逐项写明每个功能的状态，还没完成的说明原因，AI 助理也照此回答。价格页说明 Pro 是买断制；应用分身暂不支持 Pro，会直接说明，不再给出必然失败的购买入口。'
+    },
+    {
+      id: 'release-1-1-6-summary', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),
+      tag: '改进', title: '也包含 1.1.6 的全部更新',
+      desc: 'RDP 会话里直接传文件、VNC 多显示器切换、竖屏显示方式与侧栏高度、点按输入框弹出键盘、RDP 证书预检可跳过，以及 SSH、RustDesk 与设置页的多项打磨。'
+    }
+  ];
+}
+
+// The 1.1.6 notes, as they shipped: Pro appeared only as a 即将推出 preview.
+function release116Pages(): ReleaseNotePage[] {
+  return [
+    {
+      id: 'release-rdp-file-transfer', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),
+      tag: '新功能', title: 'RDP 会话里直接传文件',
+      desc: '会话工具栏新增文件传输入口；远端只允许下载时也能打开文件面板，剪贴板文件的接收状态会实时显示。'
+    },
+    {
+      id: 'release-vnc-monitors', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
+      tag: '新功能', title: 'VNC 多显示器切换',
+      desc: '连接 UltraVNC 时可以从侧栏选择要查看的显示器，切换失败或超时后可以直接重试。'
+    },
+    {
+      id: 'release-portrait-display', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_rotate'),
+      tag: '新功能', title: '手机竖屏可选显示方式',
+      desc: 'RDP、RustDesk、VNC 与 Moonlight 在手机竖屏时可分别选择画面显示方式，并能开关会话侧栏。'
+    },
+    {
+      id: 'release-portrait-sidebar', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_on_rectangle'),
+      tag: '新功能', title: '竖屏侧栏高度可调',
+      desc: '手机竖屏会话的侧栏提供自动、紧凑、标准、高四档高度，在「设置 → 显示与交互」里按习惯选择。'
+    },
+    {
+      id: 'release-tap-keyboard', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.keyboard'),
+      tag: '新功能', title: '点按输入框自动弹出键盘',
+      desc: '在「键盘 → 输入行为」打开后，点按远端输入位置会自动弹出软键盘；横屏悬浮显示，竖屏正常避让。默认关闭。'
+    },
+    {
+      id: 'release-rdp-cert-preflight', symbol: $rawfile('icons/shield-check.svg'), glyph: $r('sys.symbol.checkmark_shield'),
+      tag: '新功能', title: 'RDP 证书预检可以跳过',
+      desc: '在「设置 → Windows RDP」可关闭连接前的证书预检，直连更快；连接时仍会核验证书，未知或异常证书需要你确认。'
+    },
+    {
+      id: 'release-rdp-connect', symbol: $rawfile('icons/globe-alt.svg'), glyph: $r('sys.symbol.link'),
+      tag: '改进', title: 'RDP 更容易连上',
+      desc: '域名解析失败时自动改用备用解析；连接前检查与实际连接走同一条线路；检查未通过时也可以确认风险后直接连接。'
+    },
+    {
+      id: 'release-ssh-polish', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.code_square'),
+      tag: '改进', title: 'SSH 终端更清爽',
+      desc: '手机默认字号更合适，登录后不再多出空行；终端里的弹窗按内容自动调整高度，标签栏与按钮重新对齐。'
+    },
+    {
+      id: 'release-rustdesk-fixes', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.bolt_fill'),
+      tag: '修复', title: 'RustDesk 画质与文件传输',
+      desc: '画质档位重新对齐并在诊断中实时显示；修复手机上的文件传输面板，远端路径改用文件浏览器选择。'
+    },
+    {
+      id: 'release-offline-account', symbol: $rawfile('icons/shield-check.svg'), glyph: $r('sys.symbol.person_crop_circle_fill'),
+      tag: '修复', title: '没有网络也能进入应用',
+      desc: '离线启动时保留上次登录的华为账号，主机列表和本机数据照常可用；VNC 新主机默认记住你输入的密码。'
+    },
+    {
+      id: 'release-diagnostics', symbol: $rawfile('icons/cloud.svg'), glyph: $r('sys.symbol.performance'),
+      tag: '改进', title: '诊断信息更完整',
+      desc: '日志新增完整抓取档位，覆盖连接前的各项检查，排查问题更快；导出内容仍会自动脱敏。'
+    },
+    {
+      id: 'release-smooth-settings', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.gearshape_fill'),
+      tag: '改进', title: '设置页更流畅',
+      desc: '设置页滑动更顺滑；动效只在屏幕上看得见时运行，并与屏幕刷新同步，更省电也不再卡顿。'
+    },
+    {
+      id: 'release-onboarding', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.sun_max_fill'),
+      tag: '改进', title: '新手引导焕新',
+      desc: '引导扩充到 9 页，按手机、平板和 PC 分别排版；主页、安全锁与 2FA 都有介绍，随时可在「设置 → 教程」回看。'
+    },
+    {
+      id: 'release-pro-preview', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.star_fill'),
+      tag: '即将推出', title: 'RemoteDesktop Pro 预告',
+      desc: '同账号接续、工作区与布局、高级主机管理、远端显示方案、个性化与远程 AI 正在打磨，读完更新说明即可预览 Pro 功能介绍。'
+    }
+  ];
+}
+
+function release1151Pages(): ReleaseNotePage[] {
   return [
     {
       id: 'release-1-1-5-1',

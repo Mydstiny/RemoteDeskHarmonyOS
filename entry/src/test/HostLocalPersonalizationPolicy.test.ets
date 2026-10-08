@@ -58,8 +58,8 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       cloud.displayConfig.width = 2560;
       cloud.lastLatency = 44;
       const corrupt: Record<string, string> = {
-        localpersonalizationversion: '1', localdisplayconfig: '{bad',
-        locallastlatency: '-1'
+        'localpersonalizationversion': '1', 'localdisplayconfig': '{bad',
+        'locallastlatency': '-1'
       };
       applyRemoteHostLocalPersonalization(cloud, corrupt);
       expect(cloud.displayConfig.width).assertEqual(2560);
@@ -69,7 +69,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       future.displayConfig = new DisplayConfig();
       future.displayConfig.width = 1920;
       applyRemoteHostLocalPersonalization(future, {
-        localpersonalizationversion: '99', localdisplayconfig: '{"width":800}'
+        'localpersonalizationversion': '99', 'localdisplayconfig': '{"width":800}'
       });
       expect(future.displayConfig.width).assertEqual(1920);
     });

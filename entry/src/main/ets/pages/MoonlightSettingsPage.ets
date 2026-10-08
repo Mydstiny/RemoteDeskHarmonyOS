@@ -1,4 +1,7 @@
 import { display, promptAction, router } from '@kit.ArkUI';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { moonlightStatusText } from '../services/MoonlightStatusTextPolicy';
 import { wifiManager } from '@kit.ConnectivityKit';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
@@ -72,6 +75,16 @@ export struct MoonlightSettingsSurface {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  /** 设置 → 个性化 → 全新视觉: 44vp controls, readable descriptions, plain wording and typed custom sizes. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
+  @State customWidthText: string = '';
+  @State customWidthEditing: boolean = false;
+  @State customHeightText: string = '';
+  @State customHeightEditing: boolean = false;
+  /** The width / height when typing started. A slider drag or a resolution choice ends the typing; so does any other
+   * change of the value meanwhile. */
+  private customWidthBase: number = 0;
+  private customHeightBase: number = 0;
   @Prop embedded: boolean = false;
   @Prop requestedSection: MoonlightSettingsSection = 'video';
   @Prop requestedHostId: string = '';
@@ -108,8 +121,14 @@ export struct MoonlightSettingsSurface {
   private editingLease: AccountSessionLease | null = null;
   private surfaceActive: boolean = false;
   private keyboardTargetPromptVisible: boolean = false;
+  /** One 放弃未保存的 Moonlight 设置？ at a time, even when back is pressed twice quickly. */
+  private closePromptVisible: boolean = false;
   onClose: () => void = (): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  /** Bumped by the routed page's system back gesture; closes like the back button. */
+  @Prop @Watch('onCloseRequest') closeRequest: number = 0;
+
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -154,6 +173,8 @@ export struct MoonlightSettingsSurface {
   }
 
   private loadCurrentSettings(): void {
+    this.customWidthEditing = false;
+    this.customHeightEditing = false;
     const store: CloudStore = CloudStore.getInstance();
     const before: AccountSessionLease | null = store.currentAccountLease();
     const loaded: MoonlightLocalSettingsResult = this.service.load();
@@ -191,7 +212,7 @@ export struct MoonlightSettingsSurface {
     this.syncVideoSliderDrafts(next);
     this.syncInputControlModeDraft(next);
     this.dirty = JSON.stringify(next) !== this.savedSettingsCanonical;
-    this.onDirtyChanged(this.dirty);
+    this.onDirtyChanged(this.unsaved());
     this.saveCode = '';
   }
 
@@ -267,14 +288,22 @@ export struct MoonlightSettingsSurface {
     this.update((next: MoonlightSettings): void => { next.video.bitrateKbps = bitrate; });
   }
 
+  private clampVideoWidth(value: number): number {
+    return Math.max(320, Math.min(7680, Math.round(value / 2) * 2));
+  }
+
+  private clampVideoHeight(value: number): number {
+    return Math.max(240, Math.min(4320, Math.round(value / 2) * 2));
+  }
+
   private setVideoWidth(value: number): void {
-    const width: number = Math.max(320, Math.min(7680, Math.round(value / 2) * 2));
+    const width: number = this.clampVideoWidth(value);
     this.videoWidthDraft = width;
     this.update((next: MoonlightSettings): void => { next.video.customWidth = width; });
   }
 
   private setVideoHeight(value: number): void {
-    const height: number = Math.max(240, Math.min(4320, Math.round(value / 2) * 2));
+    const height: number = this.clampVideoHeight(value);
     this.videoHeightDraft = height;
     this.update((next: MoonlightSettings): void => { next.video.customHeight = height; });
   }
@@ -318,6 +347,8 @@ export struct MoonlightSettingsSurface {
   }
 
   private selectResolution(value: string): void {
+    this.customWidthEditing = false;
+    this.customHeightEditing = false;
     this.videoResolutionDraft = value;
     this.update((next: MoonlightSettings): void => {
       if (value === 'host') {
@@ -396,6 +427,8 @@ export struct MoonlightSettingsSurface {
   }
 
   private save(): void {
+    this.commitCustomSize(true);
+    this.commitCustomSize(false);
     const editingLease: AccountSessionLease | null = this.editingLease;
     if (editingLease === null) {
       this.loadCurrentSettings();
@@ -491,7 +524,7 @@ export struct MoonlightSettingsSurface {
 
   private requestDataCommand(command: MoonlightDeletionCommandType): void {
     if (this.dataBusy) { return; }
-    if (this.dirty) {
+    if (this.unsaved()) {
       promptAction.showToast({ message: '请先保存或放弃当前设置草稿，再管理数据', duration: 2400 });
       return;
     }
@@ -591,12 +624,20 @@ export struct MoonlightSettingsSurface {
     promptAction.showToast({ message, duration: 2800 });
   }
 
+  private onCloseRequest(): void {
+    if (this.closeRequest > 0) { this.close(); }
+  }
+
   private close(): void {
+    this.commitCustomSize(true);
+    this.commitCustomSize(false);
     if (this.embedded) {
       this.onClose();
       return;
     }
-    if (!this.dirty) { router.back(); return; }
+    if (!this.unsaved()) { router.back(); return; }
+    if (this.closePromptVisible) { return; }
+    this.closePromptVisible = true;
     promptAction.showDialog({
       title: '放弃未保存的 Moonlight 设置？',
       message: '当前修改只在本页草稿中，尚未写入本地记录。',
@@ -605,8 +646,11 @@ export struct MoonlightSettingsSurface {
         { text: '放弃修改', color: this.pal().danger }
       ]
     }).then((value: Object): void => {
+      this.closePromptVisible = false;
       const decision: Record<string, number> = value as Record<string, number>;
       if (decision['index'] === 1) { router.back(); }
+    }).catch((_error: Error): void => {
+      this.closePromptVisible = false;
     });
   }
 
@@ -619,10 +663,10 @@ export struct MoonlightSettingsSurface {
             .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
             .fontFamily(AppTheme.fontFamily)
           Text(this.section === 'data' ? 'Moonlight · 当前账号数据域' :
-            '修改立即预览，保存后用于下一次连接').fontSize(11)
-            .fontColor(this.pal().text3).margin({ top: 4 })
+            '修改立即预览，保存后用于下一次连接').fontSize(this.modern() ? 12 : 11)
+            .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-        if (this.dirty) {
+        if (this.unsaved()) {
           Text('未保存').fontSize(10).fontColor(this.pal().editColor)
             .padding({ left: 8, right: 8, top: 4, bottom: 4 })
             .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
@@ -631,7 +675,8 @@ export struct MoonlightSettingsSurface {
         }
         Button() {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-        }.width(36).height(36).padding(0).borderRadius(18).backgroundColor(this.pal().surface)
+        }.width(this.modern() ? 44 : 36).height(this.modern() ? 44 : 36).padding(0)
+          .borderRadius(this.modern() ? 22 : 18).backgroundColor(this.pal().surface)
           .onClick((): void => { this.close(); }).accessibilityText('关闭 Moonlight 设置')
       }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 14 })
     } else {
@@ -643,19 +688,19 @@ export struct MoonlightSettingsSurface {
         Column() {
           Text('Moonlight 设置').fontSize(24).fontWeight(FontWeight.Bold)
             .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-          Text('当前账号全局默认 · 安全身份始终仅限本机').fontSize(10)
-            .fontColor(this.pal().text3).margin({ top: 2 })
+          Text('当前账号全局默认 · 安全身份始终仅限本机').fontSize(this.modern() ? 12 : 10)
+            .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        if (this.dirty) {
+        if (this.unsaved()) {
           Text('未保存').fontSize(10).fontColor(this.pal().editColor)
             .padding({ left: 8, right: 8, top: 4, bottom: 4 })
             .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
         }
         if (this.section !== 'data') {
           Button('保存').height(40).fontSize(13).borderRadius(12)
-            .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
-            .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
-            .enabled(this.dirty && this.editingLease !== null)
+            .backgroundColor(this.unsaved() && this.editingLease !== null ? this.accentColor : this.pal().surface)
+            .fontColor(this.unsaved() && this.editingLease !== null ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+            .enabled(this.unsaved() && this.editingLease !== null)
             .onClick((): void => { this.save(); })
         } else if (this.dataBusy) {
           Text('处理中').fontSize(11).fontColor(this.accentColor)
@@ -691,7 +736,7 @@ export struct MoonlightSettingsSurface {
         Text(title).fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           .fontFamily(AppTheme.fontFamily)
       }
-      Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+      Text(detail).fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).fontFamily(AppTheme.fontFamily)
         .lineHeight(17).margin({ top: this.embedded ? 0 : 5 })
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: this.embedded ? 10 : 14 })
   }
@@ -700,7 +745,7 @@ export struct MoonlightSettingsSurface {
     Column() {
       Text(title).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
       if (subtitle !== '') {
-        Text(subtitle).fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        Text(subtitle).fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
       }
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: 10 })
   }
@@ -807,7 +852,7 @@ export struct MoonlightSettingsSurface {
 
   @Builder private previewItem(title: string, value: string) {
     Column() {
-      Text(title).fontSize(10).fontColor(this.pal().text3)
+      Text(title).fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
       Text(value).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 3 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -820,8 +865,8 @@ export struct MoonlightSettingsSurface {
       Row() {
         Text('当前连接预览').fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           .layoutWeight(1)
-        Text(this.dirty ? '有未保存更改' : '已保存').fontSize(10)
-          .fontColor(this.dirty ? this.pal().editColor : this.pal().success)
+        Text(this.unsaved() ? '有未保存更改' : '已保存').fontSize(10)
+          .fontColor(this.unsaved() ? this.pal().editColor : this.pal().success)
       }.width('100%')
       Row({ space: 8 }) {
         this.previewItem('画面', this.resolutionPreview() + ' · ' +
@@ -845,11 +890,13 @@ export struct MoonlightSettingsSurface {
       Column() {
         Text(title).fontSize(14).fontWeight(FontWeight.Medium)
           .fontColor(enabled ? this.pal().text : this.pal().text3)
-        Text(detail).fontSize(10).fontColor(this.pal().text3).lineHeight(15).margin({ top: 3 })
+        Text(detail).fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).lineHeight(15).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: checked }).selectedColor(this.accentColor)
-        .enabled(enabled).opacity(enabled ? 1 : 0.55).onChange(onChange).scale({ x: 0.86, y: 0.86 })
-    }.width('100%').height(62).padding({ top: 6, bottom: 6 })
+        .enabled(enabled).opacity(enabled ? 1 : 0.55).onChange(onChange)
+        .scale({ x: this.modern() ? 1 : 0.86, y: this.modern() ? 1 : 0.86 })
+    }.width('100%').height(this.modern() ? 'auto' : 62).constraintSize({ minHeight: this.modern() ? 62 : 0 })
+      .padding({ top: 6, bottom: 6 })
   }
 
   @Builder private videoFpsSlider() {
@@ -858,7 +905,7 @@ export struct MoonlightSettingsSurface {
         Column() {
           Text('帧率').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text('30–' + this.maximumVideoFps().toString() + ' FPS，逐帧连续调节')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Text(this.videoFpsDraft.toString() + ' FPS').fontSize(12).fontColor(this.pal().text2)
       }.width('100%')
@@ -877,7 +924,7 @@ export struct MoonlightSettingsSurface {
         Column() {
           Text('码率').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text('拖动时实时预览；点击保存后才写入本地')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Text(this.videoBitrateDraft.toString() + ' Kbps').fontSize(12).fontColor(this.pal().text2)
       }.width('100%')
@@ -890,21 +937,106 @@ export struct MoonlightSettingsSurface {
     }.width('100%').padding({ top: 7, bottom: 7 })
   }
 
+  /**
+   * 全新视觉: type the custom width or height; it is applied on Enter, on blur, and before saving or closing, and
+   * clamped like the slider (320–7680 × 240–4320, even numbers). Typing not applied yet counts as unsaved.
+   */
+  @Builder private customSizeField(width: boolean) {
+    Row({ space: 4 }) {
+      TextInput({ text: this.customSizeText(width) })
+        .type(InputType.Number).width(92).height(44).fontSize(14).textAlign(TextAlign.End)
+        .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(10)
+        .accessibilityText(width ? '自定义宽度' : '自定义高度')
+        .onFocus((): void => {
+          if (this.customSizeTyping(width)) { return; }
+          if (width) {
+            this.customWidthBase = this.videoWidthDraft;
+            this.customWidthText = this.videoWidthDraft.toString();
+            this.customWidthEditing = true;
+          } else {
+            this.customHeightBase = this.videoHeightDraft;
+            this.customHeightText = this.videoHeightDraft.toString();
+            this.customHeightEditing = true;
+          }
+        })
+        .onChange((value: string): void => { this.typeCustomSize(width, value); })
+        .onSubmit((): void => { this.commitCustomSize(width); })
+        .onBlur((): void => { this.commitCustomSize(width); })
+      Text('px').fontSize(12).fontColor(this.pal().text2)
+    }
+  }
+
+  /** The draft or a typed value counts as unsaved. */
+  private unsaved(): boolean {
+    return this.dirty || this.customSizePending(true) || this.customSizePending(false);
+  }
+
+  /** Typing still applies only while the value it started from is unchanged. */
+  private customSizeTyping(width: boolean): boolean {
+    return width ? this.customWidthEditing && this.customWidthBase === this.videoWidthDraft :
+      this.customHeightEditing && this.customHeightBase === this.videoHeightDraft;
+  }
+
+  /** Unsaved only when applying the typed text would change the value (an empty field changes nothing). */
+  private customSizePending(width: boolean): boolean {
+    if (!this.customSizeTyping(width)) { return false; }
+    const text: string = (width ? this.customWidthText : this.customHeightText).trim();
+    const value: number = Number(text);
+    if (text === '' || !Number.isFinite(value)) { return false; }
+    return width ? this.clampVideoWidth(value) !== this.videoWidthDraft :
+      this.clampVideoHeight(value) !== this.videoHeightDraft;
+  }
+
+  private customSizeText(width: boolean): string {
+    if (width) { return this.customSizeTyping(true) ? this.customWidthText : this.videoWidthDraft.toString(); }
+    return this.customSizeTyping(false) ? this.customHeightText : this.videoHeightDraft.toString();
+  }
+
+  private typeCustomSize(width: boolean, value: string): void {
+    if (!this.customSizeTyping(width)) {
+      // The field showing a value set elsewhere is not typing; a different value starts a new edit.
+      const draft: number = width ? this.videoWidthDraft : this.videoHeightDraft;
+      if (width) { this.customWidthEditing = value !== draft.toString(); this.customWidthBase = draft; }
+      else { this.customHeightEditing = value !== draft.toString(); this.customHeightBase = draft; }
+    }
+    if (width) { this.customWidthText = value; } else { this.customHeightText = value; }
+    this.onDirtyChanged(this.unsaved());
+  }
+
+  private commitCustomSize(width: boolean): void {
+    const typing: boolean = this.customSizeTyping(width);
+    const text: string = (width ? this.customWidthText : this.customHeightText).trim();
+    if (width) { this.customWidthEditing = false; } else { this.customHeightEditing = false; }
+    const value: number = Number(text);
+    if (!typing || text === '' || !Number.isFinite(value)) {
+      this.onDirtyChanged(this.unsaved());
+      return;
+    }
+    if (width) { this.setVideoWidth(value); } else { this.setVideoHeight(value); }
+  }
+
   @Builder private videoWidthSlider() {
     Column() {
       Row() {
         Column() {
           Text('自定义宽度').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text('320–7680，native 会按解码器上限和偶数对齐校验')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          Text(this.modern() ? '320–7680，会按解码器上限自动调整为偶数' : '320–7680，native 会按解码器上限和偶数对齐校验')
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(this.videoWidthDraft.toString() + ' px').fontSize(12).fontColor(this.pal().text2)
+        if (this.modern()) {
+          this.customSizeField(true)
+        } else {
+          Text(this.videoWidthDraft.toString() + ' px').fontSize(12).fontColor(this.pal().text2)
+        }
       }.width('100%')
       Slider({ style: SliderStyle.OutSet, value: this.videoWidthDraft,
         min: 320, max: 7680, step: 2 })
         .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
         .showTips(true).showSteps(false)
-        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoWidth(next); })
+        .onChange((next: number, _mode: SliderChangeMode): void => {
+          this.customWidthEditing = false;
+          this.setVideoWidth(next);
+        })
         .margin({ top: 7 })
     }.width('100%').padding({ top: 7, bottom: 7 })
   }
@@ -915,15 +1047,22 @@ export struct MoonlightSettingsSurface {
         Column() {
           Text('自定义高度').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text('240–4320，保持与远端显示模式一致可避免拉伸')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(this.videoHeightDraft.toString() + ' px').fontSize(12).fontColor(this.pal().text2)
+        if (this.modern()) {
+          this.customSizeField(false)
+        } else {
+          Text(this.videoHeightDraft.toString() + ' px').fontSize(12).fontColor(this.pal().text2)
+        }
       }.width('100%')
       Slider({ style: SliderStyle.OutSet, value: this.videoHeightDraft,
         min: 240, max: 4320, step: 2 })
         .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
         .showTips(true).showSteps(false)
-        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoHeight(next); })
+        .onChange((next: number, _mode: SliderChangeMode): void => {
+          this.customHeightEditing = false;
+          this.setVideoHeight(next);
+        })
         .margin({ top: 7 })
     }.width('100%').padding({ top: 7, bottom: 7 })
   }
@@ -935,7 +1074,7 @@ export struct MoonlightSettingsSurface {
           Text('重连预算').fontSize(14).fontWeight(FontWeight.Medium)
             .fontColor(this.settings.network.autoReconnect ? this.pal().text : this.pal().text3)
           Text('最多尝试 6 次；0 秒等同于不自动重连')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Text((Number.isInteger(this.reconnectBudgetSecondsDraft) ?
           this.reconnectBudgetSecondsDraft.toString() :
@@ -958,7 +1097,7 @@ export struct MoonlightSettingsSurface {
     Row() {
       Column() {
         Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-        Text(detail).fontSize(10).fontColor(this.pal().text3).lineHeight(15).margin({ top: 3 })
+        Text(detail).fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).lineHeight(15).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Text(value).fontSize(11).fontWeight(FontWeight.Medium)
         .fontColor(available ? this.pal().text2 : this.pal().text3)
@@ -973,17 +1112,17 @@ export struct MoonlightSettingsSurface {
     current: string, firstValue: string, secondValue: string, thirdValue: string,
     onChoose: (value: string) => void, thirdEnabled: boolean = true) {
     Row({ space: 7 }) {
-      Button(first).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      Button(first).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
         .backgroundColor(current === firstValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === firstValue ? Color.White : this.pal().text2)
+        .fontColor(current === firstValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(firstValue); })
-      Button(second).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      Button(second).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
         .backgroundColor(current === secondValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === secondValue ? Color.White : this.pal().text2)
+        .fontColor(current === secondValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(secondValue); })
-      Button(third).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      Button(third).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
         .backgroundColor(current === thirdValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === thirdValue ? Color.White : this.pal().text2)
+        .fontColor(current === thirdValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .enabled(thirdEnabled).opacity(thirdEnabled ? 1 : 0.55)
         .onClick((): void => { onChoose(thirdValue); })
     }.width('100%')
@@ -993,49 +1132,49 @@ export struct MoonlightSettingsSurface {
     current: string, firstValue: string, secondValue: string,
     onChoose: (value: string) => void) {
     Row({ space: 7 }) {
-      Button(first).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      Button(first).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
         .backgroundColor(current === firstValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === firstValue ? Color.White : this.pal().text2)
+        .fontColor(current === firstValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(firstValue); })
-      Button(second).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      Button(second).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
         .backgroundColor(current === secondValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === secondValue ? Color.White : this.pal().text2)
+        .fontColor(current === secondValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(secondValue); })
     }.width('100%')
   }
 
   @Builder private choiceButton(label: string, value: string, current: string,
     enabled: boolean, onChoose: (value: string) => void) {
-    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+    Button(label).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
       .backgroundColor(current === value ? this.accentColor : this.pal().surface)
-      .fontColor(current === value ? Color.White : this.pal().text2)
+      .fontColor(current === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .enabled(enabled).opacity(enabled ? 1 : 0.45)
       .onClick((): void => { if (enabled) { onChoose(value); } })
   }
 
   @Builder private decoderChoiceButton(label: string, value: MoonlightCodecPreference,
     enabled: boolean) {
-    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+    Button(label).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
       .backgroundColor(this.videoCodecDraft === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.videoCodecDraft === value ? Color.White : this.pal().text2)
+      .fontColor(this.videoCodecDraft === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .enabled(enabled).opacity(enabled ? 1 : 0.45)
       .onClick((): void => { if (enabled) { this.selectVideoCodec(value); } })
   }
 
   @Builder private resolutionChoiceButton(label: string, value: string,
     enabled: boolean = true) {
-    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+    Button(label).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
       .backgroundColor(this.videoResolutionDraft === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.videoResolutionDraft === value ? Color.White : this.pal().text2)
+      .fontColor(this.videoResolutionDraft === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .enabled(enabled).opacity(enabled ? 1 : 0.45)
       .onClick((): void => { if (enabled) { this.selectResolution(value); } })
   }
 
   @Builder private inputControlModeChoiceButton(label: string,
     value: MoonlightInputControlMode) {
-    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+    Button(label).height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11).borderRadius(10)
       .backgroundColor(this.inputControlModeDraft === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.inputControlModeDraft === value ? Color.White : this.pal().text2)
+      .fontColor(this.inputControlModeDraft === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .onClick((): void => { this.selectInputControlMode(value); })
   }
 
@@ -1046,7 +1185,7 @@ export struct MoonlightSettingsSurface {
       Row({ space: 8 }) {
         Button('省流').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps <= 20000 ? this.accentColor : this.pal().surface)
-          .fontColor(this.settings.video.bitrateKbps <= 20000 ? Color.White : this.pal().text2)
+          .fontColor(this.settings.video.bitrateKbps <= 20000 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
             next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
             next.video.bitrateKbps = 20000;
@@ -1055,14 +1194,14 @@ export struct MoonlightSettingsSurface {
           .backgroundColor(this.settings.video.bitrateKbps > 20000 &&
             this.settings.video.bitrateKbps < 50000 ? this.accentColor : this.pal().surface)
           .fontColor(this.settings.video.bitrateKbps > 20000 &&
-            this.settings.video.bitrateKbps < 50000 ? Color.White : this.pal().text2)
+            this.settings.video.bitrateKbps < 50000 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
             next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
             next.video.bitrateKbps = 30000;
           }); })
         Button('画质优先').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps >= 50000 ? this.accentColor : this.pal().surface)
-          .fontColor(this.settings.video.bitrateKbps >= 50000 ? Color.White : this.pal().text2)
+          .fontColor(this.settings.video.bitrateKbps >= 50000 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
             next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
             next.video.bitrateKbps = 50000;
@@ -1086,14 +1225,14 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('分辨率与帧率', '每项会实时进入上方连接预览；保存后用于下一次连接。')
-      Text('自适应').fontSize(11).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Text('自适应').fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ bottom: 7 })
       Row({ space: 7 }) {
         this.resolutionChoiceButton('适配远端', 'host')
         this.resolutionChoiceButton('适配当前设备', 'device')
       }.width('100%')
       this.statusRow('下一次串流请求', this.resolutionRequestDetail(),
         this.resolutionRequestPixels())
-      Text('常用画质').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
+      Text('常用画质').fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 14, bottom: 7 })
       Row({ space: 7 }) {
         this.resolutionChoiceButton('720p', '720p', this.resolutionAvailable(1280, 720))
         this.resolutionChoiceButton('1080p', '1080p', this.resolutionAvailable(1920, 1080))
@@ -1119,8 +1258,9 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('画面生命周期', '公共显示与画中画仍由应用级设置统一管理')
-      this.statusRow('无可见 Surface',
-        '丢弃视频帧并保留唯一连接；恢复画面后重新绑定 Surface 并等待新帧', '保活并丢帧')
+      this.statusRow(this.modern() ? '画面不可见时' : '无可见 Surface',
+        this.modern() ? '暂停显示新画面但保持连接，回到画面后继续' :
+          '丢弃视频帧并保留唯一连接；恢复画面后重新绑定 Surface 并等待新帧', this.modern() ? '保持连接' : '保活并丢帧')
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
@@ -1184,7 +1324,7 @@ export struct MoonlightSettingsSurface {
       Row() {
         SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(17).fontColor([this.pal().editColor])
         Text('切换输入源、编辑配置、进入后台或退出时，都会先释放按键并将手柄复位。')
-          .fontSize(10).fontColor(this.pal().text3).layoutWeight(1).lineHeight(15).margin({ left: 8 })
+          .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).layoutWeight(1).lineHeight(15).margin({ left: 8 })
       }.width('100%').padding(10).backgroundColor(this.pal().surface).borderRadius(12).margin({ top: 8 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
@@ -1194,17 +1334,17 @@ export struct MoonlightSettingsSurface {
     this.sectionHeader('网络与安全', '局域网发现、计费网络、断线恢复、地址族与串流加密。')
     Column() {
       this.cardTitle('网络')
-      Text('发现方式').fontSize(11).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Text('发现方式').fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ bottom: 7 })
       this.choice3('自动 + 手动', '仅手动', '—', this.settings.network.discovery,
         'manualOrMdns', 'manualOnly', 'none', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.network.discovery = value as 'manualOnly'; });
         }, false)
-      Text('地址偏好').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
+      Text('地址偏好').fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 14, bottom: 7 })
       this.choice3('自动', 'IPv4', 'IPv6', this.settings.network.preferredAddressFamily,
         'auto', 'ipv4', 'ipv6', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.network.preferredAddressFamily = value as 'auto'; });
         })
-      Text('计费网络').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
+      Text('计费网络').fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 14, bottom: 7 })
       this.choice3('每次询问', '始终允许', '禁止串流', this.settings.network.meteredNetwork,
         'ask', 'allow', 'deny', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.network.meteredNetwork = value as 'ask'; });
@@ -1223,7 +1363,7 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('安全')
-      Text('串流加密').fontSize(11).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Text('串流加密').fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ bottom: 7 })
       this.choice2('自动协商', '兼容旧主机',
         this.settings.network.streamEncryption === 'compatible' ? 'compatible' : 'auto',
         'auto', 'compatible', (value: string): void => {
@@ -1254,7 +1394,7 @@ export struct MoonlightSettingsSurface {
         SymbolGlyph($r('sys.symbol.text_clipboard')).fontSize(19).fontColor([this.accentColor])
         Column() {
           Text('脱敏诊断导出').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text('不包含地址、PIN、证书、身份材料或会话密钥').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          Text('不包含地址、PIN、证书、身份材料或会话密钥').fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
         Text('会话内可用').fontSize(10).fontColor(this.pal().success)
       }.width('100%').padding({ top: 12, bottom: 6 })
@@ -1275,7 +1415,7 @@ export struct MoonlightSettingsSurface {
         SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.pal().success])
         Column() {
           Text('身份存储：仅本地安全存储').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text('PIN、私钥和会话密钥不进入页面状态、日志或云同步。').fontSize(10).fontColor(this.pal().text3).margin({ top: 4 })
+          Text('PIN、私钥和会话密钥不进入页面状态、日志或云同步。').fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
       }.width('100%').padding({ top: 12, bottom: 6 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
@@ -1295,13 +1435,13 @@ export struct MoonlightSettingsSurface {
       Column() {
         Text(title).fontSize(14).fontWeight(FontWeight.Medium)
           .fontColor(enabled ? this.pal().text : this.pal().text3)
-        Text(detail).fontSize(10).fontColor(this.pal().text3)
+        Text(detail).fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
           .lineHeight(15).margin({ top: 3 }).maxLines(2)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 11, right: 10 })
-      Button(label).height(36).fontSize(11).borderRadius(11)
+      Button(label).height(this.modern() ? 44 : 36).fontSize(this.modern() ? 13 : 11).borderRadius(11)
         .backgroundColor(enabled ?
           (dangerous ? this.pal().danger : this.accentColor) : this.pal().surface)
-        .fontColor(enabled ? Color.White : this.pal().text3)
+        .fontColor(enabled ? (dangerous ? Color.White : appUiOnAccentText(this.accentColor)) : this.pal().text3)
         .enabled(enabled).onClick(action)
     }.width('100%').padding({ top: 10, bottom: 10 })
   }
@@ -1328,29 +1468,29 @@ export struct MoonlightSettingsSurface {
     Column() {
       this.cardTitle('此设备上的 Moonlight 数据',
         this.dataStatusCode === '' ? '影响数量来自当前账号的实时预览' :
-          '当前无法生成完整预览：' + this.dataStatusCode)
+          '当前无法生成完整预览：' + moonlightStatusText(this.dataStatusCode))
       Row({ space: 8 }) {
         Column() {
           Text(this.dataLocalRows.toString()).fontSize(22).fontWeight(FontWeight.Bold)
             .fontColor(this.pal().text)
-          Text('本地记录').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          Text('本地记录').fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.layoutWeight(1).height(66).justifyContent(FlexAlign.Center)
           .backgroundColor(this.pal().surface).borderRadius(14)
         Column() {
           Text(this.dataCacheRows.toString()).fontSize(22).fontWeight(FontWeight.Bold)
             .fontColor(this.pal().text)
-          Text('目录缓存').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          Text('目录缓存').fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.layoutWeight(1).height(66).justifyContent(FlexAlign.Center)
           .backgroundColor(this.pal().surface).borderRadius(14)
         Column() {
           Text((this.dataRuntimeStates + this.dataSecureIdentities).toString())
             .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text('运行/安全状态').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          Text('运行/安全状态').fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.layoutWeight(1).height(66).justifyContent(FlexAlign.Center)
           .backgroundColor(this.pal().surface).borderRadius(14)
       }.width('100%')
       Text('配对 trust、主机证书和客户端私钥永远不会作为 Moonlight 云数据上传。')
-        .fontSize(10).fontColor(this.pal().text3).lineHeight(16)
+        .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).lineHeight(16)
         .width('100%').margin({ top: 10 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
@@ -1391,12 +1531,12 @@ export struct MoonlightSettingsSurface {
     if (this.section !== 'data') {
       Column() {
         Divider().color(this.pal().divider).margin({ bottom: 12 })
-        Button(this.dirty ? '保存更改' : '设置已保存').width('100%').height(44)
+        Button(this.unsaved() ? '保存更改' : '设置已保存').width('100%').height(44)
           .fontSize(13).borderRadius(11)
-          .backgroundColor(this.dirty && this.editingLease !== null ?
+          .backgroundColor(this.unsaved() && this.editingLease !== null ?
             this.accentColor : this.pal().surface)
-          .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
-          .enabled(this.dirty && this.editingLease !== null)
+          .fontColor(this.unsaved() && this.editingLease !== null ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+          .enabled(this.unsaved() && this.editingLease !== null)
           .onClick((): void => { this.save(); })
       }.width('100%').padding({ left: 20, right: 20, bottom: 18 })
     }
@@ -1405,8 +1545,8 @@ export struct MoonlightSettingsSurface {
   build() {
     Column() {
       this.header()
-      if (this.saveCode !== '' && this.saveCode !== 'default' && this.saveCode !== 'ok') {
-        Text('本地设置状态：' + this.saveCode).fontSize(10).fontColor(this.pal().editColor)
+      if (moonlightStatusText(this.saveCode) !== '') {
+        Text('本地设置：' + moonlightStatusText(this.saveCode)).fontSize(10).fontColor(this.pal().editColor)
           .width('100%').padding({ left: 22, right: 22, bottom: 6 })
       }
       if (this.embedded) {
@@ -1454,9 +1594,17 @@ export struct MoonlightSettingsSurface {
 @Entry
 @Component
 struct MoonlightSettingsPage {
+  @State closeRequest: number = 0;
+
+  /** The system back gesture asks before dropping unsaved changes, like the back button. */
+  onBackPress(): boolean {
+    this.closeRequest++;
+    return true;
+  }
+
   build() {
     Column() {
-      MoonlightSettingsSurface()
+      MoonlightSettingsSurface({ closeRequest: this.closeRequest })
     }.width('100%').height('100%')
   }
 }

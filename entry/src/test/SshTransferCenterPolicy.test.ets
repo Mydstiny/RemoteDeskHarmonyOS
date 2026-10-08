@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { SshSftpTaskRecord } from '../main/ets/services/SshSftpTaskPolicy';
+import { SshSftpTaskRecord, SshSftpTaskStage } from '../main/ets/services/SshSftpTaskPolicy';
 import {
   buildSshTransferCenterViews,
   canExecuteSshTransferCenterAction,
@@ -7,7 +7,7 @@ import {
   SshTransferCenterTaskView
 } from '../main/ets/services/ssh/sftp/SshTransferCenterPolicy';
 
-function task(id: string, stage: SshSftpTaskRecord['stage'], hostId: string = 'host-secret'):
+function task(id: string, stage: SshSftpTaskStage, hostId: string = 'host-secret'):
   SshSftpTaskRecord {
   return {
     schemaVersion: 4,

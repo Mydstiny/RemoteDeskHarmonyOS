@@ -6,6 +6,7 @@
  * descriptor, with the original system symbol retained as a fail-safe.
  */
 export type ProtocolIconKey =
+  | 'ai'
   | 'rdp'
   | 'rustdesk'
   | 'ssh'
@@ -35,6 +36,8 @@ export function moonlightSystemFallbackIcon(): Resource {
 
 export function protocolIcon(key: ProtocolIconKey): Resource {
   switch (key) {
+    case 'ai':
+      return $r('sys.symbol.code_square');
     case 'rdp':
       return $r('sys.symbol.desktop_fill');
     case 'rustdesk':

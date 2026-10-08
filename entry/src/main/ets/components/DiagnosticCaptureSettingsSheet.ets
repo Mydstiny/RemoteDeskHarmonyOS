@@ -1,4 +1,7 @@
 import { promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import {
@@ -10,11 +13,12 @@ import {
   diagnosticModuleSpecs,
   normalizeDiagnosticModules
 } from '../services/DiagnosticCapturePolicy';
+import { DiagnosticCapturePhase } from '../services/DiagnosticCaptureRuntime';
 import {
-  DiagnosticCapturePhase,
-  DiagnosticCaptureRuntime,
-  DiagnosticCaptureStatus
-} from '../services/DiagnosticCaptureRuntime';
+  DiagnosticCaptureCoordinator,
+  DiagnosticCaptureCoordinatorStatus,
+  DiagnosticCaptureOwnerKind
+} from '../services/DiagnosticCaptureCoordinator';
 import {
   DiagnosticCaptureExportService,
   DiagnosticSaveResult
@@ -24,11 +28,15 @@ import {
 export struct DiagnosticCaptureSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('breakpoint') breakpoint: string = 'md';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'md';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   onClose: () => void = (): void => {};
 
   @State selectedDurationMinutes: number = DIAGNOSTIC_DEFAULT_DURATION_MINUTES;
   @State selectedModules: DiagnosticModuleId[] = ['core.app'];
+  @State fullLogEnabled: boolean = false;
   @State phase: DiagnosticCapturePhase = 'idle';
   @State captureId: string = '';
   @State remainingSeconds: number = 0;
@@ -36,10 +44,12 @@ export struct DiagnosticCaptureSettingsSheet {
   @State droppedEventCount: number = 0;
   @State approximateBytes: number = 0;
   @State stopReason: string = '';
+  @State captureOwnerKind: DiagnosticCaptureOwnerKind | '' = '';
   @State message: string = '';
   @State messageIsError: boolean = false;
 
-  private readonly runtime: DiagnosticCaptureRuntime = DiagnosticCaptureRuntime.getInstance();
+  private readonly coordinator: DiagnosticCaptureCoordinator = DiagnosticCaptureCoordinator.getInstance();
+  private readonly ownerId: string = 'manual-diagnostic-sheet';
   private readonly exporter: DiagnosticCaptureExportService =
     DiagnosticCaptureExportService.getInstance();
   private refreshTimer: number = -1;
@@ -67,7 +77,7 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private syncStatus(loadActiveSelection: boolean): void {
-    const status: DiagnosticCaptureStatus = this.runtime.status();
+    const status: DiagnosticCaptureCoordinatorStatus = this.coordinator.status();
     this.phase = status.phase;
     this.captureId = status.captureId;
     this.remainingSeconds = status.remainingSeconds;
@@ -75,6 +85,8 @@ export struct DiagnosticCaptureSettingsSheet {
     this.droppedEventCount = status.droppedEventCount;
     this.approximateBytes = status.approximateBytes;
     this.stopReason = status.stopReason;
+    this.captureOwnerKind = status.ownerKind;
+    this.fullLogEnabled = status.fullLog;
     if (loadActiveSelection && status.phase !== 'idle') {
       this.selectedDurationMinutes = status.durationMinutes;
       this.selectedModules = status.selectedModules.slice();
@@ -89,6 +101,13 @@ export struct DiagnosticCaptureSettingsSheet {
     return this.selectedModules.indexOf(moduleId) >= 0;
   }
 
+  private allModulesSelected(): boolean {
+    for (let index: number = 0; index < this.moduleSpecs.length; index++) {
+      if (!this.moduleSelected(this.moduleSpecs[index].id)) { return false; }
+    }
+    return true;
+  }
+
   private toggleModule(moduleId: DiagnosticModuleId, selected: boolean): void {
     if (this.optionsLocked() || moduleId === 'core.app') { return; }
     const next: string[] = this.selectedModules.slice();
@@ -99,17 +118,23 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private toggleAllModules(): void {
-    if (this.optionsLocked()) { return; }
-    this.selectedModules = this.selectedModules.length === this.moduleSpecs.length ?
+    if (this.optionsLocked() || this.fullLogEnabled) { return; }
+    this.selectedModules = this.allModulesSelected() ?
       ['core.app'] : diagnosticAllModules();
   }
 
   private statusTitle(): string {
     if (this.phase === 'capturing') {
+      if (this.captureOwnerKind === 'ai') {
+        return 'AI 正在诊断 · 剩余 ' + this.formatRemaining(this.remainingSeconds);
+      }
       return '抓取中 · 剩余 ' + this.formatRemaining(this.remainingSeconds);
     }
-    if (this.phase === 'saving') { return '正在保存日志…'; }
+    if (this.phase === 'saving') {
+      return this.captureOwnerKind === 'ai' ? 'AI 正在整理日志…' : '正在保存日志…';
+    }
     if (this.phase === 'readyToSave') {
+      if (this.captureOwnerKind === 'ai') { return 'AI 抓取已结束，等待分析'; }
       return this.stopReason === 'deadline' ? '已到时，待保存' : '抓取已结束，待保存';
     }
     return '未开始抓取';
@@ -119,10 +144,14 @@ export struct DiagnosticCaptureSettingsSheet {
     if (this.phase === 'idle') {
       return '选择模组和最长时长后开始；关闭此页面不会停止抓取。';
     }
+    if (this.captureOwnerKind === 'ai') {
+      return '本次抓取由 AI 诊断控制，请返回 AI 浮窗继续操作。';
+    }
     const dropped: string = this.droppedEventCount > 0 ?
       ' · 已丢弃 ' + this.droppedEventCount.toString() + ' 条' : '';
+    const profile: string = this.fullLogEnabled ? ' · 全量模式' : '';
     return this.eventCount.toString() + ' 条事件 · ' +
-      this.formatBytes(this.approximateBytes) + dropped;
+      this.formatBytes(this.approximateBytes) + profile + dropped;
   }
 
   private formatRemaining(seconds: number): string {
@@ -139,9 +168,16 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private startCapture(): void {
-    const code = this.runtime.start(this.selectedDurationMinutes, this.selectedModules);
+    if (this.captureOwnerKind === 'ai') {
+      this.message = 'AI 诊断正在抓取，请先结束 AI 诊断。';
+      this.messageIsError = true;
+      return;
+    }
+    const code = this.coordinator.start(this.ownerId, 'manual', this.selectedDurationMinutes,
+      this.selectedModules, this.fullLogEnabled);
     this.message = code === 'ok' ? '日志抓取已开始，请离开设置复现问题。' :
       code === 'already_active' ? '已有一项抓取正在进行。' :
+        code === 'busy' ? '已有一项诊断正在进行。' :
         code === 'invalid_duration' ? '请选择有效的抓取时长。' : '无法启动日志抓取。';
     this.messageIsError = code !== 'ok';
     this.syncStatus(true);
@@ -150,8 +186,13 @@ export struct DiagnosticCaptureSettingsSheet {
   private async stopAndSave(): Promise<void> {
     this.message = '';
     this.messageIsError = false;
+    if (this.captureOwnerKind !== '' && this.captureOwnerKind !== 'manual') {
+      this.message = '当前抓取由 AI 诊断控制，请在 AI 浮窗中完成操作。';
+      this.messageIsError = true;
+      return;
+    }
     if (this.phase === 'capturing') {
-      const stopCode = this.runtime.stop();
+      const stopCode = this.coordinator.stop(this.ownerId, 'manual');
       if (stopCode !== 'ok') {
         this.message = '无法结束当前抓取，请稍后重试。';
         this.messageIsError = true;
@@ -162,7 +203,7 @@ export struct DiagnosticCaptureSettingsSheet {
     this.syncStatus(false);
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const pending: Promise<DiagnosticSaveResult> =
-      this.exporter.save(this.runtime, context);
+      this.exporter.save(this.coordinator.runtime(), context);
     this.syncStatus(false);
     const result: DiagnosticSaveResult = await pending;
     if (result.ok) {
@@ -179,7 +220,7 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private confirmDiscard(): void {
-    if (this.phase === 'idle' || this.phase === 'saving') { return; }
+    if (this.phase === 'idle' || this.phase === 'saving' || this.captureOwnerKind !== 'manual') { return; }
     const expectedCaptureId: string = this.captureId;
     if (expectedCaptureId.length === 0) { return; }
     promptAction.showDialog({
@@ -192,7 +233,7 @@ export struct DiagnosticCaptureSettingsSheet {
     }).then((result: Object): void => {
       const dialogResult: Record<string, number> = result as Record<string, number>;
       if (dialogResult['index'] !== 1) { return; }
-      const code = this.runtime.discard(expectedCaptureId);
+      const code = this.coordinator.discard(this.ownerId, 'manual', expectedCaptureId);
       if (code === 'ok') {
         this.message = '本次抓取已丢弃。';
         this.messageIsError = false;
@@ -209,6 +250,7 @@ export struct DiagnosticCaptureSettingsSheet {
 
   private primaryButtonText(): string {
     if (this.phase === 'idle') { return '开始抓取'; }
+    if (this.captureOwnerKind === 'ai') { return 'AI 正在诊断…'; }
     if (this.phase === 'capturing') { return '结束并保存'; }
     if (this.phase === 'saving') { return '正在保存…'; }
     return '保存日志';
@@ -220,31 +262,41 @@ export struct DiagnosticCaptureSettingsSheet {
       return;
     }
     if (this.phase === 'saving') { return; }
+    if (this.captureOwnerKind === 'ai') {
+      this.message = '当前抓取由 AI 诊断控制，请在 AI 浮窗中完成操作。';
+      this.messageIsError = true;
+      return;
+    }
     void this.stopAndSave();
   }
 
   build() {
     Column() {
-      Row() {
+      if (this.modern()) {
+        AppSheetHeader({ title: '日志', subtitle: '手动抓取脱敏诊断事件，保存前可以预览', whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
         Row() {
-          SymbolGlyph($r('sys.symbol.doc_plaintext'))
-            .fontSize(22)
-            .fontColor([this.accentColor])
-        }
-        .width(38).height(38).borderRadius(11)
-        .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.pal().surface)
+          Row() {
+            SymbolGlyph($r('sys.symbol.doc_plaintext'))
+              .fontSize(22)
+              .fontColor([this.accentColor])
+          }
+          .width(38).height(38).borderRadius(11)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor(this.pal().surface)
 
-        Column() {
-          Text('日志').fontSize(20).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('手动抓取脱敏诊断事件').fontSize(12).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 2 })
-        }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
+          Column() {
+            Text('日志').fontSize(20).fontWeight(FontWeight.Bold)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text('手动抓取脱敏诊断事件').fontSize(12).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 2 })
+          }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
 
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20, bottom: 12 })
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20, bottom: 12 })
+      }
 
       Scroll() {
         Column() {
@@ -279,7 +331,7 @@ export struct DiagnosticCaptureSettingsSheet {
               Button(minutes.toString() + ' 分钟')
                 .height(36).padding({ left: 14, right: 14 })
                 .fontSize(13).fontFamily(this.font())
-                .fontColor(this.selectedDurationMinutes === minutes ? Color.White : this.pal().text2)
+                .fontColor(this.selectedDurationMinutes === minutes ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                 .backgroundColor(this.selectedDurationMinutes === minutes ?
                   this.accentColor : this.pal().surface)
                 .borderRadius(12).margin({ right: 8, bottom: 8 })
@@ -293,11 +345,29 @@ export struct DiagnosticCaptureSettingsSheet {
             Text('抓取模组').fontSize(14).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text).fontFamily(this.font())
             Blank()
-            Text(this.selectedModules.length === this.moduleSpecs.length ? '仅保留应用状态' : '全选')
+            Text(this.allModulesSelected() ? '取消全选' : '全选')
               .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
               .opacity(this.optionsLocked() ? 0.45 : 1)
               .onClick((): void => { this.toggleAllModules(); })
           }.width('100%').margin({ top: 12, bottom: 8 })
+
+          Row() {
+            Column() {
+              Text('全量日志').fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('一次抓取全部诊断模组、连接前置、路由和运行态事件；建议复现连接失败时开启。')
+                .fontSize(12).lineHeight(18).fontColor(this.pal().text2)
+                .fontFamily(this.font()).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.fullLogEnabled })
+              .selectedColor(this.accentColor)
+              .enabled(!this.optionsLocked())
+              .onChange((enabled: boolean): void => {
+                this.fullLogEnabled = enabled;
+                if (enabled) { this.selectedModules = diagnosticAllModules(); }
+              })
+          }.width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
+            .borderRadius(16).backgroundColor(this.pal().surface)
 
           Column() {
             ForEach(this.moduleSpecs, (spec: DiagnosticModuleSpec, index: number) => {
@@ -305,7 +375,7 @@ export struct DiagnosticCaptureSettingsSheet {
                 Checkbox({ name: 'diagnostic-' + spec.id, group: 'diagnostic-modules' })
                   .select(this.moduleSelected(spec.id))
                   .selectedColor(this.accentColor)
-                  .enabled(!this.optionsLocked() && !spec.alwaysEnabled)
+                  .enabled(!this.optionsLocked() && !this.fullLogEnabled && !spec.alwaysEnabled)
                   .onChange((selected: boolean): void => { this.toggleModule(spec.id, selected); })
                 Text(spec.label).fontSize(14).fontColor(this.pal().text)
                   .fontFamily(this.font()).margin({ left: 10 }).layoutWeight(1)
@@ -325,7 +395,7 @@ export struct DiagnosticCaptureSettingsSheet {
           Column() {
             Text('隐私说明').fontSize(13).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text).fontFamily(this.font())
-            Text('只记录固定状态码和数值指标，不包含密码、密钥正文、主机地址、终端内容、文件路径、剪贴板、屏幕或数据库内容。应用进程被系统终止时，未保存日志会丢失。')
+            Text('全量模式只扩大结构化诊断覆盖范围，仍不包含密码、密钥正文、主机地址、终端内容、文件路径、剪贴板、屏幕或数据库内容。应用进程被系统终止时，未保存日志会丢失。')
               .fontSize(12).lineHeight(19).fontColor(this.pal().text2)
               .fontFamily(this.font()).margin({ top: 6 })
           }
@@ -350,7 +420,7 @@ export struct DiagnosticCaptureSettingsSheet {
             Button(this.primaryButtonText())
               .height(46).borderRadius(14)
               .layoutWeight(this.phase === 'idle' ? 1 : 2)
-              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(Color.White)
+              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(appUiOnAccentText(this.accentColor))
               .backgroundColor(this.accentColor)
               .margin({ left: this.phase === 'idle' ? 0 : 10 })
               .enabled(this.phase !== 'saving')
@@ -363,7 +433,8 @@ export struct DiagnosticCaptureSettingsSheet {
     }
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .height(this.breakpoint === 'sm' ? 680 : 740)
+    // The host sheet sets the height (fitted to the window); the body scrolls inside it.
+    .height('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?

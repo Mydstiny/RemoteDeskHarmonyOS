@@ -130,8 +130,9 @@ export function claimCanvasTwoFingerPan(state: CanvasTwoFingerState,
 }
 
 /**
- * Span wins before translation. An overflowing canvas pans immediately;
- * otherwise a centroid translation keeps the established remote-wheel path.
+ * Span wins before translation. An overflowing canvas pans immediately. With zoom off a centroid translation
+ * scrolls the remote; with zoom on two fingers only zoom and pan the picture (a scroll whose fingers drift apart
+ * used to turn into a zoom halfway), and scrolling is three fingers up or down.
  */
 export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
   x: number, y: number, _nowMs: number, remote: boolean = false,
@@ -156,9 +157,13 @@ export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
       return { state: next, action: 'none', deltaX, deltaY };
     }
     if (distanceFromStart(next, currentX, currentY) >= CANVAS_TWO_FINGER_TRANSLATION_SLOP_VP) {
+      next.moved = true;
+      if (!next.canPan && next.zoomEnabled) {
+        // Still a zoom candidate: the span may yet open or close, but it never scrolls and is no tap.
+        return { state: next, action: 'none', deltaX, deltaY };
+      }
       next.owner = next.canPan ?
         (remote ? 'remote-touch-pan' : 'canvas-pan') : 'touchpad-scroll';
-      next.moved = true;
       return {
         state: next,
         action: next.owner === 'touchpad-scroll' ? 'scroll' : 'pan',
@@ -197,7 +202,7 @@ export function shouldApplyCanvasTwoFingerPan(state: CanvasTwoFingerState): bool
 }
 
 export function shouldPreserveCanvasTwoFingerRightClick(state: CanvasTwoFingerState): boolean {
-  return state.owner === 'candidate' || state.owner === 'touchpad-right-click';
+  return (state.owner === 'candidate' && !state.moved) || state.owner === 'touchpad-right-click';
 }
 
 export function endCanvasPinchOwnership(state: CanvasGestureOwnership): CanvasGestureOwnership {

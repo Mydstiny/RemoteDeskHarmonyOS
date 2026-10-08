@@ -1,3 +1,4 @@
+import { NativeVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 /**
  * RustDeskDiagnosticsPolicy — 诊断开关、生命周期和数值显示的纯规则。
  *
@@ -155,7 +156,8 @@ export interface RustDeskCodecAlignment {
 
 /** Keep the reconnect-scoped preference distinct from the codec observed on real frames. */
 export function rustDeskCodecAlignment(
-  preference: number, actualCodec: number, videoSeen: boolean): RustDeskCodecAlignment {
+  preference: number, actualCodec: number, videoSeen: boolean,
+  evidence?: NativeVideoDiagnosticEvidence): RustDeskCodecAlignment {
   const requested: string = rustDeskCodecPreferenceLabel(preference);
   const actual: string = rustDeskCodecLabel(actualCodec);
   if (!videoSeen || actualCodec < 0 || actualCodec > 4) {
@@ -168,5 +170,21 @@ export function rustDeskCodecAlignment(
   if (expected === actualCodec) {
     return { preference: requested, actual, state: '偏好与实际流已对齐', aligned: true };
   }
-  return { preference: requested, actual, state: '待重连重新协商', aligned: false };
+  let state: string = '偏好与实际流不同，协商证据不可用';
+  if (evidence !== undefined) {
+    const connection: number = evidence.connectionCodecPreference ?? -1;
+    const sent: number = evidence.sentCodecPreference ?? -1;
+    if (connection >= 0 && connection !== preference) {
+      state = '设置已更改，待重连应用';
+    } else if (sent === preference) {
+      state = '偏好已发送，对端返回其他编码';
+    } else if ((evidence.codecOptionSendFailures ?? 0) > 0) {
+      state = '编码偏好发送失败';
+    } else if (sent < 0) {
+      state = '尚无编码偏好发送成功记录';
+    } else {
+      state = '连接请求与已发送偏好不同';
+    }
+  }
+  return { preference: requested, actual, state, aligned: false };
 }

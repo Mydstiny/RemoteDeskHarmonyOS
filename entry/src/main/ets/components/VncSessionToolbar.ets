@@ -1,3 +1,4 @@
+import { AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverlayViewportPolicy';
 import {
@@ -23,11 +24,17 @@ export interface VncSessionToolbarActions {
   onCollapse: () => void;
   onToggleKeyboard: () => void;
   onCycleControlMode: () => void;
+  /** 滚轮: the session's wheel direction and speed. */
+  onOpenWheel: () => void;
   onOpenShortcuts: () => void;
+  onOpenDisplays: () => void;
   onCycleDisplayScale: () => void;
+  onTogglePortraitDisplay: () => void;
   onResetCanvas: () => void;
   onToggleDiagnostics: () => void;
   onDisconnect: () => void;
+  /** Pro AI 助理: the session's AI as the orb with its small chat. */
+  onOpenAi: () => void;
   onCollapsedPointerMove: (x: number, y: number) => void;
 }
 
@@ -38,13 +45,20 @@ export interface VncSessionToolbarPlacementActions {
 @Component
 export struct VncSessionToolbar {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
   @Prop deviceClass: 'pc' | 'pad' | 'phone' = 'pc';
   @Prop viewOnly: boolean = false;
   @Prop keyboardOpen: boolean = false;
   @Prop shortcutsOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
   @Prop displayScaleLabel: string = '适应';
+  @Prop displayCount: number = 0;
+  @Prop displayLabel: string = '屏幕';
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  /** Pro AI 助理: its button sits before 性能 and 断开. */
+  @Prop aiVisible: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop collapsed: boolean = false;
   @Prop viewportWidth: number = 0;
@@ -58,17 +72,21 @@ export struct VncSessionToolbar {
     onCollapse: (): void => {},
     onToggleKeyboard: (): void => {},
     onCycleControlMode: (): void => {},
+    onOpenWheel: (): void => {},
     onOpenShortcuts: (): void => {},
+    onOpenDisplays: (): void => {},
     onCycleDisplayScale: (): void => {},
+    onTogglePortraitDisplay: (): void => {},
     onResetCanvas: (): void => {},
     onToggleDiagnostics: (): void => {},
     onDisconnect: (): void => {},
+    onOpenAi: (): void => {},
     onCollapsedPointerMove: (_x: number, _y: number): void => {}
   };
 
   @Builder
   private actionButton(icon: Resource, label: string, active: boolean,
-    action: () => void, danger: boolean = false) {
+    action: () => void, danger: boolean = false, longAction: () => void = action) {
     Button() {
       Column() {
         SymbolGlyph(icon).fontSize(17).fontColor([Color.White])
@@ -83,6 +101,7 @@ export struct VncSessionToolbar {
     .focusable(false).focusOnTouch(false)
     .accessibilityText(label)
     .onClick(action)
+    .gesture(LongPressGesture({ duration: 500 }).onAction((): void => { longAction(); }))
   }
 
   @Builder
@@ -93,16 +112,30 @@ export struct VncSessionToolbar {
     } else if (actionId === 'controlMode') {
       this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
         (): void => { this.actions.onCycleControlMode(); })
+    } else if (actionId === 'wheel') {
+      this.actionButton($r('sys.symbol.mouse'), '滚轮', false,
+        (): void => { this.actions.onOpenWheel(); })
     } else if (actionId === 'shortcuts') {
       this.actionButton($r('sys.symbol.bolt_fill'), this.shortcutsOpen ? '收组合键' : '组合键',
         this.shortcutsOpen,
         (): void => { this.actions.onOpenShortcuts(); })
+    } else if (actionId === 'display') {
+      this.actionButton($r('sys.symbol.display'), this.displayLabel, false,
+        (): void => { this.actions.onOpenDisplays(); })
     } else if (actionId === 'displayScale') {
       this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
         (): void => { this.actions.onCycleDisplayScale(); })
+    } else if (actionId === 'portrait') {
+      this.actionButton($r('sys.symbol.rectangle_rotate'),
+        '竖屏显示', this.portraitDisplayActive,
+        (): void => { this.actions.onTogglePortraitDisplay(); })
     } else if (actionId === 'diagnostics') {
       this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
         (): void => { this.actions.onToggleDiagnostics(); })
+    } else if (actionId === 'ai') {
+      this.actionButton($r('sys.symbol.wand_and_stars'), 'AI 助理', this.sessionAiOpen,
+        (): void => { this.actions.onOpenAi(); }, false,
+        (): void => { AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now()); })
     } else {
       this.actionButton($r('sys.symbol.xmark'), '断开', false,
         (): void => { this.actions.onDisconnect(); }, true)
@@ -118,21 +151,32 @@ export struct VncSessionToolbar {
     this.primaryActionButton(actionId)
   }
 
+  private primaryActionRenderKey(actionId: VncToolbarPrimaryActionId): string {
+    return actionId + '|' + this.displayCount.toString() + '|' + this.displayLabel + '|' +
+      (this.keyboardOpen ? '1' : '0') + '|' +
+      (this.shortcutsOpen ? '1' : '0') + '|' + (this.diagnosticsEnabled ? '1' : '0') + '|' +
+      (this.canvasResetAvailable ? '1' : '0') + '|' + this.controlModeLabel + '|' +
+      this.displayScaleLabel + '|' + (this.portraitDisplayEnabled ? '1' : '0') + '|' +
+      (this.portraitDisplayActive ? '1' : '0');
+  }
+
   @Builder
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
-          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
       }
     } else {
       Row({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
-          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
       }
     }
   }
@@ -141,10 +185,14 @@ export struct VncSessionToolbar {
     return this.placement.railRect.height > 0 ? this.placement.railRect.height : fallback;
   }
 
+  /** Every button (56vp, 5vp apart, 6vp padding, 复位 always before 断开) in one row; narrower only with the window. */
   private pcExpandedToolbarWidth(): number {
+    const count: number = vncToolbarPrimaryActionIds(
+      this.displayCount, this.portraitDisplayEnabled, this.aiVisible).length + 1;
+    const content: number = count * 56 + (count - 1) * 5 + 12;
     const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
-      Math.max(1, this.viewportWidth - 24) : 480;
-    return Math.min(480, available);
+      Math.max(1, this.viewportWidth - 24) : content;
+    return Math.min(content, available);
   }
 
   private resetRailSwipe(): void {

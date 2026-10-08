@@ -1,3 +1,4 @@
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { display, promptAction, router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { connection } from '@kit.NetworkKit';
@@ -1489,13 +1490,13 @@ export struct MoonlightAppCatalogSurface {
         this.statusBanner()
         Row() {
           Row() {
-            SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(17).fontColor([this.pal().text3])
-            TextInput({ placeholder: '搜索应用', text: this.query }).layoutWeight(1).height(42)
+            SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text3])
+            TextInput({ placeholder: '搜索应用', text: this.query }).layoutWeight(1).height(40)
               .backgroundColor(Color.Transparent).fontColor(this.pal().text)
-              .placeholderColor(this.pal().text3).fontSize(13).margin({ left: 8 })
+              .placeholderColor(this.pal().text3).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT }).margin({ left: 8 })
               .onChange((value: string): void => { this.query = value; this.applyFilter(); })
-          }.layoutWeight(1).height(46).padding({ left: 13, right: 10 })
-            .backgroundColor(this.pal().searchBg).borderRadius(15)
+          }.layoutWeight(1).height(SEARCH_CAPSULE_HEIGHT).padding({ left: 14, right: 10 }).borderRadius(SEARCH_CAPSULE_RADIUS)
+            .backgroundColor(this.pal().searchBg).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
           Scroll() {
             Row({ space: 7 }) {
               this.filterButton('全部', 'all')

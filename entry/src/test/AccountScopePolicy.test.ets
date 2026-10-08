@@ -16,7 +16,8 @@ import {
   ownerScopeIdForUnionId,
   scopeTokenIsCurrent,
   stableAccountIdentifierIsValid,
-  verifyAccountScopeCloudBinding
+  verifyAccountScopeCloudBinding,
+  AccountScopeToken
 } from '../main/ets/services/AccountScopePolicy';
 import { UserAccount } from '../main/ets/model/UserAccount';
 import { cloudTransferAllowed } from '../main/ets/services/CloudLifecycleSafetyPolicy';
@@ -234,7 +235,7 @@ export default function accountScopePolicyTest(): void {
         if (otherOwner === null) { return; }
         expect(accountScopeRebindSucceeded(requested, otherOwner)).assertFalse();
 
-        const wrongGeneration = {
+        const wrongGeneration: AccountScopeToken = {
           kind: active.kind,
           ownerScopeId: active.ownerScopeId,
           generation: active.generation + 1,

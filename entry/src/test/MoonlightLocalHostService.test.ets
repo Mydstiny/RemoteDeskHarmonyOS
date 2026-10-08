@@ -183,6 +183,17 @@ function saveKey(state: MoonlightHostAddState): MoonlightHostAddOperationKey {
   return key;
 }
 
+// A callback assignment is invisible to flow analysis, so the lookup returns
+// the declared union type instead of a variable narrowed to null.
+function storedHostRecord(port: MemoryMoonlightHostPort): MoonlightRecord | null {
+  const rows: MoonlightRecord[] = Array.from(port.rows.values());
+  let found: MoonlightRecord | null = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].recordType === 'host') { found = rows[i]; }
+  }
+  return found;
+}
+
 export default function moonlightLocalHostServiceTest(): void {
   describe('MoonlightLocalHostService', (): void => {
     it('writes_host_and_trust_as_local_only_records', 0, (): void => {
@@ -197,10 +208,7 @@ export default function moonlightLocalHostServiceTest(): void {
       expect(result.trustRecordId.length > 0).assertTrue();
       expect(port.rows.size).assertEqual(2);
       port.localOnly.forEach((value: number): void => { expect(value).assertEqual(1); });
-      let hostRecord: MoonlightRecord | null = null;
-      port.rows.forEach((value: MoonlightRecord): void => {
-        if (value.recordType === 'host') { hostRecord = value; }
-      });
+      const hostRecord: MoonlightRecord | null = storedHostRecord(port);
       expect(hostRecord !== null).assertTrue();
       const payload: Record<string, Object> = JSON.parse(
         (hostRecord as MoonlightRecord).payload) as Record<string, Object>;
@@ -219,10 +227,7 @@ export default function moonlightLocalHostServiceTest(): void {
         const result = new MoonlightLocalHostService(port).save(
           state, saveKey(state), 1000);
         expect(result.ok).assertTrue();
-        let hostRecord: MoonlightRecord | null = null;
-        port.rows.forEach((value: MoonlightRecord): void => {
-          if (value.recordType === 'host') { hostRecord = value; }
-        });
+        const hostRecord: MoonlightRecord | null = storedHostRecord(port);
         const host: MoonlightHost | null = moonlightHostFromRecord(
           hostRecord as MoonlightRecord);
         expect(host !== null).assertTrue();

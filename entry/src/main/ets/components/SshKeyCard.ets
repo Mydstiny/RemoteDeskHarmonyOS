@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 /**
  * SshKeyCard.ets — SSH 密钥卡片 (v5: 复制公钥需锁验证)
  */
@@ -6,6 +7,8 @@ import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
+import { appUiOnAccentText, appUiTint, appUiAccentTextOnSurface } from '../common/AppUiColorPolicy';
+import { sshKeyTypePending, sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
 
 @Component
 export struct SshKeyCard {
@@ -20,6 +23,7 @@ export struct SshKeyCard {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @State menuVisible: boolean = false;
 
@@ -43,7 +47,20 @@ export struct SshKeyCard {
     return prefix + '…' + suffix;
   }
 
+  private typePending(): boolean {
+    return sshKeyTypePending(this.sshKey.privateKey, this.sshKey.publicKey);
+  }
+
+  /** A key saved with a passphrase before its public key could be derived has none to copy. */
+  private publicKeyMissing(): boolean {
+    return this.sshKey.publicKey === '' && this.sshKey.privateKey !== '' && !this.sshKey.isLegacyFormat();
+  }
+
   private async copyPublicKey(): Promise<void> {
+    if (this.publicKeyMissing()) {
+      promptAction.showToast({ message: sshPublicKeyMissingHint(), duration: 3200 });
+      return;
+    }
     // 锁定状态需先验证身份
     if (this.sshKey.locked) {
       const r = await showLockGate(this.sshKey.label, 'biometric');
@@ -63,7 +80,7 @@ export struct SshKeyCard {
   }
 
   private sshKeyMenuWidth(): number {
-    const labels: string[] = ['管理', this.sshKey.locked ? '解锁' : '上锁', '多选', '删除'];
+    const labels: string[] = ['管理', '复制公钥', this.sshKey.locked ? '解锁' : '上锁', '多选', '删除'];
     let longestTextVp: number = 0;
     const uiContext = this.getUIContext();
     labels.forEach((label: string): void => {
@@ -87,6 +104,18 @@ export struct SshKeyCard {
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onEdit) { this.onEdit(); } })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+
+      // 全新视觉: a tap opens 密钥管理, so copying lives here.
+      if (settingsVisualIsModern(this.visualStyle)) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.key_fill')).fontSize(16).fontColor([this.pal().text])
+          Text('复制公钥').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
+        }
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); void this.copyPublicKey(); })
+
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      }
 
       Row() {
         SymbolGlyph(this.sshKey.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
@@ -128,13 +157,13 @@ export struct SshKeyCard {
       if (this.showCheckbox) {
         Checkbox()
           .select(this.checkboxSelected)
-          .selectedColor('#007DFF')
+          .selectedColor(this.accentColor)
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
       // 密钥类型图标 (sm: 42, md+: 44)
-      Text(this.typeLabel(this.sshKey.keyType))
-        .fontSize(this.breakpoint === 'sm' ? 16 : 18).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+      Text(this.typePending() ? 'KEY' : this.typeLabel(this.sshKey.keyType))
+        .fontSize(this.breakpoint === 'sm' ? 16 : 18).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
         .width(this.breakpoint === 'sm' ? 42 : 44)
         .height(this.breakpoint === 'sm' ? 42 : 44)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 22).backgroundColor(this.accentColor)
@@ -172,16 +201,32 @@ export struct SshKeyCard {
 
         // 第三行: 附加信息
         Row() {
-          Text(SshKey.typeLabel(this.sshKey.keyType))
+          Text(this.typePending() ? '类型待识别' : SshKey.typeLabel(this.sshKey.keyType))
             .fontSize(10).fontWeight(FontWeight.Medium)
-            .fontColor(this.accentColor)
+            .fontColor(appUiAccentTextOnSurface(this.accentColor, this.pal().text2))
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-            .borderRadius(3).backgroundColor(this.accentColor + '18')
+            .borderRadius(3).backgroundColor(appUiTint(this.accentColor, '18'))
           if (this.sshKey.privateKeyEncrypted) {
             Text('加密')
               .fontSize(10).fontColor(this.pal().text2)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
               .borderRadius(3).backgroundColor(this.pal().text2 + '12')
+              .margin({ left: 4 })
+          }
+          // Empty while the master password is locked, or after a forgotten-
+          // password reset cleared it (re-import the private key).
+          if (this.publicKeyMissing()) {
+            Text('公钥未生成')
+              .fontSize(10).fontColor('#B66A00')
+              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              .borderRadius(3).backgroundColor('#B66A00' + '15')
+              .margin({ left: 4 })
+          }
+          if (this.sshKey.privateKey.length === 0) {
+            Text('私钥不可用')
+              .fontSize(10).fontColor('#B66A00')
+              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              .borderRadius(3).backgroundColor('#B66A00' + '15')
               .margin({ left: 4 })
           }
           if (this.sshKey.locked) {
@@ -198,14 +243,27 @@ export struct SshKeyCard {
         }.width('100%').margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
-      .onClick(() => { this.copyPublicKey(); })
+      .onClick(() => {
+        // In multi-select a tap selects; it does not copy or ask for verification.
+        if (this.showCheckbox) {
+          if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }
+          return;
+        }
+        // 全新视觉: a tap opens 密钥管理; copying has its own button. Classic: a tap copies.
+        if (settingsVisualIsModern(this.visualStyle)) {
+          if (this.onEdit) { this.onEdit(); }
+          return;
+        }
+        this.copyPublicKey();
+      })
 
-      // PC/2in1: 省略号按钮 → 弹出操作菜单
-      if (this.isDesktopDevice && !this.showCheckbox) {
+      // PC/2in1 (and every device in 全新视觉): 省略号按钮 → 弹出操作菜单
+      if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox) {
         Button() {
           Text('⋯').fontSize(18).fontColor(this.pal().text)
         }
         .width(36).height(36).borderRadius(18)
+        .accessibilityText('更多操作')
         .backgroundColor(this.pal().surface)
         .margin({ left: 4 })
         .bindPopup(this.menuVisible, {

@@ -46,6 +46,7 @@ export struct MoonlightControlCenter {
   onEnterPip: () => void = (): void => {};
   onToggleDiagnostics: () => void = (): void => {};
   onResetCanvas: () => void = (): void => {};
+  onObserveVideoOrientation: (orientation: number) => void = (_orientation: number): void => {};
   onSetDesktopFlipMode: (mode: MoonlightDesktopFlipMode) => void =
     (_mode: MoonlightDesktopFlipMode): void => {};
   onDisconnect: () => void = (): void => {};
@@ -123,7 +124,9 @@ export struct MoonlightControlCenter {
       Toggle({ type: ToggleType.Switch, isOn: value })
         .selectedColor(this.accentColor)
         .onChange((next: boolean): void => {
-          if (next !== value) { action(); }
+          // Do not compare with the captured builder value: a retained Toggle
+          // can otherwise swallow the second transition after a round trip.
+          action();
         })
         .accessibilityText(title + '，' + (value ? '已开启' : '已关闭'))
     }.width('100%').height(this.layout().rowHeight)
@@ -186,6 +189,12 @@ export struct MoonlightControlCenter {
                 '当画面左右镜像时同步校正鼠标与触控板方向',
                 this.desktopFlipState().controlFlipX,
                 (): void => { this.toggleDesktopFlipAxis('control_x'); })
+              this.actionRow($r('sys.symbol.info_circle'), '日志标记：画面正常',
+                '将当前画面状态写入抓取日志', (): void => { this.onObserveVideoOrientation(1); })
+              this.actionRow($r('sys.symbol.info_circle'), '日志标记：上下倒置',
+                '将当前画面状态写入抓取日志', (): void => { this.onObserveVideoOrientation(2); })
+              this.actionRow($r('sys.symbol.info_circle'), '日志标记：左右镜像',
+                '将当前画面状态写入抓取日志', (): void => { this.onObserveVideoOrientation(3); })
               if (this.desktopFlipMode !== 'reset') {
                 Divider().color(this.pal().divider).margin({ left: 58 })
                 this.actionRow($r('sys.symbol.rectangle_rotate'), '复位翻转',
@@ -211,7 +220,7 @@ export struct MoonlightControlCenter {
             '触摸屏会自动启用虚拟触控板；实体鼠标、触控板或键盘活动会自动切回键鼠。' :
             (this.controlMode === 'keyboardMouse' ?
               '仅使用实体键盘、鼠标或实体触控板控制远端，触摸画面不移动远端指针。' :
-              '整块串流画面作为虚拟触控板：单指移动、轻点左键、双指滚动或右键。'))
+              '整块串流画面作为虚拟触控板：单指移动、轻点左键、双指轻点右键、三指上下滑动滚动（未开双指缩放时双指也能滚动）。'))
             .width('100%').fontSize(10).lineHeight(15).fontColor(this.pal().text3)
             .margin({ top: 7 })
           Column() {

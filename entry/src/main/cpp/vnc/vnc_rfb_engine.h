@@ -55,15 +55,24 @@ public:
     static bool shutdownDeferredJoinsWithin(std::chrono::milliseconds timeout);
     static std::size_t deferredJoinRemaining();
     ConnectionState state() const;
+    std::string lastStateMessage() const;
     bool keepsLocalCursorDuringBootstrap() const;
     void sendKey(uint32_t keyCode, bool pressed);
     void sendMouse(int x, int y, MouseButton button, bool pressed);
     void sendMouseWheel(int x, int y, int delta);
     void sendText(const std::string& text);
-    void sendClipboard(const uint8_t* data, uint32_t len);
+    bool sendClipboard(const uint8_t* data, uint32_t len);
+    ClipboardSnapshot clipboardSnapshot() const;
     std::string clipboardText() const;
     bool clipboardReady() const;
     void requestFrameRefresh();
+    int monitorCount() const;
+    int currentMonitor() const;
+    int pendingMonitor() const;
+    uint64_t monitorSwitchGeneration() const;
+    bool monitorSwitchInputBlocked() const;
+    std::string monitorSwitchLastResult() const;
+    bool requestMonitorSwitch(int monitor);
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     // Initializes only test fixture bytes, then invokes production emitFrame.
@@ -73,6 +82,10 @@ public:
     void emitStateForTesting(ConnectionState state,
                              const std::string& message);
     static uint32_t keySymForHarmonyCodeForTesting(uint32_t keyCode);
+    // Own a connected test stream and exercise the production FBU decoder.
+    bool initializeUpdateStreamForTesting(int socketFd, int width, int height);
+    bool receiveUpdateForTesting(bool& requestPipelined, std::string& error);
+    void armMonitorSwitchForTesting(int monitor, int fencePhase = 1);
 #endif
 
 private:
@@ -96,6 +109,7 @@ private:
                                 std::string& error);
     bool receiveDesktopSize(int width, int height, std::string& error);
     bool receiveServerCutText(std::string& error);
+    bool receiveUltraVncMonitorInfo(std::string& error);
     bool readReason(std::string& reason, std::string& error);
     bool readU8(uint8_t& value, int timeoutMs, std::string& error);
     bool readU16(uint16_t& value, int timeoutMs, std::string& error);
@@ -123,8 +137,11 @@ private:
     StateCallback stateCallback_;
     CursorCallback cursorCallback_;
     mutable std::mutex callbackMutex_;
+    mutable std::mutex stateMessageMutex_;
+    std::string lastStateMessage_;
     mutable std::mutex clipboardMutex_;
     std::string clipboardText_;
+    uint64_t clipboardSequence_ = 0;
     std::atomic<bool> clipboardReady_ {false};
     std::atomic<ConnectionState> state_ {ConnectionState::DISCONNECTED};
     std::atomic<bool> stopRequested_ {false};
@@ -160,6 +177,16 @@ private:
     uint64_t diagTimeouts_ = 0;
     int effectiveEncoding_ = VncRfbProtocol::kRawEncoding;
     std::atomic<uint64_t> lastFramebufferRequestAtMs_ {0};
+    std::atomic<int> monitorCount_ {0};
+    std::atomic<int> currentMonitor_ {-1};
+    std::atomic<int> pendingMonitor_ {-1};
+    std::atomic<uint64_t> monitorSwitchGeneration_ {0};
+    std::atomic<bool> monitorSwitchInputBlocked_ {false};
+    // 0=idle, 1=draining the baseline update request sent before SetMonitor,
+    // 2=waiting for the target update request sent after SetMonitor.
+    std::atomic<int> monitorSwitchFencePhase_ {0};
+    mutable std::mutex monitorSwitchMutex_;
+    std::string monitorSwitchLastResult_ = "idle";
 };
 
 #endif // VNC_RFB_ENGINE_H

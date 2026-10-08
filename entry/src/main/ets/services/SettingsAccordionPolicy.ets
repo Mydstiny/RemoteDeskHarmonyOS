@@ -8,22 +8,28 @@ export const SETTINGS_SECTION_VIRTUAL_KEYBOARD: string = 'virtualKeyboard';
 export const SETTINGS_SECTION_RDP: string = 'windowsRdp';
 export const SETTINGS_SECTION_RUSTDESK: string = 'rustdesk';
 export const SETTINGS_SECTION_SSH: string = 'ssh';
+export const SETTINGS_SECTION_AI: string = 'remoteAi';
+export const SETTINGS_SECTION_PRO: string = 'proFeatures';
 export const SETTINGS_SECTION_VNC: string = 'vnc';
 export const SETTINGS_SECTION_MOONLIGHT: string = 'moonlight';
 export const SETTINGS_SECTION_SECURITY: string = 'security';
 export const SETTINGS_SECTION_TUTORIAL: string = 'tutorial';
+/** 诊断与 AI 帮助: 辅助 AI 配置 and 启动 AI 辅助 (Pro), and the free 传统日志抓取. */
+export const SETTINGS_SECTION_DIAGNOSTICS: string = 'diagnostics';
 export const SETTINGS_SECTION_ABOUT: string = 'about';
 export const SETTINGS_SECTION_FEEDBACK: string = 'feedback';
 export const SETTINGS_SECTION_RATING: string = 'rating';
 
 export const SETTINGS_VNC_ACTION_ROW_COUNT: number = 11;
 export const SETTINGS_MOONLIGHT_ACTION_ROW_COUNT: number = 7;
-export const SETTINGS_RDP_SWITCH_ROW_COUNT: number = 5;
+export const SETTINGS_RDP_SWITCH_ROW_COUNT: number = 6;
 export const SETTINGS_SECURITY_ACTION_ROW_COUNT: number = 5;
 const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
 const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;
 const SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP: number = 73;
 const SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP: number = 110;
+/** Pro replaces the desktop-size and remote-scale rows with one 远端显示方案 entry. */
+const SETTINGS_RDP_DISPLAY_PROFILE_ROW_HEIGHT_VP: number = 64;
 const SETTINGS_RDP_INLINE_SELECTOR_HEIGHT_VP: number = 64;
 const SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP: number = 92;
 const SETTINGS_RDP_SELECTOR_ROW_COUNT: number = 4;
@@ -105,18 +111,23 @@ export function settingsMoonlightExpandedMaxHeight(
  */
 export function settingsRdpExpandedMaxHeight(
   breakpoint: string,
-  switchRowCount: number = SETTINGS_RDP_SWITCH_ROW_COUNT
+  switchRowCount: number = SETTINGS_RDP_SWITCH_ROW_COUNT,
+  proDisplayProfile: boolean = false
 ): number {
+  // Pro: one entry row instead of the desktop-size chips and the remote-scale selector.
+  const selectorRows: number = proDisplayProfile ? SETTINGS_RDP_SELECTOR_ROW_COUNT - 1 : SETTINGS_RDP_SELECTOR_ROW_COUNT;
+  const leadHeight: number = proDisplayProfile ? SETTINGS_RDP_DISPLAY_PROFILE_ROW_HEIGHT_VP :
+    SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP;
   const boundedSwitchCount: number = Number.isFinite(switchRowCount) ?
     Math.max(0, Math.floor(switchRowCount)) : 0;
   const selectorHeight: number = breakpoint === 'md' || breakpoint === 'lg' ?
     SETTINGS_RDP_INLINE_SELECTOR_HEIGHT_VP : SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP;
-  const itemCount: number = 1 + SETTINGS_RDP_SELECTOR_ROW_COUNT +
+  const itemCount: number = 1 + selectorRows +
     boundedSwitchCount + SETTINGS_RDP_FIXED_ROW_COUNT;
   const dividerCount: number = Math.max(0, itemCount - 1);
   return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
-    SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP +
-    SETTINGS_RDP_SELECTOR_ROW_COUNT * selectorHeight +
+    leadHeight +
+    selectorRows * selectorHeight +
     boundedSwitchCount * SETTINGS_RDP_FIXED_ROW_HEIGHT_VP +
     SETTINGS_RDP_FIXED_ROW_COUNT * SETTINGS_RDP_FIXED_ROW_HEIGHT_VP +
     dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);
@@ -147,31 +158,40 @@ export function settingsFeedbackBody(versionName: string, breakpoint: string, is
     '可选：请附上复现步骤、截图或日志。';
 }
 
-export function settingsFeedbackMailtoUri(versionName: string, breakpoint: string, isDesktopDevice: boolean): string {
+export function settingsFeedbackMailtoUri(
+  versionName: string,
+  breakpoint: string,
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
+): string {
   return 'mailto:' + SETTINGS_SUPPORT_EMAIL +
-    '?subject=' + encodeURIComponent(SETTINGS_SUPPORT_SUBJECT) +
-    '&body=' + encodeURIComponent(settingsFeedbackBody(versionName, breakpoint, isDesktopDevice));
+    '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
 }
 
 export function settingsFeedbackMailPanelParams(
   versionName: string,
   breakpoint: string,
-  isDesktopDevice: boolean
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
 ): Record<string, Object> {
   const params: Record<string, Object> = {};
   params['sceneType'] = 1;
   params['email'] = [encodeURI(SETTINGS_SUPPORT_EMAIL)];
-  params['subject'] = encodeURI(SETTINGS_SUPPORT_SUBJECT);
-  params['body'] = encodeURI(settingsFeedbackBody(versionName, breakpoint, isDesktopDevice));
+  params['subject'] = encodeURI(subject);
+  params['body'] = encodeURI(body);
   return params;
 }
 
 export function settingsFeedbackFallbackWantSpecs(
   versionName: string,
   breakpoint: string,
-  isDesktopDevice: boolean
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
 ): SettingsFeedbackWantSpec[] {
-  const uri: string = settingsFeedbackMailtoUri(versionName, breakpoint, isDesktopDevice);
+  const uri: string = settingsFeedbackMailtoUri(versionName, breakpoint, isDesktopDevice, subject, body);
   return [
     { action: SETTINGS_EMAIL_SEND_TO_ACTION, uri: uri, entities: [] },
     { action: SETTINGS_BROWSER_VIEW_ACTION, uri: uri, entities: ['entity.system.browsable'] }
@@ -181,10 +201,12 @@ export function settingsFeedbackFallbackWantSpecs(
 export function settingsFeedbackLaunchAttempts(
   versionName: string,
   breakpoint: string,
-  isDesktopDevice: boolean
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
 ): SettingsFeedbackLaunchAttempt[] {
   const fallbackSpecs: SettingsFeedbackWantSpec[] =
-    settingsFeedbackFallbackWantSpecs(versionName, breakpoint, isDesktopDevice);
+    settingsFeedbackFallbackWantSpecs(versionName, breakpoint, isDesktopDevice, subject, body);
   return [
     {
       kind: 'want',

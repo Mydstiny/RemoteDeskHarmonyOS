@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy';
 
@@ -6,6 +7,9 @@ import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy
 export struct ResourceFabPicker {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** PC has no camera scanner: 扫描二维码 is not offered there. */
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @Prop kind: string = 'ssh_key';
   onSelect: (option: string) => void = (_option: string): void => {};
   onClose: () => void = (): void => {};
@@ -60,15 +64,18 @@ export struct ResourceFabPicker {
           Text(this.subtitle()).fontSize(13).fontColor(this.pal().text3).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .onClick((): void => { this.onClose(); })
+          .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
+          .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText('关闭').onClick((): void => { this.onClose(); })
       }.width('100%').margin({ bottom: 18 })
       if (this.kind === 'ssh_key') {
         this.option('file', '从文件导入', '选择现有 OpenSSH 私钥文件')
         this.option('generate', '生成新密钥', '创建 ED25519 或 RSA 密钥对')
         this.option('paste', '粘贴私钥', '粘贴已有私钥文本并检查')
       } else if (this.kind === 'totp') {
-        this.option('scan', '扫描二维码', '使用相机读取 TOTP 配置')
+        if (!this.isDesktopDevice) {
+          this.option('scan', '扫描二维码', '使用相机读取 TOTP 配置')
+        }
         this.option('file', '从文件导入', '支持 ATSF、TXT、JSON 和 CSV')
         this.option('uri', '导入 otpauth 配置', '粘贴 otpauth:// URI 后解析')
         this.option('manual', '手动输入', '填写发行方、账户和 Secret')

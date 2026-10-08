@@ -183,6 +183,14 @@ export struct RustDeskDiagnosticsHud {
     return '未上报';
   }
 
+  private imageQualityProfileLabel(profile: number): string {
+    if (profile === 0) { return 'Stable'; }
+    if (profile === 1) { return 'Balanced'; }
+    if (profile === 2) { return 'Performance'; }
+    if (profile === 3) { return 'Custom'; }
+    return '未上报';
+  }
+
   private imageQualityStateLabel(): string {
     if (this.diagnostics.qualityUpdateStatus === 1) { return '等待发送'; }
     if (this.diagnostics.qualityUpdateStatus === 2) {
@@ -195,7 +203,7 @@ export struct RustDeskDiagnosticsHud {
 
   private codecAlignment(): RustDeskCodecAlignment {
     return rustDeskCodecAlignment(
-      this.requestedCodecPreference, this.diagnostics.codec, this.diagnostics.videoSeen);
+      this.requestedCodecPreference, this.diagnostics.codec, this.diagnostics.videoSeen, this.diagnostics);
   }
 
   private vncRequestedColorDepth(): string {
@@ -344,7 +352,13 @@ export struct RustDeskDiagnosticsHud {
           value: this.remotePermissionLabel()
         })
         this.metricLine({
-          label: '画质 偏好/生效/已发送',
+          label: '远端目标码率',
+          value: this.diagnostics.targetBitrateKbps > 0 ?
+            formatDiagnosticBitrate(this.diagnostics.targetBitrateKbps) + ' #' +
+              this.diagnostics.testDelayCount.toString() : '远端未报告'
+        })
+        this.metricLine({
+          label: '画质 请求/本地/已发送',
           value: this.imageQualityLabel(this.diagnostics.requestedImageQuality) + '/' +
             this.imageQualityLabel(this.diagnostics.effectiveImageQuality) + '/' +
             this.imageQualityLabel(this.diagnostics.sentImageQuality)
@@ -354,6 +368,11 @@ export struct RustDeskDiagnosticsHud {
           value: this.imageQualityStateLabel() + ' #' +
             this.diagnostics.qualityAppliedGeneration.toString() + '/' +
             this.diagnostics.qualityRequestedGeneration.toString()
+        })
+        this.metricLine({
+          label: '画质档位/FPS',
+          value: this.imageQualityProfileLabel(this.diagnostics.qualityProfile) + '/' +
+            this.diagnostics.qualityFps.toString()
         })
         if (this.multiCanvasPreview.active || this.multiCanvasPreview.reason.length > 0) {
           this.metricLine({

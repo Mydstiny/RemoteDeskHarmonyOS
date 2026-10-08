@@ -14,6 +14,7 @@ import { notificationManager } from '@kit.NotificationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { backgroundModesForRemoteMedia } from './RemoteSessionMediaStatePolicy';
+import { FOCUS_SESSION_WINDOW_PARAM } from './SessionWindowFocusParam';
 
 const TAG = 'RemoteSessionBgTask';
 const DOMAIN = 0x0014;
@@ -46,11 +47,20 @@ export interface RemoteSessionBgInfo {
   hostAddress: string;
   hasAudio: boolean;
   hasVideo: boolean;
+  /** The session window (empty for the main window); a tap on the notification brings it forward. */
+  windowId?: string;
 }
 
+/**
+ * One continuous task per window (UIAbility): each session window keeps its own session alive in the background and
+ * stops only its own task, with the context that started it.
+ */
 export class RemoteSessionBackgroundTaskService {
   private static instance: RemoteSessionBackgroundTaskService | null = null;
-  private task: ActiveBgTask | null = null;
+  private tasks: Map<common.UIAbilityContext, ActiveBgTask> = new Map<common.UIAbilityContext, ActiveBgTask>();
+  /** Each window's notification tap carries its own window id, so each needs its own WantAgent request code. */
+  private requestCodes: Map<common.UIAbilityContext, number> = new Map<common.UIAbilityContext, number>();
+  private nextRequestCode: number = SESSION_NOTIFY_BASE_ID;
 
   static getInstance(): RemoteSessionBackgroundTaskService {
     if (RemoteSessionBackgroundTaskService.instance === null) {
@@ -67,8 +77,9 @@ export class RemoteSessionBackgroundTaskService {
    */
   async startSessionTask(context: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<boolean> {
-    if (this.task !== null && this.task.state === BgTaskState.running) {
-      if (this.task.sessionId === info.sessionId) {
+    const existing: ActiveBgTask | undefined = this.tasks.get(context);
+    if (existing !== undefined && existing.state === BgTaskState.running) {
+      if (existing.sessionId === info.sessionId) {
         hilog.info(DOMAIN, TAG, '[SESSION-BG] task already running, skip start');
         return true;
       }
@@ -77,18 +88,21 @@ export class RemoteSessionBackgroundTaskService {
 
     const notificationId: number = SESSION_NOTIFY_BASE_ID;
     try {
+      const parameters: Record<string, Object> = {
+        'hostId': info.hostId,
+        'sessionId': info.sessionId,
+        'resumeRemoteSession': info.resumeRemoteSession
+      };
+      if (info.windowId !== undefined && info.windowId.length > 0) { parameters[FOCUS_SESSION_WINDOW_PARAM] = info.windowId; }
       const agentInfo: wantAgent.WantAgentInfo = {
         wants: [{
           bundleName: context.abilityInfo.bundleName,
-          abilityName: context.abilityInfo.name,
-          parameters: {
-            'hostId': info.hostId,
-            'sessionId': info.sessionId,
-            'resumeRemoteSession': info.resumeRemoteSession
-          }
+          // Session windows are multiton and close when started without their launch record; EntryAbility focuses them.
+          abilityName: 'EntryAbility',
+          parameters
         }],
         actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: notificationId,
+        requestCode: this.requestCodeFor(context),
         wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
       };
       const agent: WantAgent = await wantAgent.getWantAgent(agentInfo);
@@ -98,14 +112,14 @@ export class RemoteSessionBackgroundTaskService {
         await backgroundTaskManager.startBackgroundRunning(context, modes, agent);
 
       const taskId: number = res.continuousTaskId === undefined ? -1 : res.continuousTaskId;
-      this.task = {
+      this.tasks.set(context, {
         sessionId: info.sessionId,
         continuousTaskId: taskId,
         notificationId: res.notificationId,
         state: BgTaskState.running,
         hasAudioTask: info.hasAudio || info.hasVideo,
         modes: modes
-      };
+      });
 
       // 发布通知: "RDP 远程会话运行中"
       await this.publishSessionNotification(res.notificationId, info);
@@ -115,14 +129,14 @@ export class RemoteSessionBackgroundTaskService {
       return true;
     } catch (err) {
       const be: BusinessError = err as BusinessError;
-      this.task = {
+      this.tasks.set(context, {
         sessionId: info.sessionId,
         continuousTaskId: -1,
         notificationId: notificationId,
         state: BgTaskState.rejected,
         hasAudioTask: false,
         modes: []
-      };
+      });
       hilog.warn(DOMAIN, TAG, '[SESSION-BG-START] multiDeviceConnection rejected code=' +
         this.errorCode(be) + ' message=' + this.errorMessage(be));
       // 被拒绝时不静默伪装 — 记录错误码，不 fallback 到 dataTransfer
@@ -146,12 +160,13 @@ export class RemoteSessionBackgroundTaskService {
    */
   async updateAudioPlaybackMode(context: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<void> {
-    if (this.task === null || this.task.state !== BgTaskState.running) {
+    const task: ActiveBgTask | undefined = this.tasks.get(context);
+    if (task === undefined || task.state !== BgTaskState.running) {
       hilog.warn(DOMAIN, TAG, '[SESSION-BG-AUDIO] main session task not running, skip audio task');
       return;
     }
     const nextModes: string[] = this.modesForMedia(info.hasAudio, info.hasVideo);
-    if (this.sameModes(this.task.modes, nextModes)) {
+    if (this.sameModes(task.modes, nextModes)) {
       return;
     }
 
@@ -159,12 +174,12 @@ export class RemoteSessionBackgroundTaskService {
       const res: backgroundTaskManager.ContinuousTaskNotification =
         await backgroundTaskManager.updateBackgroundRunning(context, nextModes);
 
-      this.task.modes = nextModes;
-      this.task.hasAudioTask = info.hasAudio || info.hasVideo;
+      task.modes = nextModes;
+      task.hasAudioTask = info.hasAudio || info.hasVideo;
       if (res.notificationId !== undefined && res.notificationId > 0) {
-        this.task.notificationId = res.notificationId;
+        task.notificationId = res.notificationId;
       }
-      await this.publishSessionNotification(this.task.notificationId, info);
+      await this.publishSessionNotification(task.notificationId, info);
       const audioTaskId: number = res.continuousTaskId === undefined ? -1 : res.continuousTaskId;
       hilog.info(DOMAIN, TAG, '[SESSION-BG-AUDIO] background modes updated id=' +
         audioTaskId.toString() + ' modes=' + nextModes.join(','));
@@ -180,15 +195,18 @@ export class RemoteSessionBackgroundTaskService {
    * 停止远程会话后台任务 (前台恢复或完全断连时调用)。
    */
   async stopSessionTask(context: common.UIAbilityContext): Promise<void> {
-    if (this.task === null) {
+    const task: ActiveBgTask | undefined = this.tasks.get(context);
+    if (task === undefined) {
       return;
     }
+    this.tasks.delete(context);
+    this.requestCodes.delete(context);
 
-    if (this.task.state === BgTaskState.running && this.task.continuousTaskId >= 0) {
+    if (task.state === BgTaskState.running && task.continuousTaskId >= 0) {
       try {
-        await backgroundTaskManager.stopBackgroundRunning(context, this.task.continuousTaskId);
+        await backgroundTaskManager.stopBackgroundRunning(context, task.continuousTaskId);
         hilog.info(DOMAIN, TAG, '[SESSION-BG] task stopped id=' +
-          this.task.continuousTaskId.toString());
+          task.continuousTaskId.toString());
       } catch (err) {
         const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, '[SESSION-BG-STOP] stop failed code=' +
@@ -197,29 +215,44 @@ export class RemoteSessionBackgroundTaskService {
     }
 
     // 尝试取消通知
-    if (this.task.notificationId > 0) {
+    if (task.notificationId > 0) {
       try {
-        await notificationManager.cancel(this.task.notificationId);
+        await notificationManager.cancel(task.notificationId);
       } catch (_e) {
         // 取消通知失败不影响
       }
     }
+  }
 
-    this.task = null;
+  private requestCodeFor(context: common.UIAbilityContext): number {
+    const existing: number | undefined = this.requestCodes.get(context);
+    if (existing !== undefined) { return existing; }
+    this.nextRequestCode = this.nextRequestCode >= SESSION_NOTIFY_BASE_ID + 999 ? SESSION_NOTIFY_BASE_ID + 1 :
+      this.nextRequestCode + 1;
+    this.requestCodes.set(context, this.nextRequestCode);
+    return this.nextRequestCode;
+  }
+
+  /** Stops every window's task, each with its own context (account switch). */
+  async stopAllSessionTasks(): Promise<void> {
+    const contexts: common.UIAbilityContext[] = Array.from(this.tasks.keys());
+    for (let i: number = 0; i < contexts.length; i++) {
+      await this.stopSessionTask(contexts[i]);
+    }
   }
 
   /**
-   * 检查后台任务是否已启动且正在运行。
+   * 检查是否有窗口的后台任务已启动且正在运行。
    */
   isRunning(): boolean {
-    return this.task !== null && this.task.state === BgTaskState.running;
+    return Array.from(this.tasks.values()).some((task: ActiveBgTask): boolean => task.state === BgTaskState.running);
   }
 
   /**
-   * 检查后台任务是否被拒绝。
+   * 检查是否有窗口的后台任务被拒绝。
    */
   wasRejected(): boolean {
-    return this.task !== null && this.task.state === BgTaskState.rejected;
+    return Array.from(this.tasks.values()).some((task: ActiveBgTask): boolean => task.state === BgTaskState.rejected);
   }
 
   // ---- 私有方法 ----

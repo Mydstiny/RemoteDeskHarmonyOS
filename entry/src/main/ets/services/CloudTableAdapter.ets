@@ -193,6 +193,11 @@ export function normalizeMoonlightCloudRowExact(
   return result;
 }
 
+/** Keys allowed in displayconfig's cloud extension; backup tests check them against the redaction lists. */
+export function remoteHostCloudExtensionColumns(): string[] {
+  return REMOTE_HOST_CLOUD_EXTENSION_COLUMNS.slice();
+}
+
 /** 将云表没有独立列的非敏感主机配置投影为可移植扩展。 */
 export function projectRemoteHostCloudExtension(values: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};

@@ -61,7 +61,16 @@ namespace ClipboardBridgeNapi {
 namespace ExtensionLoaderNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
+namespace RemoteAiNapi {
+    napi_value Init(napi_env env, napi_value exports);
+}
 namespace SecurityNapi {
+    napi_value Init(napi_env env, napi_value exports);
+}
+namespace ProFidoNapi {
+    napi_value Init(napi_env env, napi_value exports);
+}
+namespace RdpSecurityKeyNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
 
@@ -104,7 +113,7 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
 #else
     SetStringProperty(env, versionObj, "buildType", "debug");
 #endif
-    SetStringProperty(env, versionObj, "appVersion", "1.1.5.1");
+    SetStringProperty(env, versionObj, "appVersion", "1.2.0");
     SetStringProperty(env, versionObj, "gitShortSha", REMOTEDESK_GIT_SHORT_SHA);
     SetStringProperty(env, versionObj, "buildTimeUtc", REMOTEDESK_BUILD_TIME_UTC);
     SetIntProperty(env, versionObj, "rustDeskFfiAbiVersion", 2);
@@ -113,7 +122,7 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "VERSION", versionObj);
 
     OH_LOG_INFO(LOG_APP,
-                "[NAPI] rdpnapi loaded version=1.0.1 api=21 app=1.1.5.1 build=%{public}s",
+                "[NAPI] rdpnapi loaded version=1.0.1 api=21 app=1.2.0 build=%{public}s",
                 REMOTEDESK_GIT_SHORT_SHA);
     return exports;
 }
@@ -125,6 +134,8 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
 /**
  * 主初始化函数 — 注册所有子系统的 NAPI 方法
  */
+namespace LocalNameResolverNapi { void Init(napi_env env, napi_value exports); }
+
 static napi_value Init(napi_env env, napi_value exports) {
     OH_LOG_INFO(LOG_APP, "[NAPI] 初始化 rdpnapi 模块...");
 
@@ -145,6 +156,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     DecoderNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] Decoder 已注册");
 
+    LocalNameResolverNapi::Init(env, exports);
+
     // 音频管线
     AudioPlayerNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] AudioPlayer 已注册");
@@ -162,6 +175,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     // 安全管理
     SecurityNapi::Init(env, exports);
+    if (ProFidoNapi::Init(env, exports) == nullptr) { return nullptr; }
+    if (RdpSecurityKeyNapi::Init(env, exports) == nullptr) { return nullptr; }
+    RemoteAiNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] Security 已注册");
 
     // 终端核心 (Rust terminal_core bridge)

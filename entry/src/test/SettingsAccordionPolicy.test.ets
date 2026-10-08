@@ -35,7 +35,8 @@ import {
   settingsMoonlightExpandedMaxHeight,
   settingsRdpExpandedMaxHeight,
   settingsSecurityExpandedMaxHeight,
-  settingsVncExpandedMaxHeight
+  settingsVncExpandedMaxHeight,
+  SETTINGS_SECTION_VNC
 } from '../main/ets/services/SettingsAccordionPolicy';
 
 export default function settingsAccordionPolicyTest() {
@@ -77,12 +78,16 @@ export default function settingsAccordionPolicyTest() {
     });
 
     it('rdp_accordion_height_contains_stacked_phone_rows_and_bottom_spacing', 0, (): void => {
-      expect(SETTINGS_RDP_SWITCH_ROW_COUNT).assertEqual(5);
-      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(1005);
-      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(893);
-      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(893);
-      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(1005);
-      expect(settingsRdpExpandedMaxHeight('sm', 6) > settingsRdpExpandedMaxHeight('sm')).assertTrue();
+      expect(SETTINGS_RDP_SWITCH_ROW_COUNT).assertEqual(6);
+      // Free: desktop-size chips plus four selector rows.
+      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(1069);
+      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(957);
+      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(957);
+      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(1069);
+      expect(settingsRdpExpandedMaxHeight('sm', 7) > settingsRdpExpandedMaxHeight('sm')).assertTrue();
+      // Pro: one 远端显示方案 entry replaces the size chips and the remote-scale selector.
+      expect(settingsRdpExpandedMaxHeight('sm', 6, true)).assertEqual(931);
+      expect(settingsRdpExpandedMaxHeight('md', 6, true)).assertEqual(847);
     });
 
     it('security_accordion_height_tracks_the_secret_visibility_action_row', 0, (): void => {

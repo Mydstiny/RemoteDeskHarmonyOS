@@ -25,14 +25,14 @@ use crate::cursor_state::{CursorCacheMissReason, CursorIdResult, CursorState, Cu
 use crate::net;
 use crate::peer_stream::{KcpPeerStream, PeerStream};
 use crate::protocol::message_proto::{
-    AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
+    AudioFormat, AudioFrame, BackNotification_oneof_union, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
     DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
     FileResponse, FileResponse_oneof_union, FileTransferBlock, FileTransferDone,
     FileTransferReceiveRequest, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
     KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
     MouseEvent, PeerInfo, PermissionInfo_Permission, PointerDeviceEvent, PublicKey, Resolution,
     SupportedResolutions, SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate,
-    TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
+    TogglePrivacyMode, ToggleVirtualDisplay, TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::{
     encode_socket_addr_v6, PeerCandidate, PunchHoleInfo, RendezvousClient, RendezvousRouteOptions,
@@ -74,6 +74,15 @@ const MAX_REMOTE_CLIPBOARD_FORMATS: usize = 32;
 // for tiny payloads. Preserve interoperability while rejecting giant-window
 // frames before the decoder allocates their requested history.
 const MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG: u32 = 19;
+
+/// Session options the user changed while connected (codec, remote audio). The control pump records them; the
+/// streaming loop sends them with its own stream options and keeps them, so pressure resends do not undo them.
+#[derive(Debug, Clone, Copy)]
+struct LiveSessionOptions {
+    codec: i32,
+    audio_enabled: bool,
+    pending: bool,
+}
 
 #[derive(Default, Debug)]
 struct PhysicalModifierState {
@@ -237,6 +246,39 @@ fn changed_pressure_target_fps(
     (target != current_stream_fps).then_some(target)
 }
 
+/// A live image-quality change only changes the remote encoder bitrate. One
+/// refresh_video request makes the new tier visible on the next keyframe
+/// instead of waiting for incremental frames. Rapid tier changes coalesce into
+/// at most one refresh per interval so the peer is never flooded with keyframes.
+pub(crate) const QUALITY_REFRESH_MIN_INTERVAL: Duration = Duration::from_millis(750);
+
+#[derive(Debug, Default)]
+pub(crate) struct QualityRefreshGate {
+    pending: bool,
+    last_sent: Option<Instant>,
+}
+
+impl QualityRefreshGate {
+    pub(crate) fn request(&mut self) {
+        self.pending = true;
+    }
+
+    /// Returns true exactly when a coalesced refresh should be sent now.
+    pub(crate) fn take_due(&mut self, now: Instant) -> bool {
+        if !self.pending {
+            return false;
+        }
+        if let Some(last) = self.last_sent {
+            if now.saturating_duration_since(last) < QUALITY_REFRESH_MIN_INTERVAL {
+                return false;
+            }
+        }
+        self.pending = false;
+        self.last_sent = Some(now);
+        true
+    }
+}
+
 fn should_emit_control_diagnostics(last_report: Instant, now: Instant) -> bool {
     now.duration_since(last_report) >= CONTROL_DIAGNOSTIC_INTERVAL
 }
@@ -391,6 +433,15 @@ impl<'a> RendezvousCredentials<'a> {
 
 /// 完整连接上下文
 pub struct RustDeskConnector {
+    /// Wire id of the current upload, download or new folder. A reused file connection gives every job its own
+    /// (late replies of an earlier job then match nothing); a connection used once keeps 1.
+    file_job_id: i32,
+    /// The last upload ended before the peer confirmed it wrote the file: its reply may still arrive, so the
+    /// connection is not reused.
+    file_replies_pending: bool,
+    /// The peer's file service answered on this connection (its login push or a reply): a later slow answer is a
+    /// slow folder, not a missing service.
+    file_service_seen: bool,
     state: ConnState,
     keypair: KeyPair,
     peer_pk: Option<[u8; 32]>,
@@ -427,6 +478,7 @@ enum RemoteKeyboardTransport {
     Legacy,
     MacosMap,
     WindowsMap,
+    LinuxMap,
 }
 
 impl RustDeskConnector {
@@ -458,8 +510,7 @@ impl RustDeskConnector {
             }
             content.to_vec()
         };
-        if bytes.is_empty()
-            || bytes.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES
+        if bytes.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES
             || std::str::from_utf8(&bytes).is_err()
         {
             return None;
@@ -468,6 +519,7 @@ impl RustDeskConnector {
     }
 
     fn decode_remote_clipboard_formats(clipboards: &[Clipboard]) -> Option<Vec<u8>> {
+        if clipboards.is_empty() { return Some(Vec::new()); }
         if clipboards.len() > MAX_REMOTE_CLIPBOARD_FORMATS {
             return None;
         }
@@ -483,6 +535,9 @@ impl RustDeskConnector {
 
     pub fn new_with_connection_id(connection_id: u64, connect_epoch: u64) -> Self {
         Self {
+            file_job_id: 1,
+            file_replies_pending: false,
+            file_service_seen: false,
             state: ConnState::Disconnected,
             keypair: crypto::generate_keypair(),
             peer_pk: None,
@@ -1289,6 +1344,10 @@ impl RustDeskConnector {
     /// direct-IP listener. Direct sessions do not have a rendezvous server:
     /// the listener starts with the plain Hash/LoginRequest exchange and the
     /// LoginRequest.file_transfer field selects file-transfer mode.
+    pub(crate) fn set_file_auth(&mut self, auth: Arc<crate::file_auth::FileAuthExchange>) {
+        self.session.set_file_auth(auth);
+    }
+
     pub fn connect_file_transfer_direct(
         &mut self,
         peer_host: &str,
@@ -1479,6 +1538,1322 @@ impl RustDeskConnector {
         crate::set_last_error("file-transfer peer login complete".to_string());
         self.set_connect_state(ConnState::Connected);
         Ok(())
+    }
+
+    /// Dedicated streaming upload. A successful return proves sender completion only.
+    pub(crate) fn upload_file_stream(
+        &mut self,
+        remote_path: &str,
+        source: crate::file_transfer::UploadSource,
+        job: &crate::file_transfer::TransferJob,
+        overwrite: bool,
+    ) -> io::Result<()> {
+        job.check()?;
+        if self.state != ConnState::Connected {
+            return Err(io::Error::new(
+                ErrorKind::NotConnected,
+                "file session not connected",
+            ));
+        }
+        let crypto = self
+            .crypto_channel
+            .as_mut()
+            .ok_or_else(|| io::Error::new(ErrorKind::NotConnected, "file channel unavailable"))?;
+        crypto.set_read_timeout(Some(Duration::from_millis(1)))?;
+        crypto.set_write_timeout(Some(Duration::from_secs(10)))?;
+        // Login may have left an immediate file-channel revocation buffered.
+        // Consume it before even publishing this attempt's source metadata.
+        Self::drain_upload_control(crypto, job, self.file_job_id, Duration::ZERO, false)?;
+        crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
+        let (dir, name) = Self::split_remote_file_path(remote_path);
+        if name.is_empty() || name == "." || name == ".." {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "invalid remote filename",
+            ));
+        }
+        // A reused connection gives each job its own wire id (see file_job_id).
+        let id = self.file_job_id;
+        let modified = source.modified();
+        if let Ok(mut result) = job.result.lock() {
+            result.source_metadata_available = 1;
+            result.source_size = source.size();
+            result.source_modified_time = modified;
+        }
+        let mut entry = FileEntry::new();
+        entry.set_entry_type(FileType::File);
+        entry.set_name(name.to_owned());
+        entry.set_size(source.size());
+        entry.set_modified_time(modified);
+        let mut receive = FileTransferReceiveRequest::new();
+        receive.set_id(id);
+        receive.set_path(dir.to_owned());
+        receive.set_file_num(0);
+        receive.set_total_size(source.size());
+        receive.mut_files().push(entry);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::receive(receive));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        // Official CM only checks target existence after the sender publishes its
+        // source digest. NewWrite alone does not produce a confirmation.
+        let mut digest = crate::protocol::message_proto::FileTransferDigest::new();
+        digest.set_id(id);
+        digest.set_file_num(0);
+        digest.set_file_size(source.size());
+        digest.set_last_modified(modified);
+        digest.set_is_resume(false);
+        let mut response = FileResponse::new();
+        response.union = Some(FileResponse_oneof_union::digest(digest));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_response(response));
+        Self::send_message_encrypted(crypto, &message)?;
+        let waiting = Instant::now();
+        loop {
+            job.check()?;
+            if waiting.elapsed() >= Duration::from_secs(30) {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "file confirmation deadline",
+                ));
+            }
+            match crypto.recv_with_pump(|channel| {
+                job.check()?;
+                if waiting.elapsed() >= Duration::from_secs(30) {
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "file confirmation deadline",
+                    ));
+                }
+                if channel.buffered_receive_bytes() > 1024 * 1024 {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "upload control size limit",
+                    ));
+                }
+                Ok(())
+            }) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission denied",
+                        ));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::file_response(response)) => {
+                            match response.union {
+                                Some(FileResponse_oneof_union::error(error))
+                                    if error.get_id() == id =>
+                                {
+                                    return Err(Self::remote_file_error(
+                                        error.get_error(),
+                                        ErrorKind::PermissionDenied,
+                                        "remote upload rejected",
+                                    ))
+                                }
+                                Some(FileResponse_oneof_union::digest(digest))
+                                    if digest.get_id() == id && digest.get_file_num() == 0 =>
+                                {
+                                    // Any digest means an existing destination. Refuse implicit resume/overwrite.
+                                    let mut confirm = FileTransferSendConfirmRequest::new();
+                                    confirm.set_id(id);
+                                    confirm.set_file_num(0);
+                                    if overwrite {
+                                        confirm.set_offset_blk(0);
+                                    } else {
+                                        confirm.set_skip(true);
+                                    }
+                                    let mut action = FileAction::new();
+                                    action.union =
+                                        Some(FileAction_oneof_union::send_confirm(confirm));
+                                    let mut message = Message::new();
+                                    message.union = Some(Message_oneof_union::file_action(action));
+                                    Self::send_message_encrypted(crypto, &message)?;
+                                    if !overwrite {
+                                        return Err(io::Error::new(
+                                            ErrorKind::AlreadyExists,
+                                            "remote target exists",
+                                        ));
+                                    }
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Message_oneof_union::file_action(action)) => {
+                            if let Some(FileAction_oneof_union::send_confirm(confirm)) =
+                                action.union
+                            {
+                                if confirm.get_id() == id && confirm.get_file_num() == 0 {
+                                    if confirm.get_skip() {
+                                        return Err(io::Error::new(
+                                            ErrorKind::AlreadyExists,
+                                            "remote target skipped",
+                                        ));
+                                    }
+                                    if confirm.get_offset_blk() != 0 {
+                                        return Err(io::Error::new(
+                                            ErrorKind::InvalidData,
+                                            "unverified resume offset",
+                                        ));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    if waiting.elapsed() >= Duration::from_secs(30) {
+                        return Err(io::Error::new(ErrorKind::TimedOut, "file confirmation deadline"));
+                    }
+                    // The peer's connection manager confirms a new file (offset 0) or reports an existing one with a
+                    // digest. Without either, nothing would be written: blocks are never sent unconfirmed, and
+                    // silence means its file service is not running.
+                    if waiting.elapsed() >= Self::FILE_SERVICE_SILENCE {
+                        return Err(io::Error::new(ErrorKind::TimedOut, "peer_file_service_unavailable"));
+                    }
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+            if waiting.elapsed() >= Duration::from_secs(30) {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "file confirmation deadline",
+                ));
+            }
+        }
+        // This dedicated file connection has its own permissions and errors.
+        // Poll it between bounded writes, including data already read alongside
+        // SendConfirm. Checking only the desktop ControlInbox misses revocation.
+        crypto.set_read_timeout(Some(Duration::from_millis(1)))?;
+        Self::drain_upload_control(crypto, job, id, Duration::ZERO, false)?;
+        crate::file_transfer::pump_upload(&source, job, |index, data| {
+            Self::drain_upload_control(crypto, job, id, Duration::ZERO, false)?;
+            let mut block = FileTransferBlock::new();
+            block.set_id(id);
+            block.set_file_num(0);
+            block.set_data(data.to_vec());
+            block.set_blk_id(index);
+            block.set_compressed(false);
+            let mut response = FileResponse::new();
+            response.union = Some(FileResponse_oneof_union::block(block));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_response(response));
+            Self::send_message_encrypted(crypto, &message)?;
+            job.mark_remote_write_started();
+            Ok(())
+        })?;
+        job.check()?;
+        if source.size() == 0 {
+            Self::drain_upload_control(crypto, job, id, Duration::ZERO, false)?;
+            // Official receiver opens the destination on the first block, even for an empty file.
+            let mut block = FileTransferBlock::new();
+            block.set_id(id);
+            block.set_file_num(0);
+            let mut response = FileResponse::new();
+            response.union = Some(FileResponse_oneof_union::block(block));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_response(response));
+            Self::send_message_encrypted(crypto, &message)?;
+            job.mark_remote_write_started();
+        }
+        Self::drain_upload_control(crypto, job, id, Duration::ZERO, false)?;
+        let mut done = FileTransferDone::new();
+        done.set_id(id);
+        done.set_file_num(0);
+        let mut response = FileResponse::new();
+        response.union = Some(FileResponse_oneof_union::done(done));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_response(response));
+        Self::send_message_encrypted(crypto, &message)?;
+        // An asynchronous receiver write/close failure can follow our final
+        // block or Done. Absence of an error in this bounded window still means
+        // senderCompleted only, never receiver persistence or verification.
+        crypto.set_read_timeout(Some(Duration::from_millis(25)))?;
+        let written = Self::await_upload_written(crypto, job, id)?;
+        self.file_replies_pending = !written;
+        if written {
+            if let Ok(mut result) = job.result.lock() {
+                result.remote_operation_acknowledged = 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// After our Done the peer's file service answers with its own once the file is written and closed (or with an
+    /// error, e.g. a full disk). `Ok(false)`: no answer within the wait; the sender side still completed.
+    fn await_upload_written(
+        crypto: &mut CryptoChannel,
+        job: &crate::file_transfer::TransferJob,
+        id: i32,
+    ) -> io::Result<bool> {
+        const UPLOAD_WRITTEN_WAIT: Duration =
+            if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(15) };
+        let started = Instant::now();
+        loop {
+            job.check()?;
+            if started.elapsed() >= UPLOAD_WRITTEN_WAIT {
+                return Ok(false);
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|_| io::Error::new(ErrorKind::InvalidData, "invalid upload control"))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(ErrorKind::PermissionDenied, "file permission revoked"));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::file_response(response)) => match response.union {
+                            Some(FileResponse_oneof_union::done(done)) if done.get_id() == id => return Ok(true),
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == id => {
+                                return Err(Self::remote_file_error(
+                                    error.get_error(),
+                                    ErrorKind::PermissionDenied,
+                                    "remote upload rejected",
+                                ));
+                            }
+                            _ => {}
+                        },
+                        Some(Message_oneof_union::file_action(action)) => {
+                            if let Some(FileAction_oneof_union::cancel(cancel)) = action.union {
+                                if cancel.get_id() == id {
+                                    return Err(io::Error::new(ErrorKind::Interrupted, "upload cancelled by peer"));
+                                }
+                            }
+                        }
+                        Some(Message_oneof_union::test_delay(delay)) => Self::echo_file_test_delay(crypto, delay)?,
+                        Some(Message_oneof_union::misc(misc))
+                            if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) =>
+                        {
+                            return Ok(false);
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+                Err(error) if error.kind() == ErrorKind::UnexpectedEof && crypto.buffered_receive_bytes() == 0 => {
+                    // A clean close after our complete Done does not undo the sender fact.
+                    job.check()?;
+                    return Ok(false);
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    /// Starts a job on a reused file connection: a fresh wire id, nothing pending.
+    pub(crate) fn begin_file_job(&mut self) {
+        self.file_job_id = Self::next_file_action_id();
+        self.file_replies_pending = false;
+    }
+
+    pub(crate) fn file_replies_pending(&self) -> bool {
+        self.file_replies_pending
+    }
+
+    /// Right after a file login the peer reads the login's folder on its own and sends it (id 0). Consumed here so a
+    /// later listing on the reused connection cannot take it for its own answer. Absent within the wait (the file
+    /// service may be slow or missing), the connection is used anyway.
+    pub(crate) fn consume_login_directory_push(
+        &mut self,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<()> {
+        const LOGIN_PUSH_WAIT: Duration =
+            if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(3) };
+        let crypto = self.prepare_file_channel()?;
+        let started = Instant::now();
+        loop {
+            job.check()?;
+            if started.elapsed() >= LOGIN_PUSH_WAIT {
+                return Ok(());
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(ErrorKind::PermissionDenied, "file permission denied"));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::file_response(response)) => match response.union {
+                            Some(FileResponse_oneof_union::dir(directory)) if directory.get_id() == 0 => {
+                                self.file_service_seen = true;
+                                return Ok(());
+                            }
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == 0 => {
+                                self.file_service_seen = true;
+                                return Ok(());
+                            }
+                            _ => {}
+                        },
+                        Some(Message_oneof_union::test_delay(delay)) => Self::echo_file_test_delay(crypto, delay)?,
+                        Some(Message_oneof_union::misc(misc))
+                            if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) =>
+                        {
+                            return Err(io::Error::new(ErrorKind::ConnectionAborted, "file peer closed"));
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn drain_upload_control(
+        crypto: &mut CryptoChannel,
+        job: &crate::file_transfer::TransferJob,
+        id: i32,
+        quiet_window: Duration,
+        after_done: bool,
+    ) -> io::Result<()> {
+        let started = Instant::now();
+        // No data is sent through a partially received control frame. Bound a
+        // fragmented/flooded stream independently of the job's longer idle TTL.
+        const FRAME_DEADLINE: Duration = Duration::from_secs(2);
+        const MAX_CONTROL_BYTES: usize = 1024 * 1024;
+        let mut received = 0;
+        loop {
+            job.check()?;
+            let result = crypto.recv_with_pump(|channel| {
+                job.check()?;
+                if started.elapsed() >= FRAME_DEADLINE {
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "upload control deadline",
+                    ));
+                }
+                if channel.buffered_receive_bytes() > MAX_CONTROL_BYTES {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "upload control size limit",
+                    ));
+                }
+                Ok(())
+            });
+            match result {
+                Ok(bytes) => {
+                    received += 1;
+                    if received > 256 {
+                        return Err(io::Error::new(
+                            ErrorKind::InvalidData,
+                            "upload control flood limit",
+                        ));
+                    }
+                    let message: Message = protobuf::parse_from_bytes(&bytes).map_err(|_| {
+                        io::Error::new(ErrorKind::InvalidData, "invalid upload control")
+                    })?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission revoked",
+                        ));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::file_response(response)) => {
+                            match response.union {
+                                Some(FileResponse_oneof_union::error(error))
+                                    if error.get_id() == id =>
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::PermissionDenied,
+                                        "remote upload rejected",
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Message_oneof_union::file_action(action)) => match action.union {
+                            Some(FileAction_oneof_union::cancel(cancel))
+                                if cancel.get_id() == id =>
+                            {
+                                return Err(io::Error::new(
+                                    ErrorKind::Interrupted,
+                                    "upload cancelled by peer",
+                                ));
+                            }
+                            Some(FileAction_oneof_union::send_confirm(confirm))
+                                if confirm.get_id() == id
+                                    && (confirm.get_skip()
+                                        || confirm.get_file_num() != 0
+                                        || confirm.get_offset_blk() != 0) =>
+                            {
+                                return Err(io::Error::new(
+                                    ErrorKind::InvalidData,
+                                    "upload confirmation changed",
+                                ));
+                            }
+                            _ => {}
+                        },
+                        Some(Message_oneof_union::misc(misc))
+                            if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) =>
+                        {
+                            return Err(io::Error::new(
+                                ErrorKind::ConnectionAborted,
+                                "file session closed by peer",
+                            ));
+                        }
+                        Some(Message_oneof_union::test_delay(delay)) => {
+                            let mut echo = Message::new();
+                            echo.union = Some(Message_oneof_union::test_delay(delay));
+                            Self::send_message_encrypted(crypto, &echo)?;
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    job.check()?;
+                    if started.elapsed() >= FRAME_DEADLINE {
+                        return Err(io::Error::new(
+                            ErrorKind::TimedOut,
+                            "incomplete upload control frame",
+                        ));
+                    }
+                    if crypto.buffered_receive_bytes() == 0 && started.elapsed() >= quiet_window {
+                        return Ok(());
+                    }
+                }
+                Err(error)
+                    if after_done
+                        && error.kind() == ErrorKind::UnexpectedEof
+                        && crypto.buffered_receive_bytes() == 0 =>
+                {
+                    // A clean close after our complete Done does not undo the
+                    // sender fact. A truncated final error/control frame fails.
+                    return job.check();
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    /// Best effort cleanup only after this operation sent a data block, or for its read job.
+    pub(crate) fn cancel_file_transfer_job(&mut self) {
+        if let Some(crypto) = self.crypto_channel.as_mut() {
+            let _ = crypto.set_write_timeout(Some(Duration::from_secs(1)));
+            let mut cancel = crate::protocol::message_proto::FileTransferCancel::new();
+            cancel.set_id(self.file_job_id);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::cancel(cancel));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            let _ = Self::send_message_encrypted(crypto, &message);
+        }
+    }
+
+    fn prepare_file_channel(&mut self) -> io::Result<&mut CryptoChannel> {
+        if self.state != ConnState::Connected {
+            return Err(io::Error::new(
+                ErrorKind::NotConnected,
+                "file session not connected",
+            ));
+        }
+        let crypto = self
+            .crypto_channel
+            .as_mut()
+            .ok_or_else(|| io::Error::new(ErrorKind::NotConnected, "file channel unavailable"))?;
+        crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
+        crypto.set_write_timeout(Some(Duration::from_secs(10)))?;
+        Ok(crypto)
+    }
+
+    fn file_message_denies_permission(message: &Message) -> bool {
+        if let Some(Message_oneof_union::misc(misc)) = &message.union {
+            if let Some(Misc_oneof_union::permission_info(permission)) = &misc.union {
+                return permission_mask(permission.get_permission())
+                    == crate::control_inbox::PERMISSION_FILE
+                    && !permission.get_enabled();
+            }
+        }
+        false
+    }
+
+    pub(crate) fn create_remote_directory(
+        &mut self,
+        path: &str,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<()> {
+        job.check()?;
+        if path.is_empty()
+            || path.len() > 32768
+            || path.contains('\0')
+            || path.split(['/', '\\']).any(|v| v == "." || v == "..")
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "invalid directory path",
+            ));
+        }
+        let id = self.file_job_id;
+        let crypto = self.prepare_file_channel()?;
+        crypto.set_read_timeout(Some(Duration::from_millis(1)))?;
+        Self::drain_upload_control(crypto, job, id, Duration::ZERO, false)?;
+        crypto.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let mut create = crate::protocol::message_proto::FileDirCreate::new();
+        create.set_id(id);
+        create.set_path(path.to_owned());
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::create(create));
+        let mut request = Message::new();
+        request.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &request)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            job.check()?;
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "directory creation deadline",
+                ));
+            }
+            let bytes = match crypto.recv_with_pump(|ch| {
+                job.check()?;
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "directory creation deadline",
+                    ));
+                }
+                if ch.buffered_receive_bytes() > 1024 * 1024 {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "directory reply too large",
+                    ));
+                }
+                Ok(())
+            }) {
+                Ok(v) => v,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    continue
+                }
+                Err(e) => return Err(e),
+            };
+            if bytes.len() > 1024 * 1024 {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "directory reply too large",
+                ));
+            }
+            let message: Message = protobuf::parse_from_bytes(&bytes)
+                .map_err(|_| io::Error::new(ErrorKind::InvalidData, "directory reply"))?;
+            if Self::file_message_denies_permission(&message) {
+                return Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "file permission denied",
+                ));
+            }
+            match message.union {
+                Some(Message_oneof_union::file_response(response)) => match response.union {
+                    Some(FileResponse_oneof_union::done(done))
+                        if done.get_id() == id && done.get_file_num() == 0 =>
+                    {
+                        job.check()?;
+                        job.result
+                            .lock()
+                            .map_err(|_| io::Error::other("directory result lock"))?
+                            .remote_operation_acknowledged = 1;
+                        return Ok(());
+                    }
+                    Some(FileResponse_oneof_union::error(error)) if error.get_id() == id => {
+                        return Err(Self::remote_file_error(
+                            error.get_error(),
+                            ErrorKind::PermissionDenied,
+                            "directory creation rejected",
+                        ))
+                    }
+                    _ => {}
+                },
+                Some(Message_oneof_union::test_delay(delay)) => {
+                    let mut echo = Message::new();
+                    echo.union = Some(Message_oneof_union::test_delay(delay));
+                    Self::send_message_encrypted(crypto, &echo)?;
+                }
+                Some(Message_oneof_union::misc(misc))
+                    if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) =>
+                {
+                    return Err(io::Error::new(
+                        ErrorKind::ConnectionAborted,
+                        "file peer closed",
+                    ))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Ids for file actions on a reused connection; each request waits for replies carrying its own id.
+    fn next_file_action_id() -> i32 {
+        static NEXT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1000);
+        let id = NEXT.fetch_add(1, Ordering::SeqCst);
+        if id <= 0 || id > i32::MAX - 1_000_000 {
+            NEXT.store(1001, Ordering::SeqCst);
+            1000
+        } else {
+            id
+        }
+    }
+
+    /// Sends one file action and waits for the peer's `Done` (or `Error`) carrying `id`, answering probes.
+    fn file_action_round_trip(
+        &mut self,
+        action: FileAction_oneof_union,
+        id: i32,
+        job: &crate::file_transfer::TransferJob,
+        rejected: &'static str,
+    ) -> io::Result<()> {
+        job.check()?;
+        let service_seen = self.file_service_seen;
+        let crypto = self.prepare_file_channel()?;
+        let mut file_action = FileAction::new();
+        file_action.union = Some(action);
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(file_action));
+        Self::send_message_encrypted(crypto, &message)?;
+        let started = Instant::now();
+        let mut file_service_answered = service_seen;
+        loop {
+            job.check()?;
+            let elapsed = started.elapsed();
+            if elapsed >= Duration::from_secs(60) {
+                return Err(io::Error::new(ErrorKind::TimedOut, "file action deadline"));
+            }
+            if !file_service_answered && elapsed >= Self::FILE_SERVICE_SILENCE {
+                return Err(io::Error::new(ErrorKind::TimedOut, "peer_file_service_unavailable"));
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(ErrorKind::PermissionDenied, "file permission denied"));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::test_delay(delay)) => {
+                            Self::echo_file_test_delay(crypto, delay)?;
+                        }
+                        Some(Message_oneof_union::file_response(response)) => {
+                            file_service_answered = true;
+                            match response.union {
+                                Some(FileResponse_oneof_union::done(done)) if done.get_id() == id => {
+                                    return Ok(());
+                                }
+                                Some(FileResponse_oneof_union::error(error)) if error.get_id() == id => {
+                                    return Err(Self::remote_file_error(
+                                        error.get_error(),
+                                        ErrorKind::PermissionDenied,
+                                        rejected,
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Message_oneof_union::misc(misc))
+                            if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) =>
+                        {
+                            return Err(io::Error::new(ErrorKind::ConnectionAborted, "file peer closed"));
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => continue,
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    /// Every file below `path` with names relative to it ('/' separated), from the peer's recursive listing. Folders
+    /// without files are not part of it.
+    pub(crate) fn read_remote_tree(
+        &mut self,
+        path: &str,
+        include_hidden: bool,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<crate::file_transfer::RemoteDirectory> {
+        job.check()?;
+        if path.is_empty() || path.contains('\0') {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "invalid folder path"));
+        }
+        let id = Self::next_file_action_id();
+        // Windows peers join relative names with '\\'; on other peers it is an ordinary character of a name.
+        let windows_peer = self.file_peer_platform().eq_ignore_ascii_case("windows");
+        let service_seen = self.file_service_seen;
+        let crypto = self.prepare_file_channel()?;
+        let mut request = crate::protocol::message_proto::ReadAllFiles::new();
+        request.set_id(id);
+        request.set_path(path.to_owned());
+        request.set_include_hidden(include_hidden);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::all_files(request));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        let started = Instant::now();
+        let mut file_service_answered = service_seen;
+        loop {
+            job.check()?;
+            if started.elapsed() >= Duration::from_secs(120) {
+                return Err(io::Error::new(ErrorKind::TimedOut, "folder tree deadline"));
+            }
+            if !file_service_answered && started.elapsed() >= Self::FILE_SERVICE_SILENCE {
+                return Err(io::Error::new(ErrorKind::TimedOut, "peer_file_service_unavailable"));
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(ErrorKind::PermissionDenied, "file permission denied"));
+                    }
+                    if let Some(Message_oneof_union::test_delay(delay)) = message.union {
+                        Self::echo_file_test_delay(crypto, delay)?;
+                        continue;
+                    }
+                    if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        file_service_answered = true;
+                        match response.union {
+                            Some(FileResponse_oneof_union::dir(directory)) if directory.get_id() == id => {
+                                if directory.get_entries().len() > 20_000 {
+                                    return Err(io::Error::new(ErrorKind::InvalidData, "directory entry limit"));
+                                }
+                                let mut entries = Vec::new();
+                                for entry in directory.get_entries() {
+                                    let relative = Self::safe_relative_remote_name(entry.get_name(), windows_peer)?;
+                                    entries.push(crate::file_transfer::RemoteFileEntry {
+                                        name: relative,
+                                        entry_type: entry.get_entry_type() as u32,
+                                        size: entry.get_size(),
+                                        modified: entry.get_modified_time(),
+                                    });
+                                }
+                                return Ok(crate::file_transfer::RemoteDirectory { path: path.to_owned(), entries });
+                            }
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == id => {
+                                return Err(Self::remote_file_error(
+                                    error.get_error(),
+                                    ErrorKind::PermissionDenied,
+                                    "folder tree rejected",
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => continue,
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    /// A relative name from a recursive listing ('\\' on Windows peers) as '/'-separated components; anything that
+    /// could leave the folder is refused.
+    fn safe_relative_remote_name(name: &str, windows_peer: bool) -> io::Result<String> {
+        let normalized = if windows_peer { name.replace('\\', "/") } else { name.to_owned() };
+        let unsafe_name = normalized.is_empty()
+            || normalized.len() > 4096
+            || normalized.contains('\0')
+            || normalized.starts_with('/')
+            || normalized.as_bytes().get(1) == Some(&b':')
+            || normalized
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..");
+        if unsafe_name {
+            return Err(io::Error::new(ErrorKind::InvalidData, "unsafe remote directory entry"));
+        }
+        Ok(normalized)
+    }
+
+    /// `relative` ('/' separated) below `base`, with the separator the peer's own paths use.
+    fn join_remote_path(base: &str, relative: &str) -> String {
+        let windows = base.contains('\\') || base.as_bytes().get(1) == Some(&b':');
+        let separator = if windows { '\\' } else { '/' };
+        let mut joined = base.trim_end_matches(['/', '\\']).to_string();
+        for part in relative.split('/') {
+            joined.push(separator);
+            joined.push_str(part);
+        }
+        joined
+    }
+
+    /// Whether `path` is an absolute path below a root: no `.` or `..` component, not a root, not a UNC or
+    /// device path. Removal refuses anything else.
+    fn removable_remote_path(path: &str) -> bool {
+        // Two leading separators of any kind ("//", "\\\\", "/\\") name a network or device path on Windows.
+        let leading = path.as_bytes();
+        if path.is_empty() || path.len() > 32768 || path.contains('\0')
+            || (leading.len() >= 2 && matches!(leading[0], b'/' | b'\\') && matches!(leading[1], b'/' | b'\\'))
+        {
+            return false;
+        }
+        let bytes = path.as_bytes();
+        let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/');
+        if !drive && !path.starts_with('/') {
+            return false;
+        }
+        let body = if drive { &path[3..] } else { &path[1..] };
+        let parts: Vec<&str> = body.split(['/', '\\']).filter(|part| !part.is_empty()).collect();
+        !parts.is_empty() && parts.iter().all(|part| *part != "." && *part != "..")
+    }
+
+    /// Removes a file, or a folder with everything in it. The peer removes only empty folders, so the files of a
+    /// folder are removed one by one first (`job` progress counts them). The target is first found in its parent's
+    /// listing: a folder must be a real folder (a link to one is never followed), a file a file or a link.
+    pub(crate) fn remove_remote_path(
+        &mut self,
+        path: &str,
+        directory: bool,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<()> {
+        if !Self::removable_remote_path(path) {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "refusing to remove this path"));
+        }
+        let (parent, name) = Self::split_remote_file_path(path.trim_end_matches(['/', '\\']));
+        let listing = self.read_remote_directory(parent, true, job)?;
+        let entry_type = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.entry_type)
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "remote_path_not_found"))?;
+        let is_folder = entry_type == FileType::Dir as u32;
+        let is_file_or_link = entry_type == FileType::File as u32 || entry_type == FileType::FileLink as u32
+            || entry_type == FileType::DirLink as u32;
+        if directory != is_folder || (!directory && !is_file_or_link) {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "refusing to remove this path"));
+        }
+        if !directory {
+            let id = Self::next_file_action_id();
+            let mut remove = crate::protocol::message_proto::FileRemoveFile::new();
+            remove.set_id(id);
+            remove.set_path(path.to_owned());
+            remove.set_file_num(0);
+            self.file_action_round_trip(FileAction_oneof_union::remove_file(remove), id, job, "remove rejected")?;
+            return self.acknowledge_file_operation(job);
+        }
+        let tree = self.read_remote_tree(path, true, job)?;
+        let mut removed = 0u64;
+        for entry in tree.entries.iter() {
+            job.check()?;
+            let id = Self::next_file_action_id();
+            let mut remove = crate::protocol::message_proto::FileRemoveFile::new();
+            remove.set_id(id);
+            remove.set_path(Self::join_remote_path(path, &entry.name));
+            remove.set_file_num(0);
+            self.file_action_round_trip(FileAction_oneof_union::remove_file(remove), id, job, "remove rejected")?;
+            removed += 1;
+            job.progress(removed);
+        }
+        let id = Self::next_file_action_id();
+        let mut remove = crate::protocol::message_proto::FileRemoveDir::new();
+        remove.set_id(id);
+        remove.set_path(path.to_owned());
+        remove.set_recursive(true);
+        self.file_action_round_trip(FileAction_oneof_union::remove_dir(remove), id, job, "remove rejected")?;
+        self.acknowledge_file_operation(job)
+    }
+
+    /// Renames the file or folder at `path` to `new_name` in the same folder.
+    pub(crate) fn rename_remote_path(
+        &mut self,
+        path: &str,
+        new_name: &str,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<()> {
+        if path.is_empty() || path.contains('\0') || new_name.is_empty() || new_name == "." || new_name == ".."
+            || new_name.contains(['/', '\\', '\0']) || new_name.len() > 255
+        {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "invalid new name"));
+        }
+        let id = Self::next_file_action_id();
+        let mut rename = crate::protocol::message_proto::FileRename::new();
+        rename.set_id(id);
+        rename.set_path(path.to_owned());
+        rename.set_new_name(new_name.to_owned());
+        self.file_action_round_trip(FileAction_oneof_union::rename(rename), id, job, "rename rejected")?;
+        self.acknowledge_file_operation(job)
+    }
+
+    fn acknowledge_file_operation(&self, job: &crate::file_transfer::TransferJob) -> io::Result<()> {
+        job.check()?;
+        job.result
+            .lock()
+            .map_err(|_| io::Error::other("file result lock"))?
+            .remote_operation_acknowledged = 1;
+        Ok(())
+    }
+
+    /// While a reused file connection waits for its next job: answers the peer's probes and reports a closed or
+    /// revoked session as an error.
+    pub(crate) fn pump_idle_file_channel(&mut self) -> io::Result<()> {
+        let crypto = self.prepare_file_channel()?;
+        crypto.set_read_timeout(Some(Duration::from_millis(1)))?;
+        for _ in 0..64 {
+            match crypto.recv_with_pump(|_| Ok(())) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(ErrorKind::PermissionDenied, "file permission denied"));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::test_delay(delay)) => Self::echo_file_test_delay(crypto, delay)?,
+                        Some(Message_oneof_union::misc(misc))
+                            if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) =>
+                        {
+                            return Err(io::Error::new(ErrorKind::ConnectionAborted, "file peer closed"));
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// The file login's PeerInfo had no username: RustDesk clears it while it believes the console is at the login
+    /// window, and then never starts its connection manager, which serves every file-system request except
+    /// downloads on macOS and Linux peers.
+    pub(crate) fn file_peer_prelogin(&self) -> bool {
+        // Desktop peers only: an Android peer has no console user to report.
+        self.session.peer_info().is_some_and(|info| {
+            info.get_username().is_empty() && !info.get_platform().eq_ignore_ascii_case("android")
+        })
+    }
+
+    pub(crate) fn file_peer_platform(&self) -> String {
+        self.session.peer_info().map(|info| info.get_platform().to_string()).unwrap_or_default()
+    }
+
+    /// How long a file request may go without any answer from the peer's file service before it is reported as
+    /// not running (the peer's connection itself stays alive; its own timeout is 30 s).
+    const FILE_SERVICE_SILENCE: Duration = if cfg!(test) { Duration::from_millis(400) } else { Duration::from_secs(20) };
+
+    fn echo_file_test_delay(
+        crypto: &mut CryptoChannel,
+        delay: crate::protocol::message_proto::TestDelay,
+    ) -> io::Result<()> {
+        // The peer closes a session that sends nothing for 30 s; answering its probes keeps a quiet download alive.
+        let mut echo = Message::new();
+        echo.union = Some(Message_oneof_union::test_delay(delay));
+        Self::send_message_encrypted(crypto, &echo)
+    }
+
+    /// Whether a directory reply answers the requested path. The peer also pushes the login's initial directory
+    /// (its home when the requested one is missing), which must not be taken for the answer.
+    fn directory_reply_matches(requested: &str, replied: &str) -> bool {
+        if requested.is_empty() {
+            return true;
+        }
+        let trim = |value: &str| -> String {
+            let normalized = value.replace('\\', "/");
+            let trimmed = normalized.trim_end_matches('/');
+            if trimmed.is_empty() || trimmed.ends_with(':') {
+                normalized
+            } else {
+                trimmed.to_string()
+            }
+        };
+        let (left, right) = (trim(requested), trim(replied));
+        left == right || (left.eq_ignore_ascii_case(&right) && left.contains(':'))
+    }
+
+    /// A peer's file error text as one of the reasons the app explains (see file_transfer::REPORTED_FILE_ERRORS).
+    fn remote_file_error(text: &str, fallback_kind: ErrorKind, fallback: &'static str) -> io::Error {
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("one-way-file-transfer") {
+            return io::Error::new(ErrorKind::PermissionDenied, "remote_one_way_transfer");
+        }
+        if lower.contains("no such file") || lower.contains("os error 2)") || lower.contains("os error 3)")
+            || lower.contains("not found")
+        {
+            return io::Error::new(ErrorKind::NotFound, "remote_path_not_found");
+        }
+        // Text only: bare error numbers mean different things on Windows and Unix peers.
+        if lower.contains("permission denied") || lower.contains("not permitted") || lower.contains("access is denied") {
+            return io::Error::new(ErrorKind::PermissionDenied, "remote_permission_denied");
+        }
+        if lower.contains("no space") || lower.contains("disk full") || lower.contains("not enough space") {
+            return io::Error::new(ErrorKind::Other, "remote_disk_full");
+        }
+        io::Error::new(fallback_kind, fallback)
+    }
+
+    pub(crate) fn read_remote_directory(
+        &mut self,
+        path: &str,
+        include_hidden: bool,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<crate::file_transfer::RemoteDirectory> {
+        job.check()?;
+        let service_seen = self.file_service_seen;
+        let crypto = self.prepare_file_channel()?;
+        let mut request = crate::protocol::message_proto::ReadDir::new();
+        request.set_path(path.to_owned());
+        request.set_include_hidden(include_hidden);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::read_dir(request));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        // The peer's connection manager answers every directory request, and pushes the login's initial directory
+        // on its own; silence from it while the connection itself is alive means it is not running.
+        let mut file_service_answered = service_seen;
+        loop {
+            job.check()?;
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "directory reply deadline",
+                ));
+            }
+            if !file_service_answered && now.duration_since(started) >= Self::FILE_SERVICE_SILENCE {
+                return Err(io::Error::new(ErrorKind::TimedOut, "peer_file_service_unavailable"));
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission denied",
+                        ));
+                    }
+                    if let Some(Message_oneof_union::test_delay(delay)) = message.union {
+                        Self::echo_file_test_delay(crypto, delay)?;
+                        continue;
+                    }
+                    if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        file_service_answered = true;
+                        match response.union {
+                            Some(FileResponse_oneof_union::dir(directory))
+                                if directory.get_id() == 0
+                                    && Self::directory_reply_matches(path, directory.get_path()) =>
+                            {
+                                if directory.get_path().len() > 32768
+                                    || directory.get_path().contains('\0')
+                                    || directory.get_entries().len() > 4096
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "directory entry limit",
+                                    ));
+                                }
+                                let mut result = Vec::new();
+                                for entry in directory.get_entries() {
+                                    let name = entry.get_name();
+                                    if name.is_empty()
+                                        || name == "."
+                                        || name == ".."
+                                        || name.len() > 4096
+                                        || name.contains('\0')
+                                        || (entry.get_entry_type() != FileType::DirDrive
+                                            && (name.contains('/') || name.contains('\\')))
+                                    {
+                                        return Err(io::Error::new(
+                                            ErrorKind::InvalidData,
+                                            "unsafe remote directory entry",
+                                        ));
+                                    }
+                                    result.push(crate::file_transfer::RemoteFileEntry {
+                                        name: name.to_owned(),
+                                        entry_type: entry.get_entry_type() as u32,
+                                        size: entry.get_size(),
+                                        modified: entry.get_modified_time(),
+                                    });
+                                }
+                                return Ok(crate::file_transfer::RemoteDirectory {
+                                    path: directory.get_path().to_owned(),
+                                    entries: result,
+                                });
+                            }
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == 0 => {
+                                return Err(Self::remote_file_error(
+                                    error.get_error(),
+                                    ErrorKind::PermissionDenied,
+                                    "directory request rejected",
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                {
+                    continue
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn download_file_stream(
+        &mut self,
+        path: &str,
+        mut sink: crate::file_transfer::DownloadSink,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<()> {
+        job.check()?;
+        let id = self.file_job_id;
+        let crypto = self.prepare_file_channel()?;
+        let mut request = crate::protocol::message_proto::FileTransferSendRequest::new();
+        request.set_id(id);
+        request.set_path(path.to_owned());
+        request.set_file_num(0);
+        request.set_include_hidden(true);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::send(request));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        let mut metadata_received = false;
+        let mut file_ended = false;
+        loop {
+            job.check()?;
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission denied",
+                        ));
+                    }
+                    if let Some(Message_oneof_union::test_delay(delay)) = message.union {
+                        Self::echo_file_test_delay(crypto, delay)?;
+                        continue;
+                    }
+                    if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        match response.union {
+                            Some(FileResponse_oneof_union::dir(directory))
+                                if directory.get_id() == id =>
+                            {
+                                if metadata_received
+                                    || directory.get_path() != path
+                                    || directory.get_entries().len() != 1
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "download requires one matching file",
+                                    ));
+                                }
+                                let entry = &directory.get_entries()[0];
+                                if entry.get_entry_type() != FileType::File
+                                    || (!entry.get_name().is_empty()
+                                        && entry.get_name() != Self::split_remote_file_path(path).1)
+                                    || entry.get_size() != sink.expected_size
+                                    || entry.get_modified_time() != sink.modified
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "download source metadata changed",
+                                    ));
+                                }
+                                metadata_received = true;
+                            }
+                            Some(FileResponse_oneof_union::digest(digest))
+                                if digest.get_id() == id =>
+                            {
+                                if !metadata_received
+                                    || digest.get_file_num() != 0
+                                    || digest.get_is_upload()
+                                    || digest.get_file_size() != sink.expected_size
+                                    || digest.get_last_modified() != sink.modified
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "download digest differs from selected source",
+                                    ));
+                                }
+                                let mut confirm = FileTransferSendConfirmRequest::new();
+                                confirm.set_id(id);
+                                confirm.set_file_num(0);
+                                confirm.set_offset_blk(0);
+                                let mut action = FileAction::new();
+                                action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+                                let mut message = Message::new();
+                                message.union = Some(Message_oneof_union::file_action(action));
+                                Self::send_message_encrypted(crypto, &message)?;
+                            }
+                            Some(FileResponse_oneof_union::block(block)) if block.get_id() == id => {
+                                if !metadata_received || block.get_file_num() != 0 || file_ended {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "unexpected download block",
+                                    ));
+                                }
+                                if block.get_data().is_empty() {
+                                    file_ended = true;
+                                }
+                                sink.write_block(block.get_data(), block.get_compressed(), job)?;
+                            }
+                            Some(FileResponse_oneof_union::done(done)) if done.get_id() == id => {
+                                if !metadata_received || !(0..=1).contains(&done.get_file_num()) {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "unexpected download completion",
+                                    ));
+                                }
+                                return sink.complete(job);
+                            }
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == id => {
+                                return Err(Self::remote_file_error(
+                                    error.get_error(),
+                                    ErrorKind::PermissionDenied,
+                                    "download rejected by peer",
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                {
+                    continue
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
     }
 
     pub fn upload_file_once(
@@ -1802,6 +3177,22 @@ impl RustDeskConnector {
         (tx_key, rx_key)
     }
 
+    fn pump_file_clipboard(crypto: &mut CryptoChannel, controls: &ControlInbox, drain: bool) -> io::Result<()> {
+        for _ in 0..if drain { 32 } else { 1 } {
+            let outputs = controls.file_clipboard.take_outputs();
+            if outputs.is_empty() { break; }
+            for output in outputs {
+                if !output.receipt.pending() { continue; }
+                match crypto.send_with_publication(&output.bytes, output.receipt) {
+                    Ok(()) => {},
+                    Err(error) if error.kind() == ErrorKind::Interrupted => {},
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn pump_control_messages(
         crypto: &mut CryptoChannel,
         controls: &ControlInbox,
@@ -1810,6 +3201,7 @@ impl RustDeskConnector {
         requested_pressure_level: &mut u32,
         current_image_quality: &mut i32,
         quality_state: &Arc<Mutex<crate::RustDeskQualityState>>,
+        quality_refresh: &mut QualityRefreshGate,
         physical_modifiers: &mut PhysicalModifierState,
         remote_keyboard_transport: RemoteKeyboardTransport,
         stream_started: Instant,
@@ -1817,6 +3209,7 @@ impl RustDeskConnector {
         sent_mouse_moves: &mut u64,
         sent_mouse_buttons: &mut u64,
         control_send_errors: &mut u64,
+        live_options: &mut LiveSessionOptions,
     ) -> io::Result<()> {
         crypto.check_streaming_writer()?;
         if controls.shutdown_requested() {
@@ -1826,7 +3219,12 @@ impl RustDeskConnector {
             ));
         }
 
-        for control in Self::next_control_batch(controls) {
+        Self::pump_file_clipboard(crypto, controls, false)?;
+        let (phone_epoch, control_batch) = controls.take_phone_fenced_batch(CONTROL_BATCH_LIMIT);
+        for control in control_batch {
+            let phone_input_lease = controls.phone_input_lease(&control);
+            if phone_input_lease.as_ref().is_some_and(|ready|
+                !**ready || !controls.phone_batch_is_current(phone_epoch)) { continue; }
             if controls.shutdown_requested() {
                 return Err(io::Error::new(
                     ErrorKind::Interrupted,
@@ -1843,6 +3241,11 @@ impl RustDeskConnector {
                 }
                 crate::ControlMsg::VideoPressure { level } => {
                     *requested_pressure_level = level.min(3);
+                }
+                crate::ControlMsg::SetStreamOptions { codec, audio_enabled } => {
+                    live_options.codec = codec;
+                    live_options.audio_enabled = audio_enabled;
+                    live_options.pending = true;
                 }
                 crate::ControlMsg::SetImageQuality {
                     quality,
@@ -1868,10 +3271,13 @@ impl RustDeskConnector {
                         }
                     }
                     match send_result {
-                        Ok(()) => eprintln!(
-                            "[RustDesk-FFI] live image quality applied generation={} quality={}",
-                            generation, quality
-                        ),
+                        Ok(()) => {
+                            quality_refresh.request();
+                            eprintln!(
+                                "[RustDesk-FFI] live image quality sent generation={} quality={}",
+                                generation, quality
+                            )
+                        }
                         Err(err) => eprintln!(
                             "[RustDesk-FFI] live image quality failed generation={} quality={} error={}",
                             generation, quality, err
@@ -1905,7 +3311,21 @@ impl RustDeskConnector {
                         }
                     }
                 }
+                crate::ControlMsg::ClipboardTracked { content, receipt } => {
+                    controls.file_clipboard.revoke_local_source();
+                    Self::pump_file_clipboard(crypto, controls, true)?;
+                    let permission = controls.permission_snapshot();
+                    let clipboard = crate::control_inbox::PERMISSION_CLIPBOARD;
+                    if !controls.shutdown_requested() && receipt.pending() &&
+                        !(permission.known_mask & clipboard != 0 && permission.enabled_mask & clipboard == 0) {
+                        let mut cb = Clipboard::new(); cb.set_format(ClipboardFormat::Text); cb.set_content(content);
+                        let mut msg = Message::new(); msg.union = Some(Message_oneof_union::clipboard(cb));
+                        if let Ok(bytes) = msg.write_to_bytes() { let _ = crypto.send_with_publication(&bytes, receipt); }
+                    }
+                }
                 crate::ControlMsg::Clipboard { content } => {
+                    controls.file_clipboard.revoke_local_source();
+                    Self::pump_file_clipboard(crypto, controls, true)?;
                     let mut cb = Clipboard::new();
                     cb.set_format(ClipboardFormat::Text);
                     cb.set_content(content);
@@ -1969,6 +3389,10 @@ impl RustDeskConnector {
                 }
             }
         }
+        if quality_refresh.take_due(Instant::now()) {
+            Session::send_refresh_video(crypto)?;
+            eprintln!("[RustDesk-FFI] refresh_video after live image quality change");
+        }
         Ok(())
     }
 
@@ -1997,10 +3421,12 @@ impl RustDeskConnector {
         VF: FnMut(&VideoFrame),
         AFF: FnMut(&AudioFormat),
         AF: FnMut(&AudioFrame),
-        CF: FnMut(&[u8]),
+        CF: FnMut(Option<&[u8]>),
         CU: FnMut(CursorStreamUpdate),
         DS: FnMut(),
     {
+        controls.file_clipboard.bind_controls(&controls);
+        if let Some(info) = self.session.peer_info() { controls.file_clipboard.update_peer(info); }
         let remote_keyboard_transport = self
             .session
             .peer_info()
@@ -2019,6 +3445,11 @@ impl RustDeskConnector {
 
         let mut stream_options_reasserted = false;
         let mut image_quality = image_quality.clamp(0, 2);
+        // Codec and remote audio can change while connected (rustdesk_set_stream_options).
+        let mut preferred_codec = preferred_codec;
+        let mut audio_enabled = audio_enabled;
+        let mut live_options = LiveSessionOptions { codec: preferred_codec, audio_enabled, pending: false };
+        let mut quality_refresh = QualityRefreshGate::default();
         let mut empty_reads: u32 = 0; // 连续空读计数
                                       // 消息类型统计 — 用于诊断对端停止发送前的行为
         let mut msg_stats: std::collections::HashMap<&'static str, u64> =
@@ -2064,7 +3495,7 @@ impl RustDeskConnector {
         const DEGRADE_AFTER_OVERLOAD_WINDOWS: u32 = 5; // need 5s of overload before degrade
         const RECOVER_AFTER_CLEAN_WINDOWS: u32 = 30; // 30s of clean before recover
         const OVERLOAD_VIDEO_THRESHOLD: u64 = 3; // <3 fps sustained = genuine decoder overload
-        if let Err(err) = Session::send_stream_options(
+        if let Err(err) = self.session.send_stream_options(
             crypto,
             preferred_codec,
             image_quality,
@@ -2088,6 +3519,21 @@ impl RustDeskConnector {
             stream_options_sent_count += 1;
             stream_options_reasserted = true;
             eprintln!("[RustDesk-FFI] streaming: initial stream options reasserted");
+        }
+        let privacy_impl_key = self
+            .session
+            .peer_info()
+            .map(|info| crate::privacy_mode_impl_key(info.get_platform_additions()))
+            .unwrap_or_default();
+        if privacy_mode && !privacy_impl_key.is_empty() {
+            // Peers from 1.2.4 on ignore the login option's privacy_mode: ask for it the way they act on. Only peers
+            // that list an implementation are asked (the preference is global; a Mac or an old peer is left alone).
+            let impl_key = privacy_impl_key;
+            let message = Self::build_toggle_privacy_mode_message(&impl_key, true);
+            match Self::send_message_encrypted(crypto, &message) {
+                Ok(()) => eprintln!("[RustDesk-FFI] privacy mode requested impl={}", impl_key),
+                Err(err) => eprintln!("[RustDesk-FFI] privacy mode request failed: {}", err),
+            }
         }
         crypto.start_streaming_writer()?;
         eprintln!(
@@ -2135,6 +3581,7 @@ impl RustDeskConnector {
                 &mut requested_pressure_level,
                 &mut image_quality,
                 &quality_state,
+                &mut quality_refresh,
                 &mut physical_modifiers,
                 remote_keyboard_transport,
                 stream_started,
@@ -2142,6 +3589,7 @@ impl RustDeskConnector {
                 &mut sent_mouse_moves,
                 &mut sent_mouse_buttons,
                 &mut control_send_errors,
+                &mut live_options,
             ) {
                 if err.kind() == ErrorKind::Interrupted {
                     eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
@@ -2149,6 +3597,35 @@ impl RustDeskConnector {
                     break 'streaming;
                 }
                 return Err(err);
+            }
+
+            if live_options.pending {
+                // Codec / remote audio changed while connected: the peer's encoder follows the new OptionMessage, and
+                // every later resend (pressure, codec reassertion) carries the new values.
+                live_options.pending = false;
+                preferred_codec = live_options.codec;
+                audio_enabled = live_options.audio_enabled;
+                // This send carries the codec: no extra reassertion (it would also resend the configured fps over a
+                // pressure-lowered one).
+                stream_options_reasserted = true;
+                match self.session.send_runtime_options(
+                    crypto,
+                    preferred_codec,
+                    image_quality,
+                    privacy_mode,
+                    audio_enabled,
+                    Some(stream_options_fps),
+                ) {
+                    Ok(()) => {
+                        stream_options_sent_count += 1;
+                        Session::send_refresh_video(crypto)?;
+                        eprintln!(
+                            "[RustDesk-FFI] live stream options sent codec={} audio={}",
+                            preferred_codec, audio_enabled
+                        );
+                    }
+                    Err(err) => eprintln!("[RustDesk-FFI] live stream options failed: {}", err),
+                }
             }
 
             Self::flush_stale_file_uploads(
@@ -2166,6 +3643,7 @@ impl RustDeskConnector {
                     &mut requested_pressure_level,
                     &mut image_quality,
                     &quality_state,
+                    &mut quality_refresh,
                     &mut physical_modifiers,
                     remote_keyboard_transport,
                     stream_started,
@@ -2173,6 +3651,7 @@ impl RustDeskConnector {
                     &mut sent_mouse_moves,
                     &mut sent_mouse_buttons,
                     &mut control_send_errors,
+                    &mut live_options,
                 )
             }) {
                 Ok(plaintext) => {
@@ -2301,7 +3780,7 @@ impl RustDeskConnector {
                             target_fps,
                         );
                         if target_fps != stream_options_fps {
-                            Session::send_runtime_options(
+                            self.session.send_runtime_options(
                                 crypto,
                                 preferred_codec,
                                 image_quality,
@@ -2336,7 +3815,7 @@ impl RustDeskConnector {
                         && actual_codec != preferred_codec
                     {
                         stream_options_sent_count += 1;
-                        let _ = Session::send_stream_options(
+                        let _ = self.session.send_stream_options(
                             crypto,
                             preferred_codec,
                             image_quality,
@@ -2419,6 +3898,11 @@ impl RustDeskConnector {
                     Self::send_message_encrypted(crypto, &out)?;
                 }
                 Some(Message_oneof_union::misc(ref misc)) => {
+                    if let Some(Misc_oneof_union::supported_encoding(ref encoding)) = misc.union {
+                        if let Ok(mut evidence) = self.session.codec_evidence.lock() {
+                            evidence.record_peer_encoding(encoding);
+                        }
+                    }
                     // 记录 misc 子类型
                     let misc_key = match &misc.union {
                         Some(Misc_oneof_union::audio_format(_)) => "misc/audio_format",
@@ -2441,6 +3925,22 @@ impl RustDeskConnector {
                     *msg_stats.entry(misc_key).or_default() += 1;
                     if let Some(Misc_oneof_union::audio_format(ref format)) = misc.union {
                         on_audio_format(format);
+                    }
+                    if let Some(Misc_oneof_union::back_notification(ref note)) = misc.union {
+                        if let Some(BackNotification_oneof_union::privacy_mode_state(ref state)) = note.union {
+                            let value = *state as i32;
+                            if let Ok(mut display) = display_state.lock() {
+                                display.privacy_state = value;
+                                display.privacy_generation = display.privacy_generation.wrapping_add(1);
+                            }
+                            eprintln!(
+                                "[RustDesk-FFI] privacy mode state={} impl={} details={}",
+                                value,
+                                note.get_impl_key(),
+                                note.get_details()
+                            );
+                            on_display_state();
+                        }
                     }
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
@@ -2471,33 +3971,41 @@ impl RustDeskConnector {
                         break;
                     }
                 }
+                Some(Message_oneof_union::cliprdr(ref clipboard)) => {
+                    last_msg_kind = "cliprdr";
+                    *msg_stats.entry("cliprdr").or_default() += 1;
+                    controls.file_clipboard.handle_message(clipboard);
+                }
                 Some(Message_oneof_union::clipboard(ref clipboard)) => {
                     last_msg_kind = "clipboard";
                     *msg_stats.entry("clipboard").or_default() += 1;
-                    if let Some(text) =
-                        Self::decode_remote_clipboard_formats(std::slice::from_ref(clipboard))
-                    {
-                        on_clipboard(&text);
-                    }
+                    let text = Self::decode_remote_clipboard_formats(std::slice::from_ref(clipboard));
+                    controls.file_clipboard.observe_text(text.as_deref());
+                    on_clipboard(text.as_deref());
                 }
                 Some(Message_oneof_union::multi_clipboards(ref clipboards)) => {
                     last_msg_kind = "multi_clipboards";
                     *msg_stats.entry("multi_clipboards").or_default() += 1;
-                    if let Some(text) =
-                        Self::decode_remote_clipboard_formats(clipboards.get_clipboards())
-                    {
-                        on_clipboard(&text);
-                    }
+                    let text = Self::decode_remote_clipboard_formats(clipboards.get_clipboards());
+                    controls.file_clipboard.observe_text(text.as_deref());
+                    on_clipboard(text.as_deref());
                 }
                 // switch_display / message_query 等其他类型由 _ arm 统一处理
                 Some(Message_oneof_union::cursor_position(position)) => {
                     last_msg_kind = "cursor_position";
                     *msg_stats.entry("cursor_position").or_default() += 1;
                     last_cursor_position_at = Some(Instant::now());
-                    if cursor_state.apply_position(position.get_x(), position.get_y()) {
+                    // Global on the peer's desktop: back into the current display's own coordinates.
+                    let (origin_x, origin_y) = display_state
+                        .lock()
+                        .map(|state| crate::current_display_origin(&state))
+                        .unwrap_or((0, 0));
+                    let cursor_x = position.get_x().saturating_sub(origin_x);
+                    let cursor_y = position.get_y().saturating_sub(origin_y);
+                    if cursor_state.apply_position(cursor_x, cursor_y) {
                         on_cursor(CursorStreamUpdate::Position {
-                            x: position.get_x(),
-                            y: position.get_y(),
+                            x: cursor_x,
+                            y: cursor_y,
                         });
                     }
                 }
@@ -2560,7 +4068,12 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::peer_info(ref info)) => {
                     last_msg_kind = "peer_info";
                     *msg_stats.entry("peer_info").or_default() += 1;
-                    self.session.update_peer_info(info.clone());
+                    // A display update (a monitor or virtual display came or went) has no version or platform: it
+                    // must not replace the login PeerInfo (keyboard transport, file clipboard capability).
+                    if !info.get_version().is_empty() || !info.get_platform().is_empty() {
+                        controls.file_clipboard.update_peer(info);
+                        self.session.update_peer_info(info.clone());
+                    }
                     Self::apply_peer_info_geometry(&display_state, info, &stream_stats);
                     on_display_state();
                 }
@@ -2629,7 +4142,7 @@ impl RustDeskConnector {
                         applied_pressure_level,
                         bounded_vp9_pressure,
                     ) {
-                        Session::send_runtime_options(
+                        self.session.send_runtime_options(
                             crypto,
                             preferred_codec,
                             image_quality,
@@ -2683,7 +4196,7 @@ impl RustDeskConnector {
                             current_backpressure_level,
                             bounded_vp9_pressure,
                         ) {
-                            Session::send_runtime_options(
+                            self.session.send_runtime_options(
                                 crypto,
                                 preferred_codec,
                                 quality,
@@ -2727,7 +4240,7 @@ impl RustDeskConnector {
                             current_backpressure_level,
                             bounded_vp9_pressure,
                         ) {
-                            Session::send_runtime_options(
+                            self.session.send_runtime_options(
                                 crypto,
                                 preferred_codec,
                                 quality,
@@ -2814,6 +4327,28 @@ impl RustDeskConnector {
         message
     }
 
+    fn build_toggle_privacy_mode_message(impl_key: &str, on: bool) -> Message {
+        let mut toggle = TogglePrivacyMode::new();
+        toggle.set_impl_key(impl_key.to_string());
+        toggle.set_on(on);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::toggle_privacy_mode(toggle));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_toggle_virtual_display_message(display: i32, on: bool) -> Message {
+        let mut toggle = ToggleVirtualDisplay::new();
+        toggle.set_display(display);
+        toggle.set_on(on);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::toggle_virtual_display(toggle));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
     fn build_switch_display_message(display: i32) -> Message {
         let mut switch_display = SwitchDisplay::new();
         switch_display.set_display(display);
@@ -2895,6 +4430,12 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         match control {
             crate::ControlMsg::Shutdown => Ok(()),
+            crate::ControlMsg::AndroidPhone { action, modern_back } => {
+                for message in crate::android_phone::messages(action, modern_back) {
+                    Self::send_message_encrypted(crypto, &message)?;
+                }
+                Ok(())
+            }
             crate::ControlMsg::RefreshVideo => {
                 crate::set_last_error("send refresh video");
                 Session::send_refresh_video(crypto)
@@ -2931,6 +4472,30 @@ impl RustDeskConnector {
                 Self::send_message_encrypted(crypto, &message)
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
+            // Adopted by the streaming loop (pump_control_messages records it).
+            crate::ControlMsg::SetStreamOptions { .. } => Ok(()),
+            crate::ControlMsg::TogglePrivacyMode { impl_key, on } => {
+                let message = Self::build_toggle_privacy_mode_message(&impl_key, on);
+                let result = Self::send_message_encrypted(crypto, &message);
+                eprintln!(
+                    "[RustDesk-FFI] privacy mode toggle on={} impl={} result={}",
+                    on,
+                    impl_key,
+                    if result.is_ok() { "ok" } else { "error" }
+                );
+                result
+            }
+            crate::ControlMsg::ToggleVirtualDisplay { display, on } => {
+                let message = Self::build_toggle_virtual_display_message(display, on);
+                let result = Self::send_message_encrypted(crypto, &message);
+                eprintln!(
+                    "[RustDesk-FFI] virtual display toggle display={} on={} result={}",
+                    display,
+                    on,
+                    if result.is_ok() { "ok" } else { "error" }
+                );
+                result
+            }
             crate::ControlMsg::SetImageQuality { quality, .. } => {
                 Session::send_image_quality(crypto, quality)
             }
@@ -3006,7 +4571,7 @@ impl RustDeskConnector {
                 io::ErrorKind::Other,
                 "SendFile handled by streaming loop",
             )),
-            crate::ControlMsg::Clipboard { .. } => Err(io::Error::new(
+            crate::ControlMsg::Clipboard { .. } | crate::ControlMsg::ClipboardTracked { .. } => Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Clipboard handled by streaming loop",
             )),
@@ -3016,6 +4581,7 @@ impl RustDeskConnector {
     fn control_msg_kind(control: &crate::ControlMsg) -> &'static str {
         match control {
             crate::ControlMsg::Shutdown => "shutdown",
+            crate::ControlMsg::AndroidPhone { .. } => "android_phone",
             crate::ControlMsg::RefreshVideo => "refresh_video",
             crate::ControlMsg::SwitchDisplay { .. } => "switch_display",
             crate::ControlMsg::DisplaySwitch { .. } => "display_switch",
@@ -3023,6 +4589,9 @@ impl RustDeskConnector {
             crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
             crate::ControlMsg::SetImageQuality { .. } => "image_quality",
+            crate::ControlMsg::SetStreamOptions { .. } => "stream_options",
+            crate::ControlMsg::TogglePrivacyMode { .. } => "privacy_mode",
+            crate::ControlMsg::ToggleVirtualDisplay { .. } => "virtual_display",
             crate::ControlMsg::KeyEvent { .. } => "key",
             crate::ControlMsg::MouseEvent { .. } => "mouse",
             crate::ControlMsg::MouseMove { .. } => "mouse_move",
@@ -3030,7 +4599,7 @@ impl RustDeskConnector {
             crate::ControlMsg::MouseWheel2D { .. } => "mouse_wheel_2d",
             crate::ControlMsg::Text { .. } => "text",
             crate::ControlMsg::SendFile { .. } => "send_file",
-            crate::ControlMsg::Clipboard { .. } => "clipboard",
+            crate::ControlMsg::Clipboard { .. } | crate::ControlMsg::ClipboardTracked { .. } => "clipboard",
             crate::ControlMsg::ChangeDisplayResolution { .. } => "change_display_resolution",
             crate::ControlMsg::TouchScale { .. } => "touch_scale",
             crate::ControlMsg::TouchPanStart { .. } => "touch_pan_start",
@@ -3257,7 +4826,16 @@ impl RustDeskConnector {
             Some(idx) => {
                 let dir = &remote_path[..idx];
                 let name = &remote_path[idx + 1..];
-                (if dir.is_empty() { "." } else { dir }, name)
+                // A file in a root keeps the root ("/a" -> "/", "C:\\a" -> "C:\\"); "." would be the peer
+                // process's working folder.
+                let dir = if dir.is_empty() {
+                    &remote_path[..1]
+                } else if dir.len() == 2 && dir.ends_with(':') {
+                    &remote_path[..3]
+                } else {
+                    dir
+                };
+                (dir, name)
             }
             None => (".", remote_path),
         }
@@ -3581,6 +5159,12 @@ impl RustDeskConnector {
         Self::build_map_key_message(scancode, pressed)
     }
 
+    /// Linux peers interpret Map-mode `chr` as an XKB keycode. RustDesk's
+    /// Linux X11 and Wayland paths both expect the evdev code plus eight.
+    fn build_linux_map_message(keycode: u32, pressed: bool) -> Message {
+        Self::build_map_key_message(keycode, pressed)
+    }
+
     /// HarmonyOS keyCode -> macOS ANSI virtual keycode (Carbon `kVK_*`).
     /// Values are physical positions, not characters, so the remote macOS input
     /// source receives and composes the keystrokes exactly like a local keyboard.
@@ -3796,6 +5380,72 @@ impl RustDeskConnector {
         })
     }
 
+    /// Convert the existing HarmonyOS physical-key mapping to the XKB keycode
+    /// used by RustDesk Map mode on Linux. Most Set-1 make codes used by the
+    /// Windows mapping match Linux evdev codes; E0 keys and extended function
+    /// keys need explicit Linux positions.
+    fn harmony_keycode_to_linux_xkb_keycode(scancode: u32) -> Option<u32> {
+        let linux_evdev_code = match scancode {
+            // Pause/Break and the dedicated keypad-equals key do not have a
+            // directly equivalent Windows Set-1 code in the shared mapping.
+            2080 => 119, // KEY_PAUSE
+            2120 => 117, // KEY_KPEQUAL
+            _ => {
+                let windows_scancode = Self::harmony_keycode_to_windows_scancode(scancode)?;
+                return Self::windows_scancode_to_linux_xkb_keycode(windows_scancode);
+            }
+        };
+        Some(linux_evdev_code + 8)
+    }
+
+    fn windows_scancode_to_linux_xkb_keycode(scancode: u32) -> Option<u32> {
+        // RustDesk's Linux input table maps Windows Apps to KEY_COMPOSE
+        // (evdev 127), whose XKB keycode is 135 after the +8 offset.
+        if scancode == 0xE05D {
+            return Some(135);
+        }
+
+        let linux_evdev_code = match scancode {
+            // RustDesk's Harmony media-key mapping uses the corresponding E0
+            // Set-1 values; Linux represents these as consumer-key evdev codes.
+            0xE010 => 165, // KEY_PREVIOUSSONG
+            0xE019 => 163, // KEY_NEXTSONG
+            0xE022 => 164, // KEY_PLAYPAUSE
+            0xE02E => 114, // KEY_VOLUMEDOWN
+            0xE030 => 115, // KEY_VOLUMEUP
+
+            // E0-prefixed extended keyboard keys. Values here are Linux
+            // evdev codes; the XKB compatibility offset is applied below.
+            0xE01C => 96,  // KEY_KPENTER
+            0xE01D => 97,  // KEY_RIGHTCTRL
+            0xE035 => 98,  // KEY_KPSLASH
+            0xE037 => 99,  // KEY_SYSRQ
+            0xE038 => 100, // KEY_RIGHTALT
+            0xE047 => 102, // KEY_HOME
+            0xE048 => 103, // KEY_UP
+            0xE049 => 104, // KEY_PAGEUP
+            0xE04B => 105, // KEY_LEFT
+            0xE04D => 106, // KEY_RIGHT
+            0xE04F => 107, // KEY_END
+            0xE050 => 108, // KEY_DOWN
+            0xE051 => 109, // KEY_PAGEDOWN
+            0xE052 => 110, // KEY_INSERT
+            0xE053 => 111, // KEY_DELETE
+            0xE05B => 125, // KEY_LEFTMETA
+            0xE05C => 126, // KEY_RIGHTMETA
+
+            // Linux evdev assigns F13-F24 to 183-194; the Windows mapping
+            // represents the same physical keys as Set-1 0x64-0x6F.
+            0x64..=0x6F => 183 + scancode - 0x64,
+
+            // The shared standard Set-1 and Linux evdev positions match for
+            // the ordinary 104/105-key PC keyboard range.
+            0x01..=0x58 => scancode,
+            _ => return None,
+        };
+        Some(linux_evdev_code + 8)
+    }
+
     fn parse_version_component(component: Option<&str>) -> u32 {
         component
             .unwrap_or_default()
@@ -3823,6 +5473,9 @@ impl RustDeskConnector {
             // Preserve the verified macOS physical-key/IME path. Existing macOS
             // connections already use Map mode and need no compatibility downgrade.
             return RemoteKeyboardTransport::MacosMap;
+        }
+        if platform.contains("linux") && Self::peer_supports_map_mode(version) {
+            return RemoteKeyboardTransport::LinuxMap;
         }
         if platform.contains("windows") && Self::peer_supports_map_mode(version) {
             return RemoteKeyboardTransport::WindowsMap;
@@ -3895,6 +5548,26 @@ impl RustDeskConnector {
             crate::set_last_error(status.clone());
             eprintln!("[RustDesk-FFI] {}", status);
             return Self::send_message_encrypted(crypto, &msg);
+        }
+        if remote_keyboard_transport == RemoteKeyboardTransport::LinuxMap {
+            physical_modifiers.update(scancode, pressed);
+            if let Some(keycode) = Self::harmony_keycode_to_linux_xkb_keycode(scancode) {
+                let msg = Self::build_linux_map_message(keycode, pressed);
+                let status = format!(
+                    "send linux physical key scancode={} pressed={} mode=map keycode={}",
+                    scancode, pressed, keycode,
+                );
+                crate::set_last_error(status.clone());
+                eprintln!("[RustDesk-FFI] {}", status);
+                return Self::send_message_encrypted(crypto, &msg);
+            }
+            let status = format!(
+                "skip unsupported linux physical key scancode={} mode=map",
+                scancode
+            );
+            crate::set_last_error(status.clone());
+            eprintln!("[RustDesk-FFI] {}", status);
+            return Ok(());
         }
         if remote_keyboard_transport == RemoteKeyboardTransport::WindowsMap {
             // Physical modifiers are still tracked so a later unsupported-key
@@ -4250,6 +5923,14 @@ impl RustDeskConnector {
     }
 
     /** Platform reported by the authenticated RustDesk PeerInfo handshake. */
+    pub(crate) fn codec_evidence(&self) -> Arc<Mutex<crate::codec_evidence::RustDeskCodecEvidence>> {
+        Arc::clone(&self.session.codec_evidence)
+    }
+
+    pub fn peer_version(&self) -> String {
+        self.session.peer_info().map(|info| info.get_version().to_string()).unwrap_or_default()
+    }
+
     pub fn peer_platform(&self) -> String {
         self.session
             .peer_info()
@@ -4298,6 +5979,10 @@ impl RustDeskConnector {
     }
 
     fn populate_display_state(state: &mut crate::RustDeskDisplayState, info: &PeerInfo) -> bool {
+        // Virtual display driver, installed service and privacy modes. The login PeerInfo has a version; a display
+        // update has none and resends only the displays and the virtual-display keys.
+        let full = !info.get_version().is_empty() || !info.get_platform().is_empty();
+        crate::adopt_platform_additions(state, info.get_platform_additions(), full);
         let previous_displays = state.displays.clone();
         let previous_geometry = (
             state.current_display,
@@ -4621,6 +6306,7 @@ mod tests {
         PendingFileUpload, PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
         RustDeskConnectionStrategy, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
     };
+    use super::{QualityRefreshGate, QUALITY_REFRESH_MIN_INTERVAL};
     use crate::crypto_channel::CryptoChannel;
     use crate::peer_stream::{spawn_test_kcp_echo_server, KcpPeerStream, PeerStream};
     use crate::protocol::message_proto::KeyboardMode;
@@ -4661,6 +6347,21 @@ mod tests {
     }
 
     #[test]
+    fn quality_refresh_gate_coalesces_rapid_tier_changes() {
+        let mut gate = QualityRefreshGate::default();
+        let start = std::time::Instant::now();
+        assert!(!gate.take_due(start), "no refresh without a quality change");
+        gate.request();
+        gate.request();
+        assert!(gate.take_due(start), "first change refreshes immediately");
+        assert!(!gate.take_due(start), "a refresh is sent once per request burst");
+        gate.request();
+        assert!(!gate.take_due(start + QUALITY_REFRESH_MIN_INTERVAL / 2));
+        assert!(gate.take_due(start + QUALITY_REFRESH_MIN_INTERVAL));
+        assert!(!gate.take_due(start + QUALITY_REFRESH_MIN_INTERVAL * 3));
+    }
+
+    #[test]
     fn remote_clipboard_accepts_legacy_and_multiformat_utf8_text() {
         let legacy = clipboard(
             ClipboardFormat::Text,
@@ -4680,6 +6381,13 @@ mod tests {
             RustDeskConnector::decode_remote_clipboard_formats(&formats),
             Some(b"plain text wins".to_vec())
         );
+    }
+
+    #[test]
+    fn remote_clipboard_preserves_explicit_empty_events() {
+        let empty = clipboard(ClipboardFormat::Text, Vec::new(), false);
+        assert_eq!(RustDeskConnector::decode_remote_clipboard_formats(&[empty]), Some(Vec::new()));
+        assert_eq!(RustDeskConnector::decode_remote_clipboard_formats(&[]), Some(Vec::new()));
     }
 
     #[test]
@@ -5825,6 +7533,117 @@ mod tests {
     }
 
     #[test]
+    fn supported_linux_peers_use_map_transport_for_physical_keys() {
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Linux", "1.2.0"),
+            RemoteKeyboardTransport::LinuxMap
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("deepin Linux", "1.4.6"),
+            RemoteKeyboardTransport::LinuxMap
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Linux", "1.1.9"),
+            RemoteKeyboardTransport::Legacy
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Linux", "unknown"),
+            RemoteKeyboardTransport::Legacy
+        );
+    }
+
+    #[test]
+    fn linux_map_uses_xkb_positions_for_modifiers_symbols_and_navigation() {
+        for (harmony_keycode, expected_xkb_keycode) in [
+            (2047, 50),  // Left Shift: evdev 42 + XKB offset 8
+            (2048, 62),  // Right Shift
+            (2072, 37),  // Left Ctrl
+            (2073, 105), // Right Ctrl
+            (2045, 64),  // Left Alt
+            (2046, 108), // Right Alt / AltGr
+            (2076, 133), // Left Meta
+            (2077, 134), // Right Meta
+            (2000, 19),  // 0 / )
+            (2001, 10),  // 1 / !
+            (2002, 11),  // 2 / @
+            (2003, 12),  // 3 / #
+            (2004, 13),  // 4 / $
+            (2005, 14),  // 5 / %
+            (2006, 15),  // 6 / ^
+            (2007, 16),  // 7 / &
+            (2008, 17),  // 8 / *
+            (2009, 18),  // 9 / (
+            (2065, 11),  // @ key alias keeps the physical 2 position
+            (2066, 21),  // + key alias keeps the physical equals position
+            (2067, 135), // Apps/Menu -> RustDesk KEY_COMPOSE
+            (2057, 20),  // - / _
+            (2058, 21),  // = / +
+            (2059, 34),  // [ / {
+            (2060, 35),  // ] / }
+            (2061, 51),  // \\ / |
+            (2062, 47),  // ; / :
+            (2063, 48),  // ' / "
+            (2056, 49),  // ` / ~
+            (2043, 59),  // , / <
+            (2044, 60),  // . / >
+            (2064, 61),  // / / ?
+            (2017, 38),  // A
+            (2090, 67),  // F1
+            (2816, 191), // F13
+            (2012, 111), // Up
+            (2081, 110), // Home
+            (2071, 119), // Delete
+            (2074, 66),  // Caps Lock
+            (2080, 127), // Pause
+            (2119, 104), // Numpad Enter
+            (2120, 125), // Numpad equals
+        ] {
+            assert_eq!(
+                RustDeskConnector::harmony_keycode_to_linux_xkb_keycode(harmony_keycode),
+                Some(expected_xkb_keycode),
+                "Harmony keycode {}",
+                harmony_keycode
+            );
+        }
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_linux_xkb_keycode(9999),
+            None
+        );
+    }
+
+    #[test]
+    fn linux_map_preserves_shift_bracket_physical_event_order() {
+        let physical_events = [
+            (2047, true),  // Left Shift down
+            (2059, true),  // Left bracket down
+            (2059, false), // Left bracket up
+            (2047, false), // Left Shift up
+        ];
+        let expected = [(50, true), (34, true), (34, false), (50, false)];
+
+        for ((harmony_keycode, pressed), (expected_keycode, expected_down)) in
+            physical_events.into_iter().zip(expected)
+        {
+            let keycode = RustDeskConnector::harmony_keycode_to_linux_xkb_keycode(harmony_keycode)
+                .expect("supported physical key must map to Linux XKB");
+            assert_eq!(keycode, expected_keycode);
+            let message = RustDeskConnector::build_linux_map_message(keycode, pressed);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert_eq!(key.down, expected_down);
+                    assert!(matches!(
+                        key.union,
+                        Some(KeyEvent_oneof_union::chr(code)) if code == expected_keycode
+                    ));
+                    assert!(key.modifiers.is_empty());
+                }
+                _ => panic!("Linux physical key must use a Map key event"),
+            }
+        }
+    }
+
+    #[test]
     fn windows_map_uses_physical_scan_codes_instead_of_unicode_characters() {
         for (harmony_keycode, expected_scancode) in [
             (2017, 0x1E),   // A
@@ -6196,6 +8015,1259 @@ mod tests {
     }
 
     #[test]
+    fn file_transfer_directory_response_keeps_types_and_rejects_traversal() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{
+            FileDirectory, FileEntry, FileResponse, FileResponse_oneof_union, FileType,
+        };
+        for unsafe_name in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let request: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                assert!(matches!(
+                    request.union,
+                    Some(Message_oneof_union::file_action(_))
+                ));
+                let mut directory = FileDirectory::new();
+                directory.set_path("/home/test".to_owned());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_size(99);
+                entry.set_modified_time(1_700_000_123);
+                entry.set_name(if unsafe_name { "../escape" } else { "one.txt" }.to_owned());
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let job = TransferRegistry::default().insert(1, 0).unwrap();
+            let result = connector.read_remote_directory("", false, &job);
+            if unsafe_name {
+                assert!(result.is_err());
+            } else {
+                let directory = result.unwrap();
+                assert_eq!(directory.path, "/home/test");
+                assert_eq!(directory.entries.len(), 1);
+                assert_eq!(directory.entries[0].name, "one.txt");
+                assert_eq!(directory.entries[0].size, 99);
+            }
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_directory_waits_for_its_own_path_and_answers_probes() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{
+            FileDirectory, FileEntry, FileResponse, FileResponse_oneof_union, FileType, TestDelay,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let _request = wire::read_frame(&mut socket).unwrap();
+            let directory_message = |path: &str, name: &str| {
+                let mut directory = FileDirectory::new();
+                directory.set_path(path.to_owned());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_name(name.to_owned());
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                message.write_to_bytes().unwrap()
+            };
+            // The login's initial directory (the peer's home) arrives first and is not the answer.
+            wire::write_frame(&mut socket, &directory_message("/Users/peer", "home.txt")).unwrap();
+            let mut probe = Message::new();
+            probe.union = Some(Message_oneof_union::test_delay(TestDelay::new()));
+            wire::write_frame(&mut socket, &probe.write_to_bytes().unwrap()).unwrap();
+            let echo: Message = protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            assert!(matches!(echo.union, Some(Message_oneof_union::test_delay(_))));
+            wire::write_frame(&mut socket, &directory_message("/data/", "wanted.txt")).unwrap();
+        });
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(TcpStream::connect(address).unwrap()));
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        let directory = connector.read_remote_directory("/data", false, &job).unwrap();
+        assert_eq!(directory.entries[0].name, "wanted.txt");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_silent_file_service_is_reported_as_not_running() {
+        use crate::file_transfer::TransferRegistry;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let _request = wire::read_frame(&mut socket).unwrap();
+            // The connection stays open; the file service never answers.
+            thread::sleep(Duration::from_millis(1500));
+        });
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(TcpStream::connect(address).unwrap()));
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        let error = match connector.read_remote_directory("", false, &job) {
+            Ok(_) => panic!("a silent file service must not produce a listing"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "peer_file_service_unavailable");
+        assert_eq!(crate::file_transfer::file_error_code(&error), "peer_file_service_unavailable");
+        peer.join().unwrap();
+    }
+
+    use crate::protocol::message_proto::{
+        FileAction_oneof_union, FileResponse, FileResponse_oneof_union, FileTransferDone, FileType, Misc,
+    };
+
+    fn plain_file_connector(address: std::net::SocketAddr) -> RustDeskConnector {
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(TcpStream::connect(address).unwrap()));
+        connector
+    }
+
+    fn file_action_of(socket: &mut TcpStream) -> FileAction_oneof_union {
+        let message: Message = protobuf::parse_from_bytes(&wire::read_frame(socket).unwrap()).unwrap();
+        match message.union {
+            Some(Message_oneof_union::file_action(action)) => action.union.unwrap(),
+            other => panic!("expected a file action, got {:?}", other),
+        }
+    }
+
+    fn answer_parent_listing(socket: &mut TcpStream, parent: &str, entries: &[(&str, FileType)]) {
+        use crate::protocol::message_proto::{FileDirectory, FileEntry};
+        match file_action_of(socket) {
+            FileAction_oneof_union::read_dir(request) => assert_eq!(request.get_path(), parent),
+            other => panic!("expected read_dir of the parent, got {:?}", other),
+        }
+        let mut directory = FileDirectory::new();
+        directory.set_path(parent.to_owned());
+        for (name, kind) in entries {
+            let mut entry = FileEntry::new();
+            entry.set_entry_type(*kind);
+            entry.set_name((*name).to_owned());
+            directory.mut_entries().push(entry);
+        }
+        let mut response = FileResponse::new();
+        response.union = Some(FileResponse_oneof_union::dir(directory));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_response(response));
+        wire::write_frame(socket, &message.write_to_bytes().unwrap()).unwrap();
+    }
+
+    fn send_done(socket: &mut TcpStream, id: i32) {
+        let mut done = FileTransferDone::new();
+        done.set_id(id);
+        let mut response = FileResponse::new();
+        response.union = Some(FileResponse_oneof_union::done(done));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_response(response));
+        wire::write_frame(socket, &message.write_to_bytes().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn file_transfer_remove_folder_lists_removes_each_file_then_the_folder() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{FileDirectory, FileEntry, FileType};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            answer_parent_listing(&mut socket, "C:\\Data", &[("old", FileType::Dir)]);
+            let tree_id = match file_action_of(&mut socket) {
+                FileAction_oneof_union::all_files(request) => {
+                    assert_eq!(request.get_path(), "C:\\Data\\old");
+                    assert!(request.get_include_hidden());
+                    request.get_id()
+                }
+                other => panic!("expected all_files, got {:?}", other),
+            };
+            let mut directory = FileDirectory::new();
+            directory.set_id(tree_id);
+            for name in ["a.txt", "sub\\b.txt"] {
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_name(name.to_owned());
+                directory.mut_entries().push(entry);
+            }
+            let mut response = FileResponse::new();
+            response.union = Some(FileResponse_oneof_union::dir(directory));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_response(response));
+            wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            let mut removed = Vec::new();
+            for _ in 0..2 {
+                match file_action_of(&mut socket) {
+                    FileAction_oneof_union::remove_file(remove) => {
+                        removed.push(remove.get_path().to_owned());
+                        send_done(&mut socket, remove.get_id());
+                    }
+                    other => panic!("expected remove_file, got {:?}", other),
+                }
+            }
+            assert_eq!(removed, vec!["C:\\Data\\old\\a.txt", "C:\\Data\\old\\sub\\b.txt"]);
+            match file_action_of(&mut socket) {
+                FileAction_oneof_union::remove_dir(remove) => {
+                    assert!(remove.get_recursive());
+                    assert_eq!(remove.get_path(), "C:\\Data\\old");
+                    send_done(&mut socket, remove.get_id());
+                }
+                other => panic!("expected remove_dir, got {:?}", other),
+            }
+        });
+        let mut connector = plain_file_connector(address);
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        connector.remove_remote_path("C:\\Data\\old", true, &job).unwrap();
+        assert_eq!(job.result.lock().unwrap().remote_operation_acknowledged, 1);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_rename_and_file_removal_report_peer_errors() {
+        use crate::file_transfer::TransferRegistry;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            match file_action_of(&mut socket) {
+                FileAction_oneof_union::rename(rename) => {
+                    assert_eq!(rename.get_path(), "/home/a/old.txt");
+                    assert_eq!(rename.get_new_name(), "new.txt");
+                    send_done(&mut socket, rename.get_id());
+                }
+                other => panic!("expected rename, got {:?}", other),
+            }
+            answer_parent_listing(&mut socket, "/home/a", &[("locked.txt", FileType::File)]);
+            match file_action_of(&mut socket) {
+                FileAction_oneof_union::remove_file(remove) => {
+                    let mut error = crate::protocol::message_proto::FileTransferError::new();
+                    error.set_id(remove.get_id());
+                    error.set_error("Permission denied (os error 13)".to_owned());
+                    let mut response = FileResponse::new();
+                    response.union = Some(FileResponse_oneof_union::error(error));
+                    let mut message = Message::new();
+                    message.union = Some(Message_oneof_union::file_response(response));
+                    wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                }
+                other => panic!("expected remove_file, got {:?}", other),
+            }
+        });
+        let mut connector = plain_file_connector(address);
+        let mut registry = TransferRegistry::default();
+        let rename_job = registry.insert(1, 0).unwrap();
+        connector.rename_remote_path("/home/a/old.txt", "new.txt", &rename_job).unwrap();
+        assert!(connector.rename_remote_path("/home/a/x", "../escape", &rename_job).is_err());
+        let remove_job = registry.insert(2, 0).unwrap();
+        let error = connector.remove_remote_path("/home/a/locked.txt", false, &remove_job).unwrap_err();
+        assert_eq!(error.to_string(), "remote_permission_denied");
+        assert!(connector.remove_remote_path("/", true, &remove_job).is_err());
+        assert!(connector.remove_remote_path("C:\\", true, &remove_job).is_err());
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_idle_connection_answers_probes_and_reports_a_close() {
+        use crate::protocol::message_proto::TestDelay;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut probe = Message::new();
+            probe.union = Some(Message_oneof_union::test_delay(TestDelay::new()));
+            wire::write_frame(&mut socket, &probe.write_to_bytes().unwrap()).unwrap();
+            let echo: Message = protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            assert!(matches!(echo.union, Some(Message_oneof_union::test_delay(_))));
+            let mut misc = Misc::new();
+            misc.set_close_reason("bye".to_owned());
+            let mut close = Message::new();
+            close.union = Some(Message_oneof_union::misc(misc));
+            wire::write_frame(&mut socket, &close.write_to_bytes().unwrap()).unwrap();
+            thread::sleep(Duration::from_millis(300));
+        });
+        let mut connector = plain_file_connector(address);
+        let mut closed = false;
+        for _ in 0..100 {
+            if connector.pump_idle_file_channel().is_err() {
+                closed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(closed);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_removal_refuses_roots_relative_and_dot_paths() {
+        for refused in ["", "/", "C:\\", "C:\\\\", "C:/", "/.", "/home/u/Documents/..", ".", "relative/x",
+            "\\\\server\\share", "\\\\?\\C:\\", "//server/share/x", "/\\server\\share\\x"]
+        {
+            assert!(!RustDeskConnector::removable_remote_path(refused), "{refused}");
+        }
+        for allowed in ["/home/u/old", "C:\\Data\\old", "D:/x/y.txt"] {
+            assert!(RustDeskConnector::removable_remote_path(allowed), "{allowed}");
+        }
+    }
+
+    #[test]
+    fn file_transfer_a_folder_link_is_never_removed_through() {
+        use crate::file_transfer::TransferRegistry;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            answer_parent_listing(&mut socket, "/home/a", &[("linked", FileType::DirLink)]);
+        });
+        let mut connector = plain_file_connector(address);
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        assert!(connector.remove_remote_path("/home/a/linked", true, &job).is_err());
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_reused_jobs_ignore_late_replies_of_earlier_ones() {
+        use crate::file_transfer::TransferRegistry;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let id = match file_action_of(&mut socket) {
+                FileAction_oneof_union::create(create) => create.get_id(),
+                other => panic!("expected create, got {:?}", other),
+            };
+            assert_ne!(id, 1);
+            // A late Done of an earlier job (wire id 1) must not complete this one.
+            send_done(&mut socket, 1);
+            thread::sleep(Duration::from_millis(100));
+            send_done(&mut socket, id);
+        });
+        let mut connector = plain_file_connector(address);
+        connector.begin_file_job();
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        let started = Instant::now();
+        connector.create_remote_directory("/home/a/new", &job).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(90));
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_login_push_is_consumed_before_the_first_listing() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{FileDirectory, FileEntry};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let listing = |name: &str| {
+                let mut directory = FileDirectory::new();
+                directory.set_path("/home/u".to_owned());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_name(name.to_owned());
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                message.write_to_bytes().unwrap()
+            };
+            wire::write_frame(&mut socket, &listing("pushed-without-hidden")).unwrap();
+            match file_action_of(&mut socket) {
+                FileAction_oneof_union::read_dir(request) => assert!(request.get_include_hidden()),
+                other => panic!("expected read_dir, got {:?}", other),
+            }
+            wire::write_frame(&mut socket, &listing(".hidden")).unwrap();
+        });
+        let mut connector = plain_file_connector(address);
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        connector.consume_login_directory_push(&job).unwrap();
+        let directory = connector.read_remote_directory("", true, &job).unwrap();
+        assert_eq!(directory.entries[0].name, ".hidden");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_paths_split_and_join_at_roots() {
+        assert_eq!(RustDeskConnector::split_remote_file_path("/a.txt"), ("/", "a.txt"));
+        assert_eq!(RustDeskConnector::split_remote_file_path("C:\\a.txt"), ("C:\\", "a.txt"));
+        assert_eq!(RustDeskConnector::split_remote_file_path("/home/u/a.txt"), ("/home/u", "a.txt"));
+        assert_eq!(RustDeskConnector::join_remote_path("C:\\Data\\", "sub/b.txt"), "C:\\Data\\sub\\b.txt");
+        assert_eq!(RustDeskConnector::join_remote_path("/home/u", "sub/b.txt"), "/home/u/sub/b.txt");
+        assert_eq!(RustDeskConnector::safe_relative_remote_name("sub\\b.txt", true).unwrap(), "sub/b.txt");
+        assert_eq!(RustDeskConnector::safe_relative_remote_name("a\\b.txt", false).unwrap(), "a\\b.txt");
+        assert!(RustDeskConnector::safe_relative_remote_name("../x", true).is_err());
+        assert!(RustDeskConnector::safe_relative_remote_name("/etc/x", false).is_err());
+        assert!(RustDeskConnector::safe_relative_remote_name("C:/x", true).is_err());
+    }
+
+    #[test]
+    fn file_transfer_peer_errors_and_directory_paths_are_classified() {
+        let code = |text: &str| {
+            RustDeskConnector::remote_file_error(text, std::io::ErrorKind::Other, "fallback").to_string()
+        };
+        assert_eq!(code("No such file or directory (os error 2)"), "remote_path_not_found");
+        assert_eq!(code("Operation not permitted (os error 1)"), "remote_permission_denied");
+        assert_eq!(code("Access is denied. (os error 5)"), "remote_permission_denied");
+        assert_eq!(code("one-way-file-transfer-tip"), "remote_one_way_transfer");
+        assert_eq!(code("No space left on device (os error 28)"), "remote_disk_full");
+        assert_eq!(code("something else"), "fallback");
+        // Bare numbers differ between platforms: EIO (5) on Unix is not a permission problem.
+        assert_eq!(code("Input/output error (os error 5)"), "fallback");
+        assert!(RustDeskConnector::directory_reply_matches("", "/anything"));
+        assert!(RustDeskConnector::directory_reply_matches("/data", "/data/"));
+        assert!(RustDeskConnector::directory_reply_matches("C:\\Users", "c:/users"));
+        assert!(RustDeskConnector::directory_reply_matches("/", "/"));
+        assert!(!RustDeskConnector::directory_reply_matches("/data", "/Users/peer"));
+        assert!(!RustDeskConnector::directory_reply_matches("/Data", "/data"));
+    }
+
+    #[test]
+    fn file_transfer_download_rejects_metadata_errors_overrun_early_done_and_cancel() {
+        use crate::file_transfer::{DownloadSink, TransferRegistry};
+        use crate::protocol::message_proto::{
+            FileDirectory, FileEntry, FileResponse, FileResponse_oneof_union, FileTransferBlock,
+            FileTransferDigest, FileTransferDone, FileType, Misc, Misc_oneof_union, PermissionInfo,
+            PermissionInfo_Permission,
+        };
+        for scenario in [
+            "name",
+            "metadata",
+            "file_num",
+            "overrun",
+            "short_done",
+            "digest",
+            "cancel",
+            "permission",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let job = TransferRegistry::default().insert(1, 5).unwrap();
+            let peer_job = job.clone();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                wire::read_frame(&mut socket).unwrap();
+                let mut directory = FileDirectory::new();
+                directory.set_id(1);
+                directory.set_path("/home/file.bin".into());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_size(if scenario == "metadata" { 6 } else { 5 });
+                entry.set_modified_time(123);
+                if scenario == "name" {
+                    entry.set_name("../escape".into());
+                }
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                if scenario == "name" || scenario == "metadata" {
+                    return;
+                }
+                let mut response = FileResponse::new();
+                let mut message = Message::new();
+                match scenario {
+                    "short_done" => {
+                        let mut done = FileTransferDone::new();
+                        done.set_id(1);
+                        done.set_file_num(1);
+                        response.union = Some(FileResponse_oneof_union::done(done));
+                    }
+                    "digest" => {
+                        let mut digest = FileTransferDigest::new();
+                        digest.set_id(1);
+                        digest.set_file_size(4);
+                        digest.set_last_modified(123);
+                        response.union = Some(FileResponse_oneof_union::digest(digest));
+                    }
+                    "permission" => {
+                        let mut permission = PermissionInfo::new();
+                        permission.set_permission(PermissionInfo_Permission::File);
+                        permission.set_enabled(false);
+                        let mut misc = Misc::new();
+                        misc.union = Some(Misc_oneof_union::permission_info(permission));
+                        message.union = Some(Message_oneof_union::misc(misc));
+                    }
+                    _ => {
+                        if scenario == "cancel" {
+                            peer_job.cancel();
+                        }
+                        let mut block = FileTransferBlock::new();
+                        block.set_id(1);
+                        block.set_file_num(if scenario == "file_num" { 1 } else { 0 });
+                        block.set_data(vec![5; if scenario == "overrun" { 6 } else { 5 }]);
+                        response.union = Some(FileResponse_oneof_union::block(block));
+                    }
+                }
+                if scenario != "permission" {
+                    message.union = Some(Message_oneof_union::file_response(response));
+                }
+                let _ = wire::write_frame(&mut socket, &message.write_to_bytes().unwrap());
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let path = std::env::temp_dir().join(format!(
+                "rd-download-reject-{}-{}.bin",
+                std::process::id(),
+                scenario
+            ));
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            std::fs::remove_file(path).unwrap();
+            let sink = DownloadSink::new(file.try_clone().unwrap(), 5, 123).unwrap();
+            let error = connector
+                .download_file_stream("/home/file.bin", sink, &job)
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                match scenario {
+                    "short_done" => std::io::ErrorKind::UnexpectedEof,
+                    "cancel" => std::io::ErrorKind::Interrupted,
+                    "permission" => std::io::ErrorKind::PermissionDenied,
+                    _ => std::io::ErrorKind::InvalidData,
+                },
+                "scenario {}",
+                scenario
+            );
+            assert_eq!(file.metadata().unwrap().len(), 0);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_mkdir_requires_matching_official_done_and_preserves_error_state() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{FileResponse, FileTransferDone, FileTransferError};
+        for scenario in 0..4 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let request: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                let create = request.get_file_action().get_create();
+                assert_eq!(create.get_id(), 1);
+                assert_eq!(create.get_path(), "/home/new-directory");
+                // A completion belonging to another job must never acknowledge this operation.
+                let mut wrong = FileTransferDone::new();
+                wrong.set_id(99);
+                let mut response = FileResponse::new();
+                response.set_done(wrong);
+                let mut message = Message::new();
+                message.set_file_response(response);
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                thread::sleep(Duration::from_millis(5));
+                if scenario == 0 {
+                    let mut done = FileTransferDone::new();
+                    done.set_id(1);
+                    done.set_file_num(0);
+                    let mut response = FileResponse::new();
+                    response.set_done(done);
+                    message.set_file_response(response);
+                    wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                } else if scenario == 1 {
+                    let mut error = FileTransferError::new();
+                    error.set_id(1);
+                    error.set_error("denied".into());
+                    let mut response = FileResponse::new();
+                    response.set_error(error);
+                    message.set_file_response(response);
+                    wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                } else if scenario == 2 {
+                    let mut permission = crate::protocol::message_proto::PermissionInfo::new();
+                    permission.set_permission(
+                        crate::protocol::message_proto::PermissionInfo_Permission::File,
+                    );
+                    permission.set_enabled(false);
+                    let mut misc = crate::protocol::message_proto::Misc::new();
+                    misc.set_permission_info(permission);
+                    message.set_misc(misc);
+                    wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                }
+                // Scenario 3 closes without the matching acknowledgement.
+            });
+            let socket = TcpStream::connect(address).unwrap();
+            let mut connector = RustDeskConnector::new_with_connection_id(0, 0);
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(socket));
+            let mut registry = TransferRegistry::default();
+            let job = registry.insert(9, 0).unwrap();
+            let result = connector.create_remote_directory("/home/new-directory", &job);
+            assert_eq!(result.is_ok(), scenario == 0);
+            assert_eq!(
+                job.result.lock().unwrap().remote_operation_acknowledged,
+                if scenario == 0 { 1 } else { 0 }
+            );
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_download_wire_accepts_official_digest_compressed_blocks_and_done() {
+        use crate::file_transfer::{DownloadSink, TransferRegistry};
+        use crate::protocol::message_proto::{
+            FileAction_oneof_union, FileDirectory, FileEntry, FileResponse,
+            FileResponse_oneof_union, FileTransferBlock, FileTransferDigest, FileTransferDone,
+            FileType,
+        };
+        for size in [0usize, 150_000] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let request: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                match request.union {
+                    Some(Message_oneof_union::file_action(action)) => match action.union {
+                        Some(FileAction_oneof_union::send(request)) => {
+                            assert_eq!(request.get_id(), 1);
+                            assert_eq!(request.get_path(), "/home/file.bin");
+                        }
+                        _ => panic!("send request required"),
+                    },
+                    _ => panic!("action required"),
+                }
+                let mut directory = FileDirectory::new();
+                directory.set_id(1);
+                directory.set_path("/home/file.bin".into());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_size(size as u64);
+                entry.set_modified_time(1_700_000_123);
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                let mut digest = FileTransferDigest::new();
+                digest.set_id(1);
+                digest.set_file_size(size as u64);
+                digest.set_last_modified(1_700_000_123);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::digest(digest));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                let confirmation: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                match confirmation.union {
+                    Some(Message_oneof_union::file_action(action)) => match action.union {
+                        Some(FileAction_oneof_union::send_confirm(confirm)) => {
+                            assert_eq!(confirm.get_offset_blk(), 0);
+                            assert!(!confirm.get_skip());
+                        }
+                        _ => panic!("confirm required"),
+                    },
+                    _ => panic!("confirm action required"),
+                }
+                let payload = vec![17; size];
+                for chunk in payload.chunks(128 * 1024) {
+                    let mut block = FileTransferBlock::new();
+                    block.set_id(1);
+                    block.set_data(zstd::bulk::compress(chunk, 1).unwrap());
+                    block.set_compressed(true);
+                    let mut response = FileResponse::new();
+                    response.union = Some(FileResponse_oneof_union::block(block));
+                    let mut message = Message::new();
+                    message.union = Some(Message_oneof_union::file_response(response));
+                    wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                }
+                let mut block = FileTransferBlock::new();
+                block.set_id(1);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::block(block));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                let mut done = FileTransferDone::new();
+                done.set_id(1);
+                done.set_file_num(1);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::done(done));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let path = std::env::temp_dir().join(format!(
+                "rd-download-wire-{}-{}.bin",
+                std::process::id(),
+                size
+            ));
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            std::fs::remove_file(path).unwrap();
+            let sink =
+                DownloadSink::new(file.try_clone().unwrap(), size as u64, 1_700_000_123).unwrap();
+            let job = TransferRegistry::default().insert(1, size as u64).unwrap();
+            connector
+                .download_file_stream("/home/file.bin", sink, &job)
+                .unwrap();
+            assert_eq!(file.metadata().unwrap().len(), size as u64);
+            let mut bytes = vec![0; size];
+            std::os::unix::fs::FileExt::read_exact_at(&file, &mut bytes, 0).unwrap();
+            assert!(bytes.iter().all(|b| *b == 17));
+            assert_eq!(
+                file.metadata()
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                1_700_000_123
+            );
+            assert_eq!(job.status.lock().unwrap().0.transferred_bytes, size as u64);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_empty_upload_creates_a_block_and_cleanup_uses_its_job_id() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse_oneof_union,
+            FileTransferSendConfirmRequest,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let receive: Message = protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            let entry = &receive.get_file_action().get_receive().get_files()[0];
+            let wire_metadata = (entry.get_size(), entry.get_modified_time());
+            let digest: Message = protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            assert_eq!(digest.get_file_response().get_digest().get_last_modified(), wire_metadata.1);
+            let mut confirm = FileTransferSendConfirmRequest::new();
+            confirm.set_id(1);
+            confirm.set_offset_blk(0);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            let creation: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            match creation.union {
+                Some(Message_oneof_union::file_response(response)) => match response.union {
+                    Some(FileResponse_oneof_union::block(block)) => {
+                        assert_eq!(block.get_id(), 1);
+                        assert!(block.get_data().is_empty());
+                    }
+                    _ => panic!("empty creation block required"),
+                },
+                _ => panic!("response required"),
+            }
+            let done: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            assert!(matches!(
+                done.union,
+                Some(Message_oneof_union::file_response(_))
+            ));
+            let cleanup: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            match cleanup.union {
+                Some(Message_oneof_union::file_action(action)) => match action.union {
+                    Some(FileAction_oneof_union::cancel(cancel)) => assert_eq!(cancel.get_id(), 1),
+                    _ => panic!("cancel required"),
+                },
+                _ => panic!("cancel action required"),
+            }
+            wire_metadata
+        });
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(
+            TcpStream::connect(address).unwrap(),
+        ));
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        connector
+            .upload_file_stream("/home/empty", UploadSource::Memory(Vec::new()), &job, false)
+            .unwrap();
+        assert!(job.remote_write_started());
+        assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 0);
+        connector.cancel_file_transfer_job();
+        let wire_metadata = peer.join().unwrap();
+        let result = job.result.lock().unwrap();
+        assert_eq!(result.source_metadata_available, 1);
+        assert_eq!((result.source_size, result.source_modified_time), wire_metadata);
+        assert_eq!(result.remote_operation_acknowledged, 0);
+    }
+
+    #[test]
+    fn file_transfer_stream_conflict_resume_and_cancellation_never_send_file_data() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse, FileResponse_oneof_union,
+            FileTransferDigest, FileTransferSendConfirmRequest,
+        };
+        for scenario in ["conflict", "resume", "cancel"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut registry = TransferRegistry::default();
+            let job = registry.insert(1, 3).unwrap();
+            let peer_job = job.clone();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                wire::read_frame(&mut socket).unwrap();
+                wire::read_frame(&mut socket).unwrap(); // source digest triggers official conflict check
+                let mut message = Message::new();
+                match scenario {
+                    "conflict" => {
+                        let mut digest = FileTransferDigest::new();
+                        digest.set_id(1);
+                        digest.set_file_size(5);
+                        let mut response = FileResponse::new();
+                        response.union = Some(FileResponse_oneof_union::digest(digest));
+                        message.union = Some(Message_oneof_union::file_response(response));
+                        wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                        let confirm: Message =
+                            protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap())
+                                .unwrap();
+                        match confirm.union {
+                            Some(Message_oneof_union::file_action(action)) => match action.union {
+                                Some(FileAction_oneof_union::send_confirm(confirm)) => {
+                                    assert!(confirm.get_skip())
+                                }
+                                _ => panic!("skip required"),
+                            },
+                            _ => panic!("skip action required"),
+                        }
+                    }
+                    "resume" => {
+                        let mut confirm = FileTransferSendConfirmRequest::new();
+                        confirm.set_id(1);
+                        confirm.set_offset_blk(99);
+                        let mut action = FileAction::new();
+                        action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+                        message.union = Some(Message_oneof_union::file_action(action));
+                        wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                    }
+                    _ => peer_job.cancel(),
+                }
+                assert!(
+                    wire::read_frame(&mut socket).is_err(),
+                    "must not send block or Done"
+                );
+            });
+            let socket = TcpStream::connect(address).unwrap();
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(socket));
+            let error = connector
+                .upload_file_stream(
+                    "/tmp/file.bin",
+                    UploadSource::Memory(vec![1; 3]),
+                    &job,
+                    false,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                match scenario {
+                    "conflict" => std::io::ErrorKind::AlreadyExists,
+                    "resume" => std::io::ErrorKind::InvalidData,
+                    _ => std::io::ErrorKind::Interrupted,
+                }
+            );
+            assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 0);
+            drop(connector);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_upload_observes_buffered_permission_revocation_before_first_block() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse_oneof_union,
+            FileTransferSendConfirmRequest, Misc, Misc_oneof_union, PermissionInfo,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let _ = wire::read_frame(&mut socket).unwrap();
+            let _ = wire::read_frame(&mut socket).unwrap();
+            let mut confirm = FileTransferSendConfirmRequest::new();
+            confirm.set_id(1);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            let mut packets = Vec::new();
+            wire::write_frame(&mut packets, &message.write_to_bytes().unwrap()).unwrap();
+            let mut permission = PermissionInfo::new();
+            permission
+                .set_permission(crate::protocol::message_proto::PermissionInfo_Permission::File);
+            permission.set_enabled(false);
+            let mut misc = Misc::new();
+            misc.union = Some(Misc_oneof_union::permission_info(permission));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::misc(misc));
+            wire::write_frame(&mut packets, &message.write_to_bytes().unwrap()).unwrap();
+            socket.write_all(&packets).unwrap();
+            let mut sent = 0usize;
+            loop {
+                let Ok(bytes) = wire::read_frame(&mut socket) else {
+                    break;
+                };
+                let message: Message = protobuf::parse_from_bytes(&bytes).unwrap();
+                if let Some(Message_oneof_union::file_response(response)) = message.union {
+                    match response.union {
+                        Some(FileResponse_oneof_union::block(block)) => {
+                            sent += block.get_data().len()
+                        }
+                        Some(FileResponse_oneof_union::done(_)) => break,
+                        _ => {}
+                    }
+                }
+            }
+            sent
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(socket));
+        let source = UploadSource::Memory(vec![13; 2_000_000]);
+        let mut registry = TransferRegistry::default();
+        let job = registry.insert(1, source.size()).unwrap();
+        let result = connector.upload_file_stream("/tmp/file.bin", source, &job, true);
+        drop(connector);
+        let sent = peer.join().unwrap();
+        assert!(
+            matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied),
+            "received File permission=false before data but result={:?}, sent={} bytes",
+            result,
+            sent
+        );
+        assert_eq!(
+            sent, 0,
+            "permission denial already buffered before first data block"
+        );
+    }
+
+    #[test]
+    fn file_transfer_upload_drains_live_errors_and_fragmented_control_frames() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse, FileResponse_oneof_union,
+            FileTransferError, FileTransferSendConfirmRequest, Misc, PermissionInfo,
+            PermissionInfo_Permission,
+        };
+        for scenario in [
+            "buffered_error",
+            "mid_permission",
+            "mid_error",
+            "tail_error",
+            "fragmented_permission",
+            "partial_eof",
+            "partial_timeout",
+            "partial_cancel",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut registry = TransferRegistry::default();
+            let job = registry.insert(1, 2_000_000).unwrap();
+            let peer_job = job.clone();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_nodelay(true).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                wire::read_frame(&mut socket).unwrap();
+                wire::read_frame(&mut socket).unwrap();
+                let mut confirm = FileTransferSendConfirmRequest::new();
+                confirm.set_id(1);
+                let mut action = FileAction::new();
+                action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_action(action));
+                let mut packets = Vec::new();
+                wire::write_frame(&mut packets, &message.write_to_bytes().unwrap()).unwrap();
+                let mut control = Message::new();
+                if scenario.contains("permission") {
+                    let mut permission = PermissionInfo::new();
+                    permission.set_permission(PermissionInfo_Permission::File);
+                    permission.set_enabled(false);
+                    let mut misc = Misc::new();
+                    misc.union = Some(Misc_oneof_union::permission_info(permission));
+                    control.union = Some(Message_oneof_union::misc(misc));
+                } else {
+                    let mut error = FileTransferError::new();
+                    error.set_id(1);
+                    error.set_error("fixture storage rejected".to_owned());
+                    let mut response = FileResponse::new();
+                    response.union = Some(FileResponse_oneof_union::error(error));
+                    control.union = Some(Message_oneof_union::file_response(response));
+                }
+                let mut control_frame = Vec::new();
+                wire::write_frame(&mut control_frame, &control.write_to_bytes().unwrap()).unwrap();
+                if scenario == "buffered_error" {
+                    packets.extend_from_slice(&control_frame);
+                }
+                let partial =
+                    scenario.starts_with("partial_") || scenario == "fragmented_permission";
+                if partial {
+                    packets.extend_from_slice(&control_frame[..control_frame.len() - 1]);
+                }
+                socket.write_all(&packets).unwrap();
+                if scenario == "fragmented_permission" {
+                    thread::sleep(Duration::from_millis(20));
+                    socket
+                        .write_all(&control_frame[control_frame.len() - 1..])
+                        .unwrap();
+                }
+                if scenario == "partial_eof" {
+                    socket.shutdown(std::net::Shutdown::Write).unwrap();
+                }
+                if scenario == "partial_cancel" {
+                    thread::sleep(Duration::from_millis(20));
+                    peer_job.cancel();
+                }
+                let mut sent = 0;
+                let mut sent_control = false;
+                let mut done = false;
+                while let Ok(bytes) = wire::read_frame(&mut socket) {
+                    let message: Message = protobuf::parse_from_bytes(&bytes).unwrap();
+                    if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        match response.union {
+                            Some(FileResponse_oneof_union::block(block)) => {
+                                sent += block.get_data().len();
+                                if scenario.starts_with("mid_") && !sent_control {
+                                    socket.write_all(&control_frame).unwrap();
+                                    sent_control = true;
+                                }
+                            }
+                            Some(FileResponse_oneof_union::done(_)) => {
+                                done = true;
+                                if scenario == "tail_error" {
+                                    thread::sleep(Duration::from_millis(40));
+                                    socket.write_all(&control_frame).unwrap();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                (sent, done)
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let began = Instant::now();
+            let result = connector.upload_file_stream(
+                "/tmp/file.bin",
+                UploadSource::Memory(vec![13; 2_000_000]),
+                &job,
+                true,
+            );
+            drop(connector);
+            let (sent, done) = peer.join().unwrap();
+            let expected = match scenario {
+                "partial_eof" => std::io::ErrorKind::UnexpectedEof,
+                "partial_timeout" => std::io::ErrorKind::TimedOut,
+                "partial_cancel" => std::io::ErrorKind::Interrupted,
+                _ => std::io::ErrorKind::PermissionDenied,
+            };
+            assert!(
+                matches!(&result, Err(error) if error.kind() == expected),
+                "{scenario}: {result:?}, sent={sent}, done={done}"
+            );
+            if scenario == "tail_error" {
+                assert_eq!(sent, 2_000_000);
+                assert!(done);
+            } else {
+                assert!(!done, "{scenario}: must not publish Done after rejection");
+                if scenario.starts_with("mid_") {
+                    assert!(sent > 0 && sent < 2_000_000);
+                } else {
+                    assert_eq!(
+                        sent, 0,
+                        "{scenario}: pending control must drain before any data"
+                    );
+                }
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(4),
+                "{scenario}: receive must remain bounded"
+            );
+        }
+    }
+
+    #[test]
+    fn file_transfer_stream_wire_has_bounded_blocks_correct_metadata_and_sender_only_done() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse_oneof_union,
+            FileTransferSendConfirmRequest,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let request: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            if let Some(Message_oneof_union::file_action(action)) = request.union {
+                if let Some(FileAction_oneof_union::receive(receive)) = action.union {
+                    assert_eq!(receive.get_path(), "/tmp");
+                    assert_eq!(receive.get_total_size(), 150_000);
+                    assert_eq!(receive.get_files()[0].get_name(), "file.bin");
+                    assert_eq!(receive.get_files()[0].get_modified_time(), 1_700_000_123);
+                } else {
+                    panic!("receive required");
+                }
+            } else {
+                panic!("file action required");
+            }
+            let digest: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            if let Some(Message_oneof_union::file_response(response)) = digest.union {
+                if let Some(FileResponse_oneof_union::digest(digest)) = response.union {
+                    assert_eq!(digest.get_file_size(), 150_000);
+                    assert_eq!(digest.get_last_modified(), 1_700_000_123);
+                } else {
+                    panic!("source digest required");
+                }
+            } else {
+                panic!("digest response required");
+            }
+            let mut confirm = FileTransferSendConfirmRequest::new();
+            confirm.set_id(1);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            let mut bytes = 0;
+            let mut blocks = 0;
+            loop {
+                let message: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                if let Some(Message_oneof_union::file_response(response)) = message.union {
+                    match response.union {
+                        Some(FileResponse_oneof_union::block(block)) => {
+                            assert_eq!(block.get_blk_id(), blocks);
+                            assert!(block.get_data().len() <= 65536);
+                            assert!(block.get_data().iter().all(|b| *b == 13));
+                            blocks += 1;
+                            bytes += block.get_data().len();
+                        }
+                        Some(FileResponse_oneof_union::done(done)) => {
+                            assert_eq!(done.get_id(), 1);
+                            break;
+                        }
+                        _ => panic!("unexpected response"),
+                    }
+                } else {
+                    panic!("response required");
+                }
+            }
+            assert_eq!((bytes, blocks), (150_000, 3));
+            // No receiver Done is emitted: return value must not claim verification.
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(socket));
+        let mut registry = TransferRegistry::default();
+        let job = registry.insert(1, 150_000).unwrap();
+        let path = std::env::temp_dir().join(format!("rd-wire-{}.bin", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        file.write_all(&vec![13; 150_000]).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_123)),
+        )
+        .unwrap();
+        let result = connector.upload_file_stream(
+            "/tmp/file.bin",
+            UploadSource::file(file).unwrap(),
+            &job,
+            true,
+        );
+        assert!(result.is_ok());
+        job.finish(result);
+        assert_eq!(job.status.lock().unwrap().0.state, 6);
+        assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 150_000);
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn direct_file_transfer_uses_plain_login_with_file_transfer_mode() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
         let port = listener
@@ -6232,7 +9304,8 @@ mod tests {
             wire::write_frame(&mut stream, &response_message.write_to_bytes().unwrap()).unwrap();
         });
 
-        RustDeskConnector::new()
+        let reservation = crate::ConnectEpochReservation::new(0x71090012);
+        RustDeskConnector::new_with_connection_id(0x71090012, reservation.epoch())
             .connect_file_transfer_direct("127.0.0.1", port, "", r"C:\Users\Public\Documents")
             .expect("direct file transfer should use the peer login protocol");
         accept_thread.join().expect("accept thread panicked");

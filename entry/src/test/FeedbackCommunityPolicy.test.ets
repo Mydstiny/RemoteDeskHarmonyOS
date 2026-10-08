@@ -3,6 +3,7 @@ import {
   FEEDBACK_COMMUNITY_QR_MAX_AGE_MS,
   feedbackCommunityImageUrl,
   feedbackCommunityRemainingText,
+  isFeedbackCommunityManifestUrl,
   validateFeedbackCommunityManifest
 } from '../main/ets/services/FeedbackCommunityPolicy';
 
@@ -90,6 +91,13 @@ export default function feedbackCommunityPolicyTest() {
       if (result.manifest !== null) {
         expect(result.manifest.version).assertEqual((now + 3600000).toString());
       }
+    });
+
+    it('accepts_only_feedback_origin_json_manifest_urls', 0, (): void => {
+      expect(isFeedbackCommunityManifestUrl('https://lijiong.online/feedback/pro-qq.json')).assertTrue();
+      expect(isFeedbackCommunityManifestUrl('https://lijiong.online/feedback/pro-qq.json?x=1')).assertTrue();
+      expect(isFeedbackCommunityManifestUrl('https://lijiong.online.evil/feedback/pro-qq.json')).assertFalse();
+      expect(isFeedbackCommunityManifestUrl('https://lijiong.online/feedback/pro-qq.jpg')).assertFalse();
     });
   });
 }

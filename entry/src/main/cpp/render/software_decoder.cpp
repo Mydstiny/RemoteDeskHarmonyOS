@@ -181,7 +181,8 @@ int SoftwareDecoder::Init(int width, int height, CodecType codec) {
 }
 
 int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp,
-                            bool isKeyFrame, bool presentOutput) {
+                            bool isKeyFrame, bool presentOutput,
+                            const Render::PhoneFrameReceiptPtr& phoneReceipt) {
     (void)isKeyFrame;
     if (!initialized_ || !data || size == 0) {
         return -1;
@@ -192,6 +193,7 @@ int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
     (void)size;
     (void)timestamp;
     (void)presentOutput;
+    (void)phoneReceipt;
     return kErrBackendMissing;
 #else
     if (!impl_ || !impl_->codecCtx || !impl_->frame || !impl_->packet) {
@@ -206,12 +208,20 @@ int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
         return kErrPacketAllocFailed;
     }
     std::memcpy(impl_->packet->data, data, size);
-    impl_->packet->pts = static_cast<int64_t>(timestamp);
-    impl_->packet->dts = static_cast<int64_t>(timestamp);
+    int64_t decodeTimestamp = static_cast<int64_t>(timestamp);
+    std::shared_ptr<Render::PhoneFrameTracker> phoneTracker;
+    if (phoneReceipt) {
+        phoneTracker = Render::EnsurePhoneFrameTracker(phoneFrameTracker_);
+        decodeTimestamp = phoneTracker->submit(phoneReceipt);
+        if (decodeTimestamp <= 0) return kErrSendPacketFailed;
+    }
+    impl_->packet->pts = decodeTimestamp;
+    impl_->packet->dts = decodeTimestamp;
 
     ret = avcodec_send_packet(impl_->codecCtx, impl_->packet);
     av_packet_unref(impl_->packet);
     if (ret < 0) {
+        if (phoneTracker) phoneTracker->discard(decodeTimestamp);
         const std::string err = avError(ret);
         OH_LOG_WARN(LOG_APP, "[SoftDecoder] avcodec_send_packet failed codec=%{public}s size=%{public}zu err=%{public}s",
                     CodecName(codecType_), size, err.c_str());
@@ -232,7 +242,12 @@ int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
             return kErrReceiveFrameFailed;
         }
 
+        // Codec output can be buffered or reordered. Resolve its own PTS,
+        // never the timestamp of the Decode call that happened to drain it.
+        const auto outputTracker = std::atomic_load(&phoneFrameTracker_);
+        if (outputTracker) outputTracker->decoded(impl_->frame->pts);
         const int renderRet = presentOutput ? renderFrame() : 0;
+        if (!presentOutput && outputTracker) outputTracker->discard(impl_->frame->pts);
         av_frame_unref(impl_->frame);
         if (renderRet != 0) {
             return renderRet;
@@ -296,8 +311,11 @@ int SoftwareDecoder::renderFrame() {
 
     width_ = frame->width;
     height_ = frame->height;
+    const auto phoneTracker = std::atomic_load(&phoneFrameTracker_);
+    const Render::PhoneDecodedFramePtr phoneFrame = phoneTracker ?
+        phoneTracker->takeDecoded(frame->pts) : Render::PhoneDecodedFramePtr();
     const int renderRet = frameCallbackGate_.Invoke(
-        bgraBuffer_.data(), bgraBuffer_.size(), outWidth, outHeight, stride);
+        bgraBuffer_.data(), bgraBuffer_.size(), outWidth, outHeight, stride, phoneFrame);
     const auto renderEndAt = clock::now();
     if (renderRet != 0) {
         OH_LOG_WARN(LOG_APP, "[SoftDecoder] render callback failed codec=%{public}s ret=%{public}d", CodecName(codecType_), renderRet);
@@ -325,6 +343,7 @@ int SoftwareDecoder::renderFrame() {
 }
 
 void SoftwareDecoder::Destroy() {
+    Render::ClearPhoneFrameTracker(phoneFrameTracker_);
     frameCallbackGate_.ClearAndWait();
 #ifdef USE_FFMPEG_SOFTWARE_DECODER
     if (impl_) {
@@ -353,6 +372,6 @@ void SoftwareDecoder::Destroy() {
 }
 
 void SoftwareDecoder::SetFrameCallback(SoftwareDecoderFrameCallback callback) {
+    Render::ClearPhoneFrameTracker(phoneFrameTracker_);
     frameCallbackGate_.Set(std::move(callback));
 }
-

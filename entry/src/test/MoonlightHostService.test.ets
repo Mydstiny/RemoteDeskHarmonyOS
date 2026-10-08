@@ -205,11 +205,13 @@ class MemoryLeaseAndCachePort implements MoonlightAccountLeasePort, MoonlightApp
   }
 }
 
-function fixture(): {
-  native: FakeNativePort,
-  port: MemoryLeaseAndCachePort,
-  service: MoonlightHostService
-} {
+interface HostServiceFixture {
+  native: FakeNativePort;
+  port: MemoryLeaseAndCachePort;
+  service: MoonlightHostService;
+}
+
+function fixture(): HostServiceFixture {
   const native = new FakeNativePort();
   const port = new MemoryLeaseAndCachePort();
   const service = new MoonlightHostService(

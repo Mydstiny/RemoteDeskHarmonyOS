@@ -44,17 +44,18 @@ function settingsRecord(mutationId: string, base: number, syncVersion: number,
   values.video.fps = fps;
   values.video.bitrateKbps = bitrate;
   values.input.controlMode = legacyInputRecord ? undefined : controlMode;
-  return recordFromPayload('settings', 'settings-1', 'owner-1', values as Record<string, Object>, {
+  const business: Record<string, Object> = JSON.parse(JSON.stringify(values)) as Record<string, Object>;
+  return recordFromPayload('settings', 'settings-1', 'owner-1', business, {
     mutationId: mutationId, originId: 'origin-1', baseSyncVersion: base, fieldVersions: versions
   }, syncVersion, updatedAt);
 }
 
 function hostRecord(serverUuid: string, mutationId: string, syncVersion: number): MoonlightRecord {
   return recordFromPayload('host', 'host-1', 'owner-1', {
-    schemaVersion: 1, serverUuid: serverUuid, displayName: 'PC',
-    addresses: [{ host: '192.0.2.1', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.1|47989', hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' }, userOrder: 0
+    'schemaVersion': 1, 'serverUuid': serverUuid, 'displayName': 'PC',
+    'addresses': [{ 'host': '192.0.2.1', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.1|47989', 'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>, 'userOrder': 0
   }, { mutationId: mutationId, originId: 'origin-1', baseSyncVersion: 0,
     fieldVersions: { 'displayName': syncVersion } }, syncVersion, 100 + syncVersion);
 }

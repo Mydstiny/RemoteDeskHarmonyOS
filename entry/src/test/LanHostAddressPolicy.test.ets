@@ -10,7 +10,8 @@ import {
   lanHostUsesDynamicAddressStorage,
   lanHostUsesLocalOnlyStorage,
   remoteHostEndpointIsDevicePrivateForTransfer,
-  normalizeLanHostAddressMode
+  normalizeLanHostAddressMode,
+  LanHostAddressView
 } from '../main/ets/services/LanHostAddressPolicy';
 
 export default function lanHostAddressPolicyTest() {
@@ -35,7 +36,7 @@ export default function lanHostAddressPolicyTest() {
     });
 
     it('refreshes only stale device-local dynamic records', 0, () => {
-      const dynamic = {
+      const dynamic: LanHostAddressView = {
         protocol: 'rdp', host: '192.168.1.20', lanAddressMode: 'dynamic',
         lanDiscoveryIdentity: 'AA:BB', lanLastResolvedAt: 1000
       };
@@ -45,7 +46,7 @@ export default function lanHostAddressPolicyTest() {
     });
 
     it('matches refreshes by exact normalized identity and protocol', 0, () => {
-      const host = {
+      const host: LanHostAddressView = {
         protocol: 'rustdesk', host: '192.168.1.20', lanAddressMode: 'dynamic',
         lanDiscoveryIdentity: 'PEER-1', lanLastResolvedAt: 1
       };
@@ -74,7 +75,7 @@ export default function lanHostAddressPolicyTest() {
 
     it('keeps_only_interface_scoped_ssh_endpoints_in_device_local_storage', 0,
       (): void => {
-        const scoped = {
+        const scoped: LanHostAddressView = {
           protocol: 'ssh', host: 'fe80::20%wlan0', lanAddressMode: 'manual',
           lanDiscoveryIdentity: '', lanLastResolvedAt: 0
         };
@@ -84,7 +85,7 @@ export default function lanHostAddressPolicyTest() {
         expect(lanHostMayUseRemoteHostsCloudTable(scoped)).assertFalse();
         expect(lanHostNeedsAddressRefresh(scoped, 1000, 0)).assertFalse();
 
-        const global = {
+        const global: LanHostAddressView = {
           protocol: 'ssh', host: '2001:db8::20', lanAddressMode: 'manual',
           lanDiscoveryIdentity: '', lanLastResolvedAt: 0
         };
@@ -97,7 +98,7 @@ export default function lanHostAddressPolicyTest() {
         expect(remoteHostEndpointIsDevicePrivateForTransfer(
           'rdp', 'fe80::20%wlan0')).assertTrue();
 
-        const scopedProxy = {
+        const scopedProxy: LanHostAddressView = {
           protocol: 'ssh', host: '2001:db8::20',
           proxyHost: 'fe80::30%wlan0', lanAddressMode: 'manual',
           lanDiscoveryIdentity: '', lanLastResolvedAt: 0

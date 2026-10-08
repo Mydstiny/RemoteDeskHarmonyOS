@@ -1,3 +1,4 @@
+import { NativeVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 import rdpnapi from 'librdpnapi.so';
 import { MoonlightAppCacheEntry, moonlightAppCacheIdentity } from '../model/MoonlightAppCache';
 import {
@@ -180,7 +181,7 @@ export interface MoonlightNativeStreamStartRequest {
   streamEncryption: 'auto' | 'required' | 'compatible';
 }
 
-export interface MoonlightNativeStreamSnapshot {
+export interface MoonlightNativeStreamSnapshot extends NativeVideoDiagnosticEvidence {
   matched: boolean;
   code: string;
   sessionId: number;

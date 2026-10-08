@@ -22,7 +22,8 @@ public:
 
     int Init(int width, int height, CodecType codec);
     int Decode(const uint8_t* data, size_t size, uint64_t timestamp,
-               bool isKeyFrame = false, bool presentOutput = true);
+               bool isKeyFrame = false, bool presentOutput = true,
+               const Render::PhoneFrameReceiptPtr& phoneReceipt = {});
     void Destroy();
 
     bool IsInitialized() const { return initialized_; }
@@ -47,6 +48,7 @@ private:
     CodecType codecType_ = CodecType::VP9;
     bool initialized_ = false;
     SoftwareDecoderFrameCallbackGate frameCallbackGate_;
+    std::shared_ptr<Render::PhoneFrameTracker> phoneFrameTracker_;
     SoftwareDecoderImpl* impl_ = nullptr;
     std::vector<uint8_t> bgraBuffer_;
 };

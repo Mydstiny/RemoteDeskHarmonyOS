@@ -1,6 +1,7 @@
 import { DisplayConfig, DisplayConfigJSON, RemoteHost } from '../model/RemoteHost';
 import { VncHostValues, VncScalingMode } from './VncModelPolicy';
 import { normalizeRustDeskDesktopFlipMode } from './RustDeskDesktopFlipPolicy';
+import { hasExplicitRustDeskPhoneChoice, restoreLocalRustDeskPhoneChoice } from './RustDeskExplicitPhonePolicy';
 
 /**
  * Device-local host personalization envelope.
@@ -31,6 +32,9 @@ export function remoteHostLocalPersonalizationValues(host: RemoteHost): Record<s
   values['locallastlatency'] = host.lastLatency.toString();
   values['localrustdeskadaptiveorientation'] = host.rustdeskAdaptiveOrientation ? '1' : '0';
   values['localrustdeskdesktopflipmode'] = host.rustdeskDesktopFlipMode;
+  if (hasExplicitRustDeskPhoneChoice(host)) {
+    values['localrustdeskphonechoice'] = '1';
+  }
   values['localrustdeskprolastseenat'] = host.rustdeskProLastSeenAt.toString();
   values['localrustdeskprosyncerror'] = host.rustdeskProSyncError;
   return values;
@@ -46,6 +50,8 @@ export function applyRemoteHostLocalPersonalization(
   host: RemoteHost,
   values: Record<string, string>
 ): RemoteHost {
+  restoreLocalRustDeskPhoneChoice(host, values['localpersonalizationversion'] ===
+    HOST_LOCAL_PERSONALIZATION_VERSION ? values['localrustdeskphonechoice'] : undefined);
   if (values['localpersonalizationversion'] !== HOST_LOCAL_PERSONALIZATION_VERSION) {
     return host;
   }

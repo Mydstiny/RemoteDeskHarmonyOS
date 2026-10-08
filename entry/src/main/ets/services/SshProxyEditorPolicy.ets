@@ -39,6 +39,13 @@ export interface SshProxyEditorBuildResult {
   profile: SshProxyProfileV1 | null;
 }
 
+/** What the user entered in the proxy editor, for unsaved-input checks (a hop's generated id is not input). */
+export function sshProxyEditorInputKey(value: SshProxyEditorValue): string {
+  return JSON.stringify([value.kind, value.proxyHost, value.proxyPortText, value.proxyUsername, value.proxyAuthRequired,
+    value.hops.map((hop: SshProxyHopDraft): string => JSON.stringify([hop.label, hop.host, hop.portText, hop.username,
+      hop.authMethod, hop.keyId, hop.expectedHostKeyFingerprintSha256, hop.connectTimeoutMs]))]);
+}
+
 export function defaultSshProxyHop(index: number): SshProxyHopDraft {
   return {
     hopId: 'hop-' + Date.now().toString(36) + '-' + index.toString(),

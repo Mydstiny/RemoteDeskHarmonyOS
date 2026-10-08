@@ -1,7 +1,7 @@
 use crate::ControlMsg;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub(crate) const CONTROL_BATCH_LIMIT: usize = 8;
 pub(crate) const PERMISSION_KEYBOARD: u32 = 1 << 0;
@@ -41,6 +41,11 @@ pub(crate) struct ControlInboxSnapshot {
 
 pub(crate) struct ControlInbox {
     shutdown: AtomicBool,
+    phone_input_enabled: AtomicBool,
+    phone_input_ready: Mutex<bool>,
+    phone_input_epoch: AtomicU64,
+    pub remote_clipboard: Arc<Mutex<crate::ClipboardSnapshot>>,
+    pub file_clipboard: Arc<crate::file_clipboard::FileClipboard>,
     permission_known: AtomicU32,
     permission_enabled: AtomicU32,
     state: Mutex<ControlInboxState>,
@@ -133,8 +138,15 @@ impl Default for ControlInboxState {
 
 impl Default for ControlInbox {
     fn default() -> Self {
+        let remote_clipboard = Arc::new(Mutex::new(crate::ClipboardSnapshot::default()));
+        let file_clipboard = Arc::new(crate::file_clipboard::FileClipboard::new(remote_clipboard.clone()));
         Self {
+            remote_clipboard,
+            file_clipboard,
             shutdown: AtomicBool::new(false),
+            phone_input_enabled: AtomicBool::new(false),
+            phone_input_ready: Mutex::new(true),
+            phone_input_epoch: AtomicU64::new(0),
             permission_known: AtomicU32::new(0),
             permission_enabled: AtomicU32::new(0),
             state: Mutex::new(ControlInboxState::default()),
@@ -160,6 +172,8 @@ impl ControlInbox {
             return true;
         }
 
+        let phone_lease = self.phone_input_lease(&message);
+        if phone_lease.as_ref().is_some_and(|ready| !**ready) { return false; }
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -344,8 +358,46 @@ impl ControlInbox {
         batch
     }
 
+    // Snapshot the phone epoch while holding the same gate used by close/send.
+    // Closing invalidates both queued input and input already removed in a batch.
+    // Ordinary sessions retain their existing dequeue and send behavior.
+    pub(crate) fn take_phone_fenced_batch(&self, limit: usize) -> (u64, Vec<ControlMsg>) {
+        if !self.phone_input_enabled.load(Ordering::Acquire) {
+            return (0, self.take_batch(limit));
+        }
+        let _gate = self.phone_input_ready.lock().unwrap_or_else(|e| e.into_inner());
+        let epoch = self.phone_input_epoch.load(Ordering::Acquire);
+        (epoch, self.take_batch(limit))
+    }
+
+    // Call only while holding phone_input_lease through the subsequent wire send.
+    pub(crate) fn phone_batch_is_current(&self, epoch: u64) -> bool {
+        epoch == self.phone_input_epoch.load(Ordering::Acquire)
+    }
+
+    // Disabled by default. Only the explicit-phone bridge installs this barrier.
+    // Each lease spans a wire send; epoch fencing rejects a dequeued stale tail.
+    pub(crate) fn phone_input_lease(&self, message: &ControlMsg) -> Option<std::sync::MutexGuard<'_, bool>> {
+        if !self.phone_input_enabled.load(Ordering::Acquire) ||
+            required_permission(message) != Some(PERMISSION_KEYBOARD) { return None; }
+        Some(self.phone_input_ready.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub(crate) fn set_phone_geometry_ready(&self, ready: bool) -> bool {
+        self.phone_input_enabled.store(true, Ordering::Release);
+        let Ok(mut gate) = self.phone_input_ready.lock() else { return false; };
+        *gate = ready;
+        if !ready {
+            self.phone_input_epoch.fetch_add(1, Ordering::AcqRel);
+            let Ok(mut state) = self.state.lock() else { return false; };
+            Self::discard_permission_controls(&mut state, PERMISSION_KEYBOARD);
+        }
+        true
+    }
+
     pub(crate) fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        self.file_clipboard.close();
     }
 
     pub(crate) fn shutdown_requested(&self) -> bool {
@@ -372,6 +424,9 @@ impl ControlInbox {
 
         if enabled {
             return;
+        }
+        if permission & (PERMISSION_FILE | PERMISSION_CLIPBOARD) != 0 {
+            self.file_clipboard.permission_denied();
         }
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -647,7 +702,8 @@ impl ControlInbox {
 
 fn required_permission(message: &ControlMsg) -> Option<u32> {
     match message {
-        ControlMsg::KeyEvent { .. }
+        ControlMsg::AndroidPhone { .. }
+        | ControlMsg::KeyEvent { .. }
         | ControlMsg::MouseEvent { .. }
         | ControlMsg::MouseMove { .. }
         | ControlMsg::MouseWheel { .. }
@@ -657,7 +713,7 @@ fn required_permission(message: &ControlMsg) -> Option<u32> {
         | ControlMsg::TouchPanStart { .. }
         | ControlMsg::TouchPanUpdate { .. }
         | ControlMsg::TouchPanEnd { .. } => Some(PERMISSION_KEYBOARD),
-        ControlMsg::Clipboard { .. } => Some(PERMISSION_CLIPBOARD),
+        ControlMsg::Clipboard { .. } | ControlMsg::ClipboardTracked { .. } => Some(PERMISSION_CLIPBOARD),
         ControlMsg::SendFile { .. } => Some(PERMISSION_FILE),
         _ => None,
     }
@@ -1097,4 +1153,42 @@ fn reliable_input_flushes_touch_updates_at_the_order_boundary() {
             ControlMsg::TouchPanUpdate { x: 3, y: 4 },
         ]
     ));
+}
+
+#[test]
+fn android_phone_geometry_barrier_discards_only_phone_session_input() {
+    let phone = ControlInbox::default();
+    let desktop = ControlInbox::default();
+    assert!(phone.enqueue(ControlMsg::MouseMove { x: 5, y: 6 }));
+    assert!(phone.enqueue(ControlMsg::AndroidPhone { action: 2, modern_back: true }));
+    assert!(phone.enqueue(ControlMsg::RefreshVideo));
+    assert!(phone.set_phone_geometry_ready(false));
+    assert!(!phone.enqueue(ControlMsg::MouseMove { x: 7, y: 8 }));
+    assert!(desktop.enqueue(ControlMsg::MouseMove { x: 7, y: 8 }));
+    assert!(matches!(phone.take_batch(8).as_slice(), [ControlMsg::RefreshVideo]));
+    // Reopening does not replay stale input and does not override a remote denial.
+    phone.update_permission(PERMISSION_KEYBOARD, false);
+    assert!(phone.set_phone_geometry_ready(true));
+    assert!(!phone.enqueue(ControlMsg::AndroidPhone { action: 1, modern_back: true }));
+    assert!(phone.take_batch(8).is_empty());
+    assert!(matches!(desktop.take_batch(8).as_slice(), [ControlMsg::MouseMove { .. }]));
+}
+
+#[test]
+fn phone_reopen_rejects_dequeued_old_input_and_accepts_new_batch() {
+    let inbox = ControlInbox::default();
+    assert!(inbox.set_phone_geometry_ready(true));
+    assert!(inbox.enqueue(ControlMsg::MouseMove { x: 10, y: 20 }));
+    let (old_epoch, old_batch) = inbox.take_phone_fenced_batch(8);
+    assert_eq!(old_batch.len(), 1);
+    assert!(inbox.set_phone_geometry_ready(false));
+    assert!(inbox.set_phone_geometry_ready(true));
+    let lease = inbox.phone_input_lease(&old_batch[0]).unwrap();
+    assert!(*lease);
+    assert!(!inbox.phone_batch_is_current(old_epoch));
+    drop(lease);
+    assert!(inbox.enqueue(ControlMsg::MouseMove { x: 30, y: 40 }));
+    let (new_epoch, new_batch) = inbox.take_phone_fenced_batch(8);
+    let lease = inbox.phone_input_lease(&new_batch[0]).unwrap();
+    assert!(*lease && inbox.phone_batch_is_current(new_epoch));
 }

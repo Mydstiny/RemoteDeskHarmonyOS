@@ -29,6 +29,7 @@ import {
   classifyCryptoEnvelope,
   cryptoEnvelopeIsProtected
 } from './CryptoEnvelopePolicy';
+import { masterPasswordValueAcceptable } from './MasterPasswordPolicy';
 
 const TAG = 'DataCrypto';
 const DOMAIN = 0x0011;
@@ -209,8 +210,8 @@ export class DataCrypto {
    * 生成随机盐, PBKDF2 派生 DEK, 计算验证器, 存储到 cloudPrefs
    */
   async setMasterPassword(password: string): Promise<void> {
-    if (!password || password.length < 8) {
-      throw new Error('[DataCrypto] 密码长度不足 (最少 8 位)');
+    if (!masterPasswordValueAcceptable(password)) {
+      throw new Error('[DataCrypto] 主密码不能为空');
     }
 
     const operationGeneration: number = this.beginCryptoOperation();

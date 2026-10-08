@@ -15,6 +15,7 @@ import { RemoteHost } from '../model/RemoteHost';
 import { SshKey } from '../model/SshKey';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
+import { appUiOnAccentText, appUiTint } from '../common/AppUiColorPolicy';
 import { ExtensionLoader, SshNativeOperationPromise } from '../services/ExtensionLoader';
 import { DataCrypto } from '../services/DataCrypto';
 import { HostSyncService } from '../services/HostSyncService';
@@ -71,6 +72,10 @@ export struct SshKeyInstallSheet {
   @State hostSwitchSaveError: string = '';
   @State step: number = 0; // 0=select host, 1=install, 2=verify, 3=done
   @State switchToNewKey: boolean = true;
+  /** The key has a passphrase: it cannot be verified here, so verification is skipped and the host is not switched. */
+  @State verifySkipped: boolean = false;
+  /** Bumped by 取消 and 返回: an install still finishing in the background no longer touches the sheet. */
+  private installGeneration: number = 0;
   @State hostViewRevision: number = 0;
 
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
@@ -118,6 +123,25 @@ export struct SshKeyInstallSheet {
     }
   }
 
+  /** 取消 while installing or verifying: stop the operation and go back to the host choice. */
+  private cancelInstall(): void {
+    const verifying: boolean = this.verifying;
+    this.cancelOperation();
+    this.installing = false;
+    this.verifying = false;
+    this.backToHostChoice();
+    promptAction.showToast({ message: verifying ? '已取消验证；公钥已写入这台主机' : '已取消安装', duration: 2000 });
+  }
+
+  private backToHostChoice(): void {
+    this.installGeneration++;
+    this.step = 0;
+    this.installResult = null;
+    this.verifyResult = null;
+    this.verifySkipped = false;
+    this.hostSwitchSaveError = '';
+  }
+
   private loadHosts(): void {
     const selectedId: string = this.selectedHostId;
     const allHosts: RemoteHost[] = this.hostSync.getAllHosts();
@@ -142,6 +166,11 @@ export struct SshKeyInstallSheet {
         promptAction.showToast({ message: '所选 SSH 主机已被删除，请重新选择', duration: 2000 });
       }
     }
+  }
+
+  private targetEncrypted(): boolean {
+    const key: SshKey | undefined = this.kvs.getSshKey(this.targetKeyId);
+    return key !== undefined && key.privateKeyEncrypted;
   }
 
   private targetView(): SshKeyInstallTargetView | null {
@@ -218,7 +247,7 @@ export struct SshKeyInstallSheet {
 
     // 校验公钥
     if (!this.loader.validatePublicKeyForAuthorizedKeys(targetKey.publicKey)) {
-      promptAction.showToast({ message: '[CC-SSHKEY-09] 公钥格式无效, 无法安装', duration: 2000 });
+      promptAction.showToast({ message: '这把密钥的公钥无效，无法安装', duration: 2000 });
       return;
     }
 
@@ -270,7 +299,7 @@ export struct SshKeyInstallSheet {
     if (!routeSecrets.ok) {
       const retryHint: string =
         routeSecrets.code === 'E-SSH-OPERATION-HOP-INTERACTIVE-NONREPLAYABLE' ? '' :
-          '；请先连接主机完成预认证，并在 60 秒内重试';
+          '；请先连接一次这台主机（完成跳板机验证），再在 60 秒内重试';
       promptAction.showToast({
         message: routeSecrets.message + retryHint, duration: 3000
       });
@@ -306,7 +335,9 @@ export struct SshKeyInstallSheet {
     this.step = 1;
     this.installResult = null;
     this.verifyResult = null;
+    this.verifySkipped = false;
     this.hostSwitchSaveError = '';
+    const generation: number = ++this.installGeneration;
 
     try {
       const installOperation: SshNativeOperationPromise<SshPublicKeyInstallResult> =
@@ -315,9 +346,15 @@ export struct SshKeyInstallSheet {
       this.operationId = installOperation.operationId;
       const result: SshPublicKeyInstallResult = await installOperation;
       if (this.operationId === installOperation.operationId) { this.operationId = 0; }
+      if (generation !== this.installGeneration) { return; }
       this.installResult = result;
 
-      if (result['ok']) {
+      if (result['ok'] && targetKey.privateKeyEncrypted) {
+        // The new key has a passphrase this sheet does not ask for: it cannot log in here to verify itself, so
+        // verification is skipped and the host keeps its current sign-in.
+        this.verifySkipped = true;
+        this.step = 3;
+      } else if (result['ok']) {
         // 安装成功 → 验证新密钥
         this.step = 2;
         this.verifying = true;
@@ -327,6 +364,7 @@ export struct SshKeyInstallSheet {
         this.operationId = verifyOperation.operationId;
         const testResult: SshAuthTestResult = await verifyOperation;
         if (this.operationId === verifyOperation.operationId) { this.operationId = 0; }
+        if (generation !== this.installGeneration) { return; }
         this.verifyResult = testResult;
         this.verifying = false;
 
@@ -372,10 +410,20 @@ export struct SshKeyInstallSheet {
         this.step = 3;
       }
     } catch (err) {
-      this.verifying = false;
+      if (generation !== this.installGeneration) { return; }
+      if (this.verifying) {
+        // The install had already succeeded: this was the verification failing.
+        this.verifying = false;
+        const failed: SshAuthTestResult = { ok: false, code: -1, message: '验证时出错，请重试' };
+        this.verifyResult = failed;
+        this.step = 3;
+        this.cancelOperation();
+        this.installing = false;
+        return;
+      }
       this.installResult = {
         ok: false, alreadyInstalled: false, verified: false, code: -99,
-        message: '[CC-SSHKEY-10] 安装异常: ' + JSON.stringify(err)
+        message: '安装时出错，请检查网络和主机后重试'
       };
     }
     this.cancelOperation();
@@ -400,7 +448,7 @@ export struct SshKeyInstallSheet {
           if (host.keyConfigured) {
             Text('密钥').fontSize(10).fontColor(this.accentColor)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-              .borderRadius(3).backgroundColor(this.accentColor + '18')
+              .borderRadius(3).backgroundColor(appUiTint(this.accentColor, '18'))
               .margin({ left: 4 })
           }
           if (host.locked) {
@@ -419,7 +467,7 @@ export struct SshKeyInstallSheet {
     }
     .width('100%').padding(12).borderRadius(10)
     .backgroundColor(this.selectedHostId === host.id
-      ? this.accentColor + '12' : this.pal().card)
+      ? appUiTint(this.accentColor, '12') : this.pal().card)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .onClick(() => { this.selectedHostId = host.id; })
   }
@@ -428,19 +476,16 @@ export struct SshKeyInstallSheet {
     Column() {
       if (this.step === 0) {
         // ====== 选择主机 ======
-        Text('安装公钥到主机').fontSize(16).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-          .margin({ bottom: 4 }).width('100%')
-        Text('选择目标 SSH 主机, 公钥将写入 ~/.ssh/authorized_keys')
+        Text('选择目标 SSH 主机，公钥将写入 ~/.ssh/authorized_keys')
           .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
           .margin({ bottom: 14 }).width('100%')
 
         if (this.hosts.length === 0) {
           Column() {
-            Text('没有 SSH 主机').fontSize(14).fontColor(this.pal().text2)
+            Text('还没有 SSH 主机').fontSize(14).fontColor(this.pal().text2)
               .fontFamily(this.font()).margin({ bottom: 6 })
-            Text('请先在主机列表中添加 SSH 主机')
-              .fontSize(12).fontColor(this.pal().text3)
+            Text('先在「远程主机」里添加一台 SSH 主机，再回来安装公钥')
+              .fontSize(12).fontColor(this.pal().text3).textAlign(TextAlign.Center)
           }.width('100%').padding(24).justifyContent(FlexAlign.Center)
         } else {
           Scroll() {
@@ -453,20 +498,23 @@ export struct SshKeyInstallSheet {
           }.constraintSize({ maxHeight: 240 }).scrollBar(BarState.Off)
         }
 
-        Button('安装公钥').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.selectedHostId !== '' ? this.accentColor : this.pal().surface)
-          .fontColor(this.selectedHostId !== '' ? '#FFFFFF' : this.pal().text3)
-          .borderRadius(10).margin({ top: 14 })
-          .enabled(this.selectedHostId !== '' && !this.installing)
-          .onClick(() => { this.doInstall(); })
-
+        // The option comes before the button it changes.
         Row() {
-          Text('安装成功后, 自动切换此主机使用新密钥登录')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          Toggle({ type: ToggleType.Switch, isOn: this.switchToNewKey })
+          Text(this.targetEncrypted() ? '这把密钥设有密码，安装后不会自动切换主机的登录方式' :
+            '安装成功后，这台主机改用新密钥登录')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.switchToNewKey && !this.targetEncrypted() })
+            .enabled(!this.targetEncrypted())
             .onChange((v: boolean) => { this.switchToNewKey = v; })
             .margin({ left: 8 })
-        }.width('100%').margin({ top: 8 })
+        }.width('100%').margin({ top: 12 })
+
+        Button('安装公钥').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
+          .backgroundColor(this.selectedHostId !== '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.selectedHostId !== '' ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+          .borderRadius(10).margin({ top: 10 })
+          .enabled(this.selectedHostId !== '' && !this.installing)
+          .onClick(() => { this.doInstall(); })
       } else {
         // ====== 安装进度 ======
         Column() {
@@ -474,7 +522,8 @@ export struct SshKeyInstallSheet {
           Row() {
             this.stepDot(1, this.step >= 1 ? (this.installResult ? (this.installResult['ok'] ? 'done' : 'fail') : 'active') : 'pending', '安装')
             this.stepLine(1)
-            this.stepDot(2, this.step >= 2 ? (this.verifyResult ? (this.verifyResult['ok'] ? 'done' : 'fail') : 'active') : 'pending', '验证')
+            this.stepDot(2, this.verifySkipped ? 'pending' :
+              (this.step >= 2 ? (this.verifyResult ? (this.verifyResult['ok'] ? 'done' : 'fail') : 'active') : 'pending'), '验证')
             this.stepLine(2)
             this.stepDot(3, this.step >= 3 ?
               (this.hostSwitchSaveError === '' ? 'done' : 'fail') : 'pending', '完成')
@@ -514,6 +563,13 @@ export struct SshKeyInstallSheet {
             .backgroundColor(this.pal().card).margin({ bottom: 8 })
           }
 
+          if (this.verifySkipped) {
+            Text('这把密钥设有密码，无法在这里验证登录，已跳过验证；主机仍用原来的方式登录。要改用新密钥，请在主机编辑里选择它并填写密码。')
+              .fontSize(12).fontColor(this.pal().text2).lineHeight(18)
+              .width('100%').padding(12).borderRadius(10)
+              .backgroundColor(this.pal().card).margin({ bottom: 8 })
+          }
+
           if (this.hostSwitchSaveError !== '') {
             Text(this.hostSwitchSaveError)
               .fontSize(11).fontColor(this.pal().danger).maxLines(4)
@@ -523,12 +579,35 @@ export struct SshKeyInstallSheet {
 
           if (this.installing || this.verifying) {
             LoadingProgress().width(32).height(32).color(this.accentColor)
+            Button('取消').width('100%').height(40).fontSize(14)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+              .margin({ top: 12 })
+              .onClick(() => { this.cancelInstall(); })
+          } else if (this.step < 3) {
+            // A failed install or verification is not a dead end: retry, or go back to choose another host.
+            Row() {
+              Button('返回').layoutWeight(1).height(40).fontSize(14)
+                .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+                .onClick(() => { this.backToHostChoice(); })
+              Button('重试').layoutWeight(1).height(40).fontSize(14).fontWeight(FontWeight.Medium)
+                .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
+                .margin({ left: 10 })
+                .onClick(() => { void this.doInstall(); })
+            }.width('100%').margin({ top: 12 })
+          }
+
+          if (this.step >= 3 && this.verifyResult !== null && !this.verifyResult['ok']) {
+            // A failed verification can be run again; the public key is already on the host.
+            Button('重新安装并验证').width('100%').height(40).fontSize(14)
+              .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(10)
+              .margin({ top: 12 })
+              .onClick(() => { void this.doInstall(); })
           }
 
           if (this.step >= 3) {
             Button(this.hostSwitchSaveError === '' ? '完成' : '关闭（配置未保存）')
               .width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
               .margin({ top: 12 })
               .onClick(() => { if (this.onComplete) { this.onComplete(); } })
           }
@@ -541,9 +620,10 @@ export struct SshKeyInstallSheet {
   @Builder stepDot(num: number, status: string, label: string) {
     Column() {
       if (status === 'active') {
-        Column().width(28).height(28).borderRadius(14)
-          .backgroundColor(this.accentColor).justifyContent(FlexAlign.Center)
-        Text(num.toString()).fontSize(12).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+        Stack() {
+          Column().width(28).height(28).borderRadius(14).backgroundColor(this.accentColor)
+          Text(num.toString()).fontSize(12).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
+        }.width(28).height(28)
       } else if (status === 'done') {
         SymbolGlyph($r('sys.symbol.checkmark')).fontSize(16).fontColor([this.pal().success])
           .width(28).height(28)
@@ -551,10 +631,11 @@ export struct SshKeyInstallSheet {
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().danger])
           .width(28).height(28)
       } else {
-        Column().width(28).height(28).borderRadius(14)
-          .border({ width: 2, color: this.pal().text3, style: BorderStyle.Solid })
-          .justifyContent(FlexAlign.Center)
-        Text(num.toString()).fontSize(12).fontColor(this.pal().text3)
+        Stack() {
+          Column().width(28).height(28).borderRadius(14)
+            .border({ width: 2, color: this.pal().text3, style: BorderStyle.Solid })
+          Text(num.toString()).fontSize(12).fontColor(this.pal().text3)
+        }.width(28).height(28)
       }
       Text(label).fontSize(10).fontColor(this.pal().text3).margin({ top: 4 })
     }

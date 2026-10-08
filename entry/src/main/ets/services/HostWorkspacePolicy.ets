@@ -1,4 +1,5 @@
 import { ConnectionHealth, RemoteHost } from '../model/RemoteHost';
+import { hostCardDisplayLabel } from './HostCardPrivacyPolicy';
 
 const HOST_LIST_FAB_CLEARANCE_GAP_VP: number = 20;
 
@@ -16,8 +17,22 @@ export function hostListBottomSpacerVp(breakpoint: string): number {
     HOST_LIST_FAB_CLEARANCE_GAP_VP;
 }
 
+/**
+ * Group ids compare case-insensitively, with spaces and ASCII punctuation as one dash. Letters of every script stay:
+ * a group named 办公室 used to normalize to nothing, so it was stored empty and vanished from the filter.
+ */
 export function normalizeGroupId(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return value.trim().toLowerCase().replace(/[\s!-\/:-@\[-`{-~]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/** A Moonlight host by its name, server ID or addresses; a locked one only by its name (its card hides the rest). */
+export function moonlightHostMatchesSearch(displayName: string, serverUuid: string, addresses: string[], locked: boolean,
+  query: string): boolean {
+  const normalized: string = query.trim().toLowerCase();
+  if (normalized === '' || displayName.toLowerCase().includes(normalized)) { return true; }
+  if (locked) { return false; }
+  return serverUuid.toLowerCase().includes(normalized) ||
+    addresses.some((address: string): boolean => address.toLowerCase().includes(normalized));
 }
 
 export function groupIdsForHosts(hosts: RemoteHost[]): string[] {
@@ -51,11 +66,21 @@ export function searchHosts(hosts: RemoteHost[], query: string): RemoteHost[] {
     return hosts;
   }
   return hosts.filter((host: RemoteHost): boolean => {
+    // A locked host is found by the name its card shows: its address, user and IDs stay hidden.
+    if (host.locked) {
+      return hostCardDisplayLabel(true, host.protocol, host.label, host.rustdeskProPeerId, host.customHostname)
+        .toLowerCase().includes(normalized);
+    }
     return host.label.toLowerCase().includes(normalized) ||
       host.host.toLowerCase().includes(normalized) ||
       host.username.toLowerCase().includes(normalized) ||
       host.protocol.toLowerCase().includes(normalized) ||
-      normalizeGroupId(host.groupId).includes(normalized);
+      host.groupId.toLowerCase().includes(normalized) ||
+      normalizeGroupId(host.groupId).includes(normalized) ||
+      // A RustDesk host's ID and its Pro peer ID: what users usually search a RustDesk host by.
+      // (`?? ''`: projected hosts, such as 远程 AI, may not carry the RustDesk fields.)
+      (host.customHostname ?? '').toLowerCase().includes(normalized) ||
+      (host.rustdeskProPeerId ?? '').toLowerCase().includes(normalized);
   });
 }
 

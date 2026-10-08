@@ -79,7 +79,7 @@ export default function rustDeskControlPlanePolicyTest(): void {
       relay.id = 'relay-1';
       relay.controlPlaneProfile = 'official_server_pro_token';
       const cloud = relay.toCloudJSON();
-      expect(Object.prototype.hasOwnProperty.call(cloud, 'controlPlaneProfile')).assertFalse();
+      expect(Object.keys(cloud).indexOf('controlPlaneProfile')).assertEqual(-1);
       expect(rustDeskControlPlaneProfileMetadataKey(relay.id)).assertEqual(
         RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX + relay.id);
       expect(rustDeskControlPlaneProfileMetadataKey('')).assertEqual('');

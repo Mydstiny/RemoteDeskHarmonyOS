@@ -15,8 +15,22 @@ import {
   PortableBackupData,
   PortableBackupRedactionResult,
   fullPortableBackupData,
-  redactPortableBackupData
+  portableDataCarriesCiphertext,
+  redactPortableBackupData,
+  withoutPortableSecretFields
 } from './BackupManifestV3';
+import {
+  BackupCryptoContract,
+  BackupCryptoRestoreDecision,
+  backupCryptoContractFromRows,
+  backupCryptoRowsToMerge,
+  decideBackupCryptoRestore
+} from './BackupCryptoContractPolicy';
+import {
+  demoteRemoteHostDeviceTrust,
+  remoteHostDeviceTrustKeys,
+  withoutRemoteHostDeviceTrust
+} from './RemoteHostDeviceTrustPolicy';
 import {
   vncRecordFromCloudRow,
   vncRecordIsValid
@@ -52,6 +66,12 @@ export const LOCAL_BACKUP_PORTABLE_TABLES: string[] =
 const LEGACY_LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
 const LOCAL_BACKUP_LOCAL_TABLES: string[] =
   LEGACY_LOCAL_BACKUP_LOCAL_TABLES.concat([MOONLIGHT_LOCAL_TABLE]);
+/**
+ * VNC cloud-table names written by v2 builds of 2026-07-26..30 before the
+ * table became vncrecordv2. Their rows use the vncrecordv2 columns; they are
+ * accepted so those files validate and are quarantined, never merged.
+ */
+const LEGACY_V2_VNC_TABLES: string[] = ['vncrecords', 'vncrecord'];
 
 /**
  * Portable backup is a local-store capability, not a cloud-account
@@ -201,7 +221,8 @@ function scrubDeviceLocalRustDeskPeerTwoFactorExport(
         const payloadKeys: string[] = Object.keys(source);
         for (let k = 0; k < payloadKeys.length; k++) {
           const key: string = payloadKeys[k];
-          if (isDeviceLocalRustDeskPeerTwoFactorKey(key)) { continue; }
+          // This device's phone opt-in is not portable user intent.
+          if (key === 'localrustdeskphonechoice' || isDeviceLocalRustDeskPeerTwoFactorKey(key)) { continue; }
           payload[key] = key === 'localdisplayconfig' ?
             scrubDeviceLocalRustDeskPeerTwoFactorDisplayConfig(source[key]) : source[key];
         }
@@ -240,7 +261,7 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['id', 'userid', 'label', 'keytype', 'publickey', 'privatekey', 'fingerprint', 'comment', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits', 'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
-  if (table === 'vncrecordv2') {
+  if (table === 'vncrecordv2' || LEGACY_V2_VNC_TABLES.indexOf(table) >= 0) {
     return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext', 'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
   }
   if (table === MOONLIGHT_CLOUD_TABLE) {
@@ -281,7 +302,7 @@ function localBackupIntegerColumns(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['algorithm', 'digits', 'period', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
-  if (table === 'vncrecordv2') { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
+  if (table === 'vncrecordv2' || LEGACY_V2_VNC_TABLES.indexOf(table) >= 0) { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
   if (table === MOONLIGHT_CLOUD_TABLE) {
     return ['envelopeversion', 'cryptoversion', 'keyversion',
       'aadversion', 'syncversion', 'schemaversion', 'resetepoch',
@@ -362,8 +383,11 @@ export function localBackupCanonicalPayload(
   if (localTables !== undefined) {
     const orderedLocal: Record<string, Array<Record<string, string>>> = {};
     const presentLocalNames: string[] = Object.keys(localTables);
-    for (let i = 0; i < LOCAL_BACKUP_LOCAL_TABLES.length; i++) {
-      const table: string = LOCAL_BACKUP_LOCAL_TABLES[i];
+    // v2 files were hashed before the Moonlight local table existed.
+    const localInventory: string[] = version < 3 ?
+      LEGACY_LOCAL_BACKUP_LOCAL_TABLES : LOCAL_BACKUP_LOCAL_TABLES;
+    for (let i = 0; i < localInventory.length; i++) {
+      const table: string = localInventory[i];
       if (version < 3 || presentLocalNames.indexOf(table) >= 0) {
         orderedLocal[table] = localTables[table] || [];
       }
@@ -469,7 +493,8 @@ function createBackupManifestV3(
       verifierIncluded: sensitivityMode === 'full' && sourceCryptoConfigured
     },
     trust: {
-      deviceTrustIncluded: true,
+      // Redacted backups exclude SSH/RDP device trust (2026-10-04).
+      deviceTrustIncluded: sensitivityMode === 'full',
       vncTrustCandidatesIncluded: sensitivityMode === 'full' && hasActiveVncTrustRows(data),
       // The confirmation marker is stored only in device-local Preferences;
       // it is never present in either localTables or the cloud table.
@@ -556,92 +581,163 @@ export function createLocalBackupDocument(
   };
 }
 
+/**
+ * Validation outcome. `stage` names the first check that failed ('' when the
+ * document is valid) so an export self-check failure, a damaged file and a
+ * backup written by a newer app can be told apart.
+ */
+export interface LocalBackupValidation {
+  document: LocalBackupDocument | null;
+  stage: string;
+  /** Declared format version, 0 when the file has none. */
+  version: number;
+}
+
+/** Stable numeric codes of validation stages for address-free diagnostic events. */
+const LOCAL_BACKUP_VALIDATION_STAGES: string[] = [
+  '', 'json', 'shape', 'unsupported_version', 'inventory', 'columns', 'v1-extensions',
+  'manifest', 'hash', 'rows', 'extensions', 'localTables', 'v3rows', 'exception', 'create'
+];
+
+export function localBackupValidationStageCode(stage: string): number {
+  const index: number = LOCAL_BACKUP_VALIDATION_STAGES.indexOf(stage);
+  return index >= 0 ? index : LOCAL_BACKUP_VALIDATION_STAGES.length;
+}
+
 export function validateLocalBackupDocument(text: string): LocalBackupDocument | null {
+  return validateLocalBackupDocumentDetailed(text).document;
+}
+
+export function validateLocalBackupDocumentDetailed(text: string): LocalBackupValidation {
+  let parsed: Object | null = null;
   try {
-    const document = JSON.parse(text) as LocalBackupDocument;
-    if (document.format !== LOCAL_BACKUP_FORMAT ||
-      (document.version !== 1 && document.version !== 2 &&
-        document.version !== LOCAL_BACKUP_VERSION) || !document.tables ||
-      !Number.isFinite(document.createdAt) || typeof document.appVersion !== 'string' ||
-      typeof document.sha256 !== 'string') {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
-      return null;
-    }
-    const names: string[] = Object.keys(document.tables);
-    const inventory: string[] = [];
-    const allowedTables: string[] = document.version >= 3
-      ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
-    for (let i = 0; i < allowedTables.length; i++) {
-      const table: string = allowedTables[i];
-      if (names.indexOf(table) >= 0) { inventory.push(table); }
-    }
-    if (inventory.length !== names.length) {
+    parsed = JSON.parse(text) as Object;
+  } catch (_e) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=json');
+    return { document: null, stage: 'json', version: 0 };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
+    return { document: null, stage: 'shape', version: 0 };
+  }
+  const document: LocalBackupDocument = parsed as LocalBackupDocument;
+  const version: number = Number.isSafeInteger(document.version) ? document.version : 0;
+  try {
+    const stage: string = localBackupValidationFailureStage(document);
+    return { document: stage === '' ? document : null, stage, version };
+  } catch (_e) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=exception');
+    return { document: null, stage: 'exception', version };
+  }
+}
+
+/** Returns '' when valid; on success `document.tables` is normalized in place. */
+function localBackupValidationFailureStage(document: LocalBackupDocument): string {
+  if (document.format === LOCAL_BACKUP_FORMAT &&
+    Number.isSafeInteger(document.version) &&
+    document.version > LOCAL_BACKUP_VERSION) {
+    hilog.error(0x0001, 'LocalBackupPolicy',
+      'validate stage=unsupported_version version=' + document.version.toString());
+    return 'unsupported_version';
+  }
+  if (document.format !== LOCAL_BACKUP_FORMAT ||
+    (document.version !== 1 && document.version !== 2 &&
+      document.version !== LOCAL_BACKUP_VERSION) || !document.tables ||
+    !Number.isFinite(document.createdAt) || typeof document.appVersion !== 'string' ||
+    typeof document.sha256 !== 'string') {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
+    return 'shape';
+  }
+  const names: string[] = Object.keys(document.tables);
+  const inventory: string[] = [];
+  const allowedTables: string[] = document.version >= 3
+    ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES.concat(LEGACY_V2_VNC_TABLES);
+  for (let i = 0; i < allowedTables.length; i++) {
+    const table: string = allowedTables[i];
+    if (names.indexOf(table) >= 0) { inventory.push(table); }
+  }
+  if (inventory.length !== names.length) {
+    hilog.error(0x0001, 'LocalBackupPolicy',
+      'validate stage=inventory names=' + names.join(','));
+    return 'inventory';
+  }
+  for (let i = 0; i < inventory.length; i++) {
+    const table: string = inventory[i];
+    const rows: Array<Record<string, string>> =
+      document.tables[table];
+    if (!Array.isArray(rows) ||
+      !backupRowsContainOnlyKnownColumns(table, rows)) {
       hilog.error(0x0001, 'LocalBackupPolicy',
-        'validate stage=inventory names=' + names.join(','));
-      return null;
+        'validate stage=columns table=' + table);
+      return 'columns';
     }
-    for (let i = 0; i < inventory.length; i++) {
-      const table: string = inventory[i];
-      const rows: Array<Record<string, string>> =
-        document.tables[table];
-      if (!Array.isArray(rows) ||
-        !backupRowsContainOnlyKnownColumns(table, rows)) {
-        hilog.error(0x0001, 'LocalBackupPolicy',
-          'validate stage=columns table=' + table);
-        return null;
-      }
+  }
+  if (document.version === 1 && document.extensions !== undefined) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=v1-extensions');
+    return 'v1-extensions';
+  }
+  // v1/v2 hashes cover neither a manifest nor any local table other than
+  // vnclocalrecords, and no v1/v2 build wrote them; anything else is foreign.
+  if (document.version < 3 && document.manifest !== undefined) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest legacy');
+    return 'manifest';
+  }
+  if (document.version < 3 && document.localTables !== undefined &&
+    Object.keys(document.localTables).some((table: string): boolean =>
+      LEGACY_LOCAL_BACKUP_LOCAL_TABLES.indexOf(table) < 0)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables legacy');
+    return 'localTables';
+  }
+  if (document.version >= 3 &&
+    !validateBackupManifestV3(document, inventory)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest');
+    return 'manifest';
+  }
+  const canonical: string = localBackupCanonicalPayload(
+    document.createdAt, document.appVersion,
+    document.tables, document.extensions, document.version,
+    document.localTables, document.manifest, inventory);
+  // Hash the source shape before dropping ResultSet system columns. Existing
+  // backups created by older builds legitimately include #_deleted_flag.
+  if (localBackupSha256(canonical) !== document.sha256) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=hash');
+    return 'hash';
+  }
+  const normalizedTables: Record<string, Array<Record<string, string>>> = {};
+  for (let i = 0; i < inventory.length; i++) {
+    const table: string = inventory[i];
+    normalizedTables[table] = normalizeLocalBackupRows(table, document.tables[table]);
+    if (!validateLocalBackupRows(table, normalizedTables[table])) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'validate stage=rows table=' + table);
+      return 'rows';
     }
-    if (document.version === 1 && document.extensions !== undefined) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=v1-extensions');
-      return null;
-    }
-    if (document.version >= 3 &&
-      !validateBackupManifestV3(document, inventory)) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest');
-      return null;
-    }
-    const canonical: string = localBackupCanonicalPayload(
-      document.createdAt, document.appVersion,
-      document.tables, document.extensions, document.version,
-      document.localTables, document.manifest, inventory);
-    // Hash the source shape before dropping ResultSet system columns. Existing
-    // backups created by older builds legitimately include #_deleted_flag.
-    if (localBackupSha256(canonical) !== document.sha256) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=hash');
-      return null;
-    }
-    const normalizedTables: Record<string, Array<Record<string, string>>> = {};
-    for (let i = 0; i < inventory.length; i++) {
-      const table: string = inventory[i];
-      normalizedTables[table] = normalizeLocalBackupRows(table, document.tables[table]);
-      if (!validateLocalBackupRows(table, normalizedTables[table])) {
-        hilog.error(0x0001, 'LocalBackupPolicy',
-          'validate stage=rows table=' + table);
-        return null;
-      }
-    }
-    if (document.version >= 2 && !validateLocalExtensions(
-      document.extensions || [], normalizedTables)) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=extensions');
-      return null;
-    }
-    if (document.localTables !== undefined &&
-      !validateLocalTables(document.localTables, true)) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables');
-      return null;
-    }
-    if (document.version >= 3 &&
-      document.manifest?.crypto.mode === 'full'
-        ? !validateFullV3Rows(document, normalizedTables)
-        : !validateRedactedV3Rows(document, normalizedTables)) {
+  }
+  if (document.version >= 2 && !validateLocalExtensions(
+    document.extensions || [], normalizedTables)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=extensions');
+    return 'extensions';
+  }
+  if (document.localTables !== undefined &&
+    !validateLocalTables(document.localTables, true)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables');
+    return 'localTables';
+  }
+  // Only v3 documents carry a manifest and per-mode row rules. v1/v2 input is
+  // adapted to a redacted merge plan by adaptLocalBackupDocumentForRestore.
+  if (document.version >= 3) {
+    const rowsValid: boolean = document.manifest?.crypto.mode === 'full'
+      ? validateFullV3Rows(document, normalizedTables)
+      : validateRedactedV3Rows(document, normalizedTables);
+    if (!rowsValid) {
       hilog.error(0x0001, 'LocalBackupPolicy',
         'validate stage=v3rows mode=' +
         (document.manifest?.crypto.mode || 'redacted'));
-      return null;
+      return 'v3rows';
     }
-    document.tables = normalizedTables;
-    return document;
-  } catch (_e) { return null; }
+  }
+  document.tables = normalizedTables;
+  return '';
 }
 
 function manifestSection(
@@ -840,10 +936,12 @@ function validateRedactedV3Rows(
   normalizedTables: Record<string, Array<Record<string, string>>>
 ): boolean {
   const manifest: BackupManifestV3 = document.manifest as BackupManifestV3;
+  // Files written before 2026-10-04 carry device trust in redacted mode, so
+  // the comparison re-redacts with trust retained; the restore plan drops it.
   const redacted: PortableBackupRedactionResult =
     redactPortableBackupData(
       normalizedTables, document.extensions || [],
-      document.localTables || {});
+      document.localTables || {}, true);
   // Compare with key-order-insensitive canonical JSON: exporters may build
   // rows (e.g. redacted user settings) in a different key order than the
   // normalized inventory without changing the data.
@@ -995,6 +1093,200 @@ function reboundRows(
   return result;
 }
 
+/** displayconfig without legacy device-trust keys in its cloud extension. */
+function displayConfigWithoutDeviceTrust(raw: string): string {
+  try {
+    const root: Record<string, Object> = JSON.parse(raw || '{}') as Record<string, Object>;
+    if (!root || Array.isArray(root)) { return raw; }
+    const extension: Object | undefined = root['_remoteDeskExtensionV1'];
+    if (extension === undefined || extension === null || typeof extension !== 'object' ||
+      Array.isArray(extension)) {
+      return raw;
+    }
+    root['_remoteDeskExtensionV1'] =
+      withoutRemoteHostDeviceTrust(extension as Record<string, string>) as Object;
+    return JSON.stringify(root);
+  } catch (_e) {
+    return raw;
+  }
+}
+
+/**
+ * Device trust is restored only as candidates (user decision 2026-10-04):
+ * remotehosts rows never carry trust columns into a restore (current builds
+ * keep trust in the device-local extension), legacy trust keys inside the
+ * displayconfig cloud extension are dropped, and extension payloads keep
+ * their fingerprints with the trust mode, time and exceptions reset.
+ * Redacted plans arrive here already without trust.
+ */
+function portableDataWithCandidateTrust(
+  data: PortableBackupRedactionResult
+): PortableBackupRedactionResult {
+  const tables: Record<string, Array<Record<string, string>>> = {};
+  const names: string[] = Object.keys(data.tables);
+  for (let i = 0; i < names.length; i++) {
+    const table: string = names[i];
+    if (table !== 'remotehosts') {
+      tables[table] = data.tables[table];
+      continue;
+    }
+    const rows: Array<Record<string, string>> = [];
+    const sourceRows: Array<Record<string, string>> = data.tables[table] || [];
+    for (let r = 0; r < sourceRows.length; r++) {
+      const row: Record<string, string> = withoutRemoteHostDeviceTrust(sourceRows[r]);
+      if (row['displayconfig'] !== undefined) {
+        row['displayconfig'] = displayConfigWithoutDeviceTrust(row['displayconfig']);
+      }
+      rows.push(row);
+    }
+    tables[table] = rows;
+  }
+  const extensions: Array<Record<string, string>> = [];
+  for (let i = 0; i < data.extensions.length; i++) {
+    const extension: Record<string, string> = data.extensions[i];
+    if ((extension['tablename'] || '') !== 'remotehosts') {
+      extensions.push(extension);
+      continue;
+    }
+    const next: Record<string, string> = {};
+    const keys: string[] = Object.keys(extension);
+    for (let k = 0; k < keys.length; k++) { next[keys[k]] = extension[keys[k]]; }
+    try {
+      const payload: Record<string, string> =
+        JSON.parse(extension['payload'] || '{}') as Record<string, string>;
+      next['payload'] = JSON.stringify(demoteRemoteHostDeviceTrust(payload));
+    } catch (_e) {
+      // Validation already rejected unreadable payloads; keep the row as is.
+    }
+    extensions.push(next);
+  }
+  return {
+    tables,
+    extensions,
+    localTables: data.localTables,
+    removedSecretFields: data.removedSecretFields,
+    removedDeviceTrustFields: data.removedDeviceTrustFields,
+    excludedRows: data.excludedRows
+  };
+}
+
+/** Number of device-trust keys a restore plan would write (tests and diagnostics). */
+export function portableRestorePlanTrustedGroups(plan: PortableBackupRestorePlan): number {
+  const modeKeys: string[] = remoteHostDeviceTrustKeys().filter((key: string): boolean =>
+    key.endsWith('trustmode'));
+  let trusted: number = 0;
+  for (let i = 0; i < plan.extensions.length; i++) {
+    try {
+      const payload: Record<string, string> =
+        JSON.parse(plan.extensions[i]['payload'] || '{}') as Record<string, string>;
+      for (let k = 0; k < modeKeys.length; k++) {
+        const value: string | undefined = payload[modeKeys[k]];
+        if (value !== undefined && value !== '' && value !== '0') { trusted++; }
+      }
+    } catch (_e) {
+      continue;
+    }
+  }
+  return trusted;
+}
+
+/**
+ * Crypto decision for restoring this payload onto a device with `target`.
+ * A payload without a crypto contract must not carry ciphertext; if it does
+ * (corrupt or crafted), no key here can open it, so its secrets are withheld
+ * instead of being merged as if they were plaintext.
+ */
+export function portableRestoreCryptoDecision(
+  data: PortableBackupData,
+  target: BackupCryptoContract
+): BackupCryptoRestoreDecision {
+  const backup: BackupCryptoContract =
+    backupCryptoContractFromRows(data.tables['cryptoparams'] || []);
+  const decision: BackupCryptoRestoreDecision = decideBackupCryptoRestore(backup, target);
+  if (!backup.configured && portableDataCarriesCiphertext(data)) { return 'secrets_withheld'; }
+  return decision;
+}
+
+export interface PortableRestoreCryptoPlan {
+  plan: PortableBackupRestorePlan;
+  decision: BackupCryptoRestoreDecision;
+}
+
+/**
+ * The plan a full-backup restore may apply on a device with `target` (F2):
+ * secrets withheld when they belong to another contract, and the backup's
+ * cryptoparams kept only when an unconfigured device adopts them. Redacted
+ * plans carry neither and pass through unchanged.
+ */
+export function planForTargetCryptoContract(
+  plan: PortableBackupRestorePlan,
+  target: BackupCryptoContract
+): PortableRestoreCryptoPlan {
+  if (plan.sensitivityMode !== 'full') { return { plan, decision: 'keep_target' }; }
+  const decision: BackupCryptoRestoreDecision = portableRestoreCryptoDecision(
+    { tables: plan.tables, extensions: plan.extensions, localTables: plan.localTables }, target);
+  const next: PortableBackupRestorePlan =
+    decision === 'secrets_withheld' ? withholdPortableRestoreSecrets(plan) : plan;
+  if (next.tables['cryptoparams'] === undefined) { return { plan: next, decision }; }
+  const rows: Array<Record<string, string>> =
+    backupCryptoRowsToMerge(next.tables['cryptoparams'], decision);
+  const tables: Record<string, Array<Record<string, string>>> = {};
+  const names: string[] = Object.keys(next.tables);
+  for (let i = 0; i < names.length; i++) {
+    if (names[i] !== 'cryptoparams' || rows.length > 0) {
+      tables[names[i]] = names[i] === 'cryptoparams' ? rows : next.tables[names[i]];
+    }
+  }
+  return {
+    plan: {
+      sourceFormatVersion: next.sourceFormatVersion,
+      sourceAccountScope: next.sourceAccountScope,
+      targetAccountScope: next.targetAccountScope,
+      legacyOwnerAdopted: next.legacyOwnerAdopted,
+      restoreMode: next.restoreMode,
+      sensitivityMode: next.sensitivityMode,
+      tables,
+      extensions: next.extensions,
+      localTables: next.localTables,
+      presentTables: rows.length > 0 ? next.presentTables.slice() :
+        next.presentTables.filter((table: string): boolean => table !== 'cryptoparams'),
+      presentLocalTables: next.presentLocalTables.slice(),
+      extensionsPresent: next.extensionsPresent,
+      quarantinedRows: next.quarantinedRows
+    },
+    decision
+  };
+}
+
+/**
+ * Restore plan without the backup's secrets, used when its ciphertext
+ * belongs to a different master password than this device's (F2).
+ */
+export function withholdPortableRestoreSecrets(
+  plan: PortableBackupRestorePlan
+): PortableBackupRestorePlan {
+  const stripped: PortableBackupRedactionResult = withoutPortableSecretFields({
+    tables: plan.tables,
+    extensions: plan.extensions,
+    localTables: plan.localTables
+  });
+  return {
+    sourceFormatVersion: plan.sourceFormatVersion,
+    sourceAccountScope: plan.sourceAccountScope,
+    targetAccountScope: plan.targetAccountScope,
+    legacyOwnerAdopted: plan.legacyOwnerAdopted,
+    restoreMode: plan.restoreMode,
+    sensitivityMode: plan.sensitivityMode,
+    tables: stripped.tables,
+    extensions: stripped.extensions,
+    localTables: stripped.localTables,
+    presentTables: plan.presentTables.filter((table: string): boolean => table !== 'cryptoparams'),
+    presentLocalTables: plan.presentLocalTables.slice(),
+    extensionsPresent: plan.extensionsPresent,
+    quarantinedRows: plan.quarantinedRows + stripped.excludedRows
+  };
+}
+
 function validPortableVncRows(
   rows: Array<Record<string, string>>, owner: string
 ): Array<Record<string, string>> {
@@ -1094,9 +1386,9 @@ export function adaptLocalBackupDocumentForRestore(
   }
   const portable: PortableBackupRedactionResult =
     sensitivityMode === 'full'
-      ? fullPortableBackupData(
+      ? portableDataWithCandidateTrust(fullPortableBackupData(
           document.tables, document.extensions || [],
-          document.localTables || {})
+          document.localTables || {}))
       : redactPortableBackupData(
           document.tables, document.extensions || [],
           document.localTables || {});
@@ -1108,6 +1400,11 @@ export function adaptLocalBackupDocumentForRestore(
   for (let i = 0; i < sourcePresentTables.length; i++) {
     const table: string = sourcePresentTables[i];
     if (table === MOONLIGHT_CLOUD_TABLE) { continue; }
+    if (LEGACY_V2_VNC_TABLES.indexOf(table) >= 0) {
+      // Pre-vncrecordv2 rows have no restore path; count them as quarantined.
+      quarantinedRows += (portable.tables[table] || []).length;
+      continue;
+    }
     const sourceRows: Array<Record<string, string>> = portable.tables[table];
     const transferableRows: Array<Record<string, string>> = [];
     for (let rowIndex: number = 0; rowIndex < sourceRows.length; rowIndex++) {
@@ -1206,7 +1503,7 @@ export function validateLocalBackupSnapshot(
   localTables?: Record<string, Array<Record<string, string>>>
 ): boolean {
   return validateSnapshotTables(tables, CLOUD_SYNC_TABLES) &&
-    validateLocalExtensions(extensions, tables) &&
+    validateLocalExtensions(extensions, tables, true) &&
     (localTables === undefined ||
       validateCompleteSnapshotLocalTables(localTables));
 }
@@ -1228,7 +1525,7 @@ export function validateCloudDownloadRollbackSnapshot(
     LOCAL_BACKUP_PORTABLE_TABLES.length
     ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
   if (!validateSnapshotTables(tables, inventory) ||
-    !validateLocalExtensions(extensions, tables)) {
+    !validateLocalExtensions(extensions, tables, true)) {
     return false;
   }
   return localTables === undefined ||
@@ -1315,7 +1612,8 @@ function validateLocalTables(
 }
 
 function validateLocalExtensions(rows: Array<Record<string, string>>,
-  tables: Record<string, Array<Record<string, string>>>): boolean {
+  tables: Record<string, Array<Record<string, string>>>,
+  allowLocalPhoneChoice: boolean = false): boolean {
   const allowed: string[] = localBackupLocalExtensionColumns();
   const extensionIds: Set<string> = new Set<string>();
   const extensionBindings: Set<string> = new Set<string>();
@@ -1369,6 +1667,10 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
       const payloadColumns: string[] = localExtensionPayloadColumns(rows[i]['tablename']);
       for (let k = 0; k < payloadKeys.length; k++) {
         const key: string = payloadKeys[k];
+        // Same-device transaction before-images must retain existing intent.
+        // Portable documents use the default false and cannot import it.
+        if (allowLocalPhoneChoice && rows[i]['tablename'] === 'remotehosts' &&
+          key === 'localrustdeskphonechoice' && values[key] === '1') { continue; }
         if (payloadColumns.indexOf(key) < 0 || typeof values[key] !== 'string') {
           hilog.error(0x0001, 'LocalBackupPolicy',
             'extension invalid payload id=' + rows[i]['id'] + ' key=' + key);
@@ -1390,6 +1692,11 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
     extensionBindings.add(rows[i]['tablename'] + ':' + rows[i]['recordid']);
   }
   return true;
+}
+
+/** Remote-host local-extension keys a backup may carry (registry closure tests). */
+export function localBackupRemoteHostExtensionPayloadKeys(): string[] {
+  return REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS.slice();
 }
 
 function localExtensionPayloadColumns(table: string): string[] {

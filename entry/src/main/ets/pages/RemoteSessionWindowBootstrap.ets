@@ -4,18 +4,33 @@ import {
   RemoteSessionWindowCoordinator,
   RemoteSessionWindowRecord
 } from '../services/RemoteSessionWindowCoordinator';
+import { ProContinuationService, PRO_CONTINUATION_LIBRARY_PARAM } from '../services/pro/ProContinuationService';
 
 @Entry
 @Component
 struct RemoteSessionWindowBootstrap {
   @State errorMessage: string = '';
+  @State openingContinuation: boolean = false;
   private sessionWindowId: string = '';
   private routing: boolean = false;
+  private live: boolean = false;
 
   aboutToAppear(): void {
     if (this.routing) { return; }
     this.routing = true;
+    this.live = true;
     const storage: LocalStorage | undefined = this.getUIContext().getSharedLocalStorage();
+    const continuationId: string = storage?.get<string>('proContinuationBootstrapId') ?? '';
+    if (continuationId !== '') {
+      this.openingContinuation = true;
+      if (storage === undefined || !/^[a-f0-9]{32}$/.test(continuationId) ||
+          ProContinuationService.getInstance().incomingId() !== continuationId) {
+        this.errorMessage = '接续请求已失效，请在源端重新准备。本端没有建立远程连接。';
+        return;
+      }
+      void this.openContinuationLibrary(continuationId, storage);
+      return;
+    }
     this.sessionWindowId = storage?.get<string>('sessionWindowId') ?? '';
     const record: RemoteSessionWindowRecord | null =
       RemoteSessionWindowCoordinator.getInstance().resolve(this.sessionWindowId);
@@ -44,6 +59,34 @@ struct RemoteSessionWindowBootstrap {
     });
   }
 
+  aboutToDisappear(): void { this.live = false; }
+
+  private async openContinuationLibrary(id: string, storage: LocalStorage): Promise<void> {
+    const service = ProContinuationService.getInstance();
+    if (!this.live || service.incomingId() !== id) { return; }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    const parameters: Record<string, Object> = {};
+    parameters[PRO_CONTINUATION_LIBRARY_PARAM] = id;
+    try {
+      await context.startAbility({ bundleName: context.abilityInfo.bundleName, abilityName: 'EntryAbility',
+        parameters });
+    } catch (_error) {
+      if (this.live) { this.errorMessage = '无法打开主机列表，请关闭此窗口后重试接续。源端仍保持连接。'; }
+      return;
+    }
+    if (!this.live || service.incomingId() !== id) {
+      if (this.live) { this.errorMessage = '接续请求已失效。源端仍保持连接。'; }
+      return;
+    }
+    // Successful application launch is only a local handoff, never a remote
+    // readiness receipt. The host library still requires explicit authentication.
+    storage.set<boolean>('proContinuationForwarded', true);
+    try { await context.terminateSelf(); }
+    catch (_error) {
+      if (this.live) { this.errorMessage = '已打开应用，请在主机列表确认接续；此窗口可以关闭。'; }
+    }
+  }
+
   private closeWindow(): void {
     const context: common.UIAbilityContext =
       this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -54,7 +97,8 @@ struct RemoteSessionWindowBootstrap {
     Column({ space: 18 }) {
       if (this.errorMessage.length === 0) {
         LoadingProgress().width(40).height(40)
-        Text('正在打开独立会话窗口…').fontSize(16).fontColor('#667085')
+        Text(this.openingContinuation ? '正在打开主机列表以确认接续…' : '正在打开独立会话窗口…')
+          .fontSize(16).fontColor('#667085')
       } else {
         Text('无法打开会话').fontSize(22).fontWeight(FontWeight.Medium)
         Text(this.errorMessage).fontSize(15).fontColor('#667085').textAlign(TextAlign.Center)

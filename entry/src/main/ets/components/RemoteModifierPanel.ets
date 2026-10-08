@@ -14,7 +14,10 @@ import {
   remoteCustomShortcutAvailableOnPlatform,
   remoteCustomShortcutKeyAvailableOnPlatform,
   remoteCustomShortcutLabel,
-  remoteCustomShortcutLabelForPlatform
+  remoteCustomShortcutLabelForPlatform,
+  remoteCustomShortcutSteps,
+  remoteCustomShortcutDisplayName,
+  REMOTE_CUSTOM_SHORTCUT_STEP_GAP_MS
 } from '../services/RemoteCustomShortcutPolicy';
 import {
   normalizeRemoteShortcutPlatform,
@@ -30,6 +33,8 @@ import {
   REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY
 } from '../services/RemoteKeyboardSettingsPolicy';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
+import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
 import { remoteModifierPanelWidth } from '../services/RemoteFloatingPanelPlacementPolicy';
 
 const TAG = 'ModifierPanel';
@@ -106,6 +111,22 @@ export struct RemoteModifierPanel {
   @State private customKeyGroup: RemoteCustomShortcutKeyGroup = 'letters';
   @State private customActionKeyCode: number = 2017;
   @State private panelSection: string = 'shortcuts';
+  // Custom key combinations are part of Pro 个性化方案; presets stay free.
+  @State private proCustomShortcuts: boolean = false;
+  private stopProEntries: (() => void) | null = null;
+
+  aboutToAppear(): void {
+    this.stopProEntries = ProEntries.subscribe((): void => {
+      this.proCustomShortcuts = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
+      if (!this.proCustomShortcuts && this.panelSection === 'custom') {
+        this.closeCustomShortcutEditor();
+        this.panelSection = 'shortcuts';
+      }
+    });
+    this.proCustomShortcuts = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
+  }
+
+  aboutToDisappear(): void { this.stopProEntries?.(); this.stopProEntries = null; }
   @State private shortcutCategory: RemoteShortcutCategory = 'editing';
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
@@ -373,7 +394,21 @@ export struct RemoteModifierPanel {
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
     if (group === 'directions') { return '方向'; }
+    if (group === 'system') { return '系统'; }
+    if (group === 'numpad') { return '小键盘'; }
     return '导航';
+  }
+
+  /** Sends every step of a saved sequence, one chord at a time. */
+  private sendCustomShortcut(shortcut: RemoteCustomShortcut): void {
+    const steps: Array<Array<number>> = remoteCustomShortcutSteps(shortcut);
+    const label: string = remoteCustomShortcutDisplayName(shortcut, this.shortcutPlatform());
+    steps.forEach((step: Array<number>, index: number): void => {
+      if (index === 0) { this.onShortcutTap(step.slice(0), label); return; }
+      setTimeout((): void => {
+        if (this.proCustomShortcuts) { this.onShortcutTap(step.slice(0), label); }
+      }, index * REMOTE_CUSTOM_SHORTCUT_STEP_GAP_MS);
+    });
   }
 
   // ============================================================
@@ -786,19 +821,21 @@ export struct RemoteModifierPanel {
           Row({ space: 6 }) {
             ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut): void => {
               Row() {
-                Text(remoteCustomShortcutLabelForPlatform(
-                  shortcut.keyCodes, this.shortcutPlatform()))
+                Text(remoteCustomShortcutDisplayName(shortcut, this.shortcutPlatform()))
                   .fontSize(10).fontColor('rgba(255,255,255,0.86)')
                   .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                   .layoutWeight(1)
                   .onClick((): void => {
-                    this.onShortcutTap(shortcut.keyCodes.slice(0), shortcut.label);
+                    this.sendCustomShortcut(shortcut);
                     this.finishShortcutAction();
                   })
-                Text('✎')
-                  .fontSize(10).fontColor(this.activeColor())
-                  .padding({ left: 6, right: 5, top: 7, bottom: 7 })
-                  .onClick((): void => { this.beginCustomShortcutEditor(shortcut); })
+                // Named or multi-step entries are edited in 设置, where the full editor lives.
+                if (remoteCustomShortcutSteps(shortcut).length === 1 && (shortcut.name ?? '').length === 0) {
+                  Text('✎')
+                    .fontSize(10).fontColor(this.activeColor())
+                    .padding({ left: 6, right: 5, top: 7, bottom: 7 })
+                    .onClick((): void => { this.beginCustomShortcutEditor(shortcut); })
+                }
                 Text('×')
                   .fontSize(12).fontColor('rgba(255,138,128,0.86)')
                   .padding({ left: 4, right: 6, top: 6, bottom: 6 })
@@ -853,7 +890,11 @@ export struct RemoteModifierPanel {
         this.CustomGroupChoice('functions')
         this.CustomGroupChoice('directions')
         this.CustomGroupChoice('navigation')
-      }.width('100%').margin({ top: 4, bottom: 5 })
+      }.width('100%').margin({ top: 4, bottom: 3 })
+      Row() {
+        this.CustomGroupChoice('system')
+        this.CustomGroupChoice('numpad')
+      }.width('100%').margin({ bottom: 5 })
       Column({ space: 4 }) {
         ForEach(this.customActionRows(), (row: Array<RemoteCustomShortcutKeyOption>): void => {
           Row({ space: 4 }) {
@@ -1155,14 +1196,16 @@ export struct RemoteModifierPanel {
                 this.SectionChoice('shortcuts', '快捷键')
                 this.SectionChoice('functions', '功能键')
                 this.SectionChoice('directions', '方向键')
-                this.SectionChoice('custom', '自定义')
+                if (this.proCustomShortcuts) {
+                  this.SectionChoice('custom', '自定义')
+                }
               }.width('100%').margin({ top: 9, bottom: 8 })
 
               if (this.panelSection === 'functions' && this.functionKeysVisible) {
                 this.FunctionKeyLibrary()
               } else if (this.panelSection === 'directions') {
                 this.DirectionKeyLibrary()
-              } else if (this.panelSection === 'custom') {
+              } else if (this.panelSection === 'custom' && this.proCustomShortcuts) {
                 this.CustomShortcutLibrary()
               } else {
                 this.ShortcutLibrary()

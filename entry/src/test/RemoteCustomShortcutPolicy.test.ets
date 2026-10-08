@@ -11,7 +11,8 @@ import {
   remoteCustomShortcutLabel,
   remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
-  upsertRemoteCustomShortcut
+  upsertRemoteCustomShortcut,
+  RemoteCustomShortcut
 } from '../main/ets/services/RemoteCustomShortcutPolicy';
 
 export default function remoteCustomShortcutPolicyTest(): void {
@@ -69,7 +70,7 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(macFunctionKeys[19].label).assertEqual('F20');
       expect(remoteCustomShortcutKeyAvailableOnPlatform(2823, 'macos')).assertTrue();
       expect(remoteCustomShortcutKeyAvailableOnPlatform(2824, 'macos')).assertFalse();
-      const windowsF24 = { id: 'windows-f24', label: 'Ctrl + F24', keyCodes: [2072, 2827] };
+      const windowsF24: RemoteCustomShortcut = { id: 'windows-f24', label: 'Ctrl + F24', keyCodes: [2072, 2827] };
       expect(remoteCustomShortcutAvailableOnPlatform(windowsF24, 'windows')).assertTrue();
       expect(remoteCustomShortcutAvailableOnPlatform(windowsF24, 'macos')).assertFalse();
       const directionKeys = remoteCustomShortcutKeyOptions('directions');

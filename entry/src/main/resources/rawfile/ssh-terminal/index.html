@@ -6,6 +6,217 @@
   <title>SSH Terminal</title>
   <link rel="stylesheet" href="./vendor/xterm-5.3.0.css">
   <style>
+    /* Bundled terminal fonts (SIL OFL 1.1, see ./fonts/*-LICENSE.txt); Latin subset, CJK falls back. */
+    @font-face {
+      font-family: "JetBrains Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "JetBrains Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Fira Code";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/fira-code-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Fira Code";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/fira-code-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Source Code Pro";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/source-code-pro-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Source Code Pro";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/source-code-pro-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "IBM Plex Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "IBM Plex Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/ibm-plex-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Cascadia Code";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/cascadia-code-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Cascadia Code";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/cascadia-code-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Roboto Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/roboto-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Roboto Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/roboto-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Inconsolata";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/inconsolata-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Inconsolata";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/inconsolata-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Victor Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/victor-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Victor Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/victor-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Fira Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/fira-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Fira Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/fira-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Geist Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/geist-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Geist Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/geist-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Space Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/space-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Space Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/space-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Red Hat Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/red-hat-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Red Hat Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/red-hat-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Martian Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/martian-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Martian Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/martian-mono-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Anonymous Pro";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/anonymous-pro-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Anonymous Pro";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/anonymous-pro-latin-700-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Commit Mono";
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+      src: url("./fonts/commit-mono-latin-400-normal.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Commit Mono";
+      font-style: normal;
+      font-weight: 700;
+      font-display: block;
+      src: url("./fonts/commit-mono-latin-700-normal.woff2") format("woff2");
+    }
     :root {
       color-scheme: dark;
       background: #0d0d0d;
@@ -115,6 +326,7 @@
           scrollback: 10000,
           bellStyle: 'none',
           reverseWheel: false,
+          wheelSpeed: 1,
           bottomAlignSparseContent: false,
           bottomAlignSafeRows: 0,
           bottomInsetPx: 10
@@ -442,6 +654,11 @@
           : '100%';
       }
 
+      function wheelSensitivity() {
+        var speed = Number(state.config.wheelSpeed);
+        return isFinite(speed) && speed > 0 ? Math.max(0.25, Math.min(4, speed)) : 1;
+      }
+
       function applyConfig(config) {
         if (config) {
           Object.keys(config).forEach(function (key) {
@@ -479,8 +696,9 @@
           var terminalTheme = {
             foreground: state.config.foreground || '#33ff33',
             background: state.config.background || '#0d0d0d',
-            cursor: state.config.foreground || '#33ff33',
-            selectionBackground: 'rgba(90, 140, 255, 0.42)'
+            cursor: state.config.cursor || state.config.foreground || '#33ff33',
+            cursorAccent: state.config.background || '#0d0d0d',
+            selectionBackground: state.config.selection || 'rgba(90, 140, 255, 0.42)'
           };
           var paletteNames = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
             'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta',
@@ -490,7 +708,23 @@
           });
           terminal.options.fontSize = fontSize;
           terminal.options.lineHeight = lineHeight;
-          terminal.options.fontFamily = state.config.fontFamily || 'monospace';
+          var fontFamily = state.config.fontFamily || 'monospace';
+          terminal.options.fontFamily = fontFamily;
+          // A bundled font may still be loading: once it is, re-measure the cells so the
+          // canvas atlas and the grid use the real glyph metrics.
+          if (fontFamily !== 'monospace' && document.fonts && document.fonts.load &&
+              state.loadedFontFamily !== fontFamily) {
+            var requestedFamily = fontFamily;
+            document.fonts.load(fontSize + 'px ' + fontFamily.split(',')[0]).then(function () {
+              if (state.config.fontFamily !== requestedFamily) return;
+              state.loadedFontFamily = requestedFamily;
+              try {
+                terminal.options.fontFamily = 'monospace';
+                terminal.options.fontFamily = requestedFamily;
+              } catch (_) {}
+              scheduleFit(0);
+            }).catch(function () {});
+          }
           terminal.options.fontWeight = state.config.fontWeight === 'bold' ? 'bold' : 'normal';
           terminal.options.cursorStyle = state.config.cursorStyle || 'bar';
           terminal.options.cursorInactiveStyle = state.config.cursorStyle || 'bar';
@@ -498,6 +732,8 @@
           terminal.options.scrollback = Math.max(1000, Math.min(100000,
             Math.floor(Number(state.config.scrollback) || 10000)));
           terminal.options.bellStyle = state.config.bellStyle || 'none';
+          // 设置 › 远程滚轮 › SSH 速度: rows per wheel notch / scroll stroke.
+          terminal.options.scrollSensitivity = wheelSensitivity();
           terminal.options.theme = terminalTheme;
         } catch (_) {}
         applyBottomSafeInset();
@@ -578,6 +814,7 @@
             fontSize: Number(state.config.fontSize) || 18,
             fontFamily: state.config.fontFamily || 'monospace',
             fontWeight: state.config.fontWeight === 'bold' ? 'bold' : 'normal',
+            scrollSensitivity: wheelSensitivity(),
             lineHeight: Number(state.config.lineHeight) || 1.12,
             cursorBlink: state.config.cursorBlink !== false,
             cursorStyle: state.config.cursorStyle || 'bar',

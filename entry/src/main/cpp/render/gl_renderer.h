@@ -122,6 +122,9 @@ public:
     /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
     RdpPresentationMetricsSnapshot GetPresentationStats();
 
+    /** Keep the drawing window's buffers at the rendered size (a window made from a SurfaceId keeps its first size). */
+    void ApplyBufferGeometryLocked(int width, int height);
+
     /** 销毁渲染器，释放所有 GL 资源 */
     void Destroy();
 
@@ -131,6 +134,19 @@ public:
     /** 是否已初始化 */
     bool IsInitialized() const { return initialized_; }
     bool IsPresentationReady();
+    // False for a renderer bound to its own surface (an explicit SurfaceId): its presentation epoch is its own
+    // generation and the process XComponent's detach state does not apply to it.
+    bool UsesProcessSurface() const { return usesProcessSurface_; }
+    // Whether the process surface state (detach, generation) gates this renderer: the process surface itself, or an
+    // explicit SurfaceId that was the page's bound process surface when the renderer was made (a single session,
+    // restore and PIP). A renderer on another SurfaceId (a concurrent picture session's own window, which never binds
+    // the process surface) follows only its own surface.
+    bool FollowsProcessSurface() const { return usesProcessSurface_ || followsProcessSurface_; }
+    // A concurrent session's page lost its own surface: stop presenting to it.
+    void MarkOwnSurfaceDestroyed() { ownSurfaceDetached_.store(true, std::memory_order_release); }
+    bool OwnSurfaceDetached() const {
+        return !FollowsProcessSurface() && ownSurfaceDetached_.load(std::memory_order_acquire);
+    }
 
     /** 获取当前宽度 */
     int GetWidth() const { return snapshotSurfaceWidth_.load(std::memory_order_acquire); }
@@ -152,7 +168,8 @@ public:
     void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                              int& sourceWidth, int& sourceHeight,
                              int& surfaceWidth, int& surfaceHeight,
-                             uint64_t& transformVersion) const;
+                             uint64_t& transformVersion,
+                             uint64_t* presentedTransformVersion = nullptr) const;
     RendererCanvasTransformSnapshot GetCanvasTransformSnapshot() const;
 
     // R1: NapiTestRender 使用的 accessor
@@ -176,6 +193,8 @@ private:
     GLint  canvasRotationLocation_; // uniform uCanvasRotation 位置
     GLint  canvasFlipXLocation_; // uniform uCanvasFlipX 位置
     GLint  canvasFlipYLocation_; // uniform uCanvasFlipY 位置
+    // The OES texture the current OES program was linked for (0: none sampled yet).
+    GLuint oesProgramTexture_ = 0;
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
@@ -249,6 +268,8 @@ private:
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
     std::atomic<uint64_t> snapshotTransformVersion_;
+    // Success receipt for this exact coherent geometry, published after EGL swap.
+    std::atomic<uint64_t> snapshotPresentedTransformVersion_;
     std::atomic<int> snapshotRotationQuarterTurns_;
     std::atomic<bool> snapshotFlipX_;
     std::atomic<bool> snapshotFlipY_;
@@ -257,6 +278,10 @@ private:
     int64_t rendererHandle_;
     void* explicitNativeWindow_;
     bool usesProcessSurface_;
+    bool followsProcessSurface_ = false;
+    // The native window this renderer's EGL surface draws into (explicit or the process one at init).
+    void* eglNativeWindow_ = nullptr;
+    std::atomic<bool> ownSurfaceDetached_ {false};
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
@@ -270,6 +295,7 @@ private:
     bool InitGL();
     GLuint CompileShader(GLenum type, const char* source);
     GLuint CreateShaderProgram();
+    bool InstallOesProgram();
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
@@ -281,7 +307,7 @@ private:
     void   CalculateViewport(int sourceWidth, int sourceHeight,
                              int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH) const;
-    void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
+    void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH, bool presented = false);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
@@ -293,6 +319,15 @@ private:
 // ============================================================
 // NAPI 包装 (定义在 gl_renderer.cpp)
 // ============================================================
+
+/**
+ * A lease on the process EGL display the renderers share, for private
+ * off-screen tools (the video orientation self-test). The display is never
+ * terminated while any lease or renderer holds it.
+ */
+bool AcquireSharedEglDisplayLease(EGLDisplay& display);
+/** Release a lease taken with AcquireSharedEglDisplayLease, after the caller's contexts are gone. */
+void ReleaseSharedEglDisplayLease(EGLDisplay display);
 
 namespace RendererNapi {
     struct OwnedRendererCreationResult {
@@ -395,6 +430,9 @@ namespace RendererNapi {
     void SetRendererRedrawCallback(int64_t handle, const Render::DecoderSessionIdentity& owner,
                                    std::function<void()> callback);
     uint64_t RegisterActiveRedrawCallback(std::function<void()> callback);
+    // The session's own redraw callback (several picture sessions may be live); attached to its renderer.
+    uint64_t RegisterActiveRedrawCallback(const Render::DecoderSessionIdentity& owner,
+                                          std::function<void()> callback);
     void UnregisterActiveRedrawCallback(uint64_t token);
     void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();

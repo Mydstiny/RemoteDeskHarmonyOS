@@ -14,6 +14,7 @@ import {
   validateSshProxyProfile,
   validateSshRoute
 } from '../main/ets/services/SshProxyProfilePolicy';
+import { withOverrides, jsonRecord } from './helpers/RecordTestUtils';
 
 function directRoute(): SshRoute {
   return {
@@ -157,9 +158,9 @@ export default function sshProxyProfilePolicyTest(): void {
       expect((encoded as string).indexOf('password')).assertEqual(-1);
       expect(deserializeSshProxyProfile(encoded as string)?.hostId).assertEqual('host-a');
 
-      const withSecret: Record<string, Object> = valid as Record<string, Object>;
+      const withSecret: Record<string, Object> = jsonRecord(valid);
       withSecret['password'] = 'secret';
-      expect(serializeSshProxyProfile(withSecret as SshProxyProfileV1)).assertNull();
+      expect(serializeSshProxyProfile(JSON.parse(JSON.stringify(withSecret)) as SshProxyProfileV1)).assertNull();
       const malformed: string = JSON.stringify({
         schemaVersion: 1,
         hostId: 'host-a',
@@ -167,10 +168,8 @@ export default function sshProxyProfilePolicyTest(): void {
         privateKeyPem: 'secret'
       });
       expect(deserializeSshProxyProfile(malformed)).assertNull();
-      expect(deserializeSshProxyProfile(JSON.stringify({
-        ...valid,
-        schemaVersion: 2
-      }))).assertNull();
+      expect(deserializeSshProxyProfile(JSON.stringify(withOverrides(valid, {
+        'schemaVersion': 2 })))).assertNull();
     });
   });
 }

@@ -472,3 +472,19 @@ export class ActiveRemoteSessionRegistry {
     };
   }
 }
+
+/**
+ * On a device that allows one picture session at a time (a phone; see RemotePictureSessionLimitPolicy), a second RDP,
+ * RustDesk or VNC connection is refused while another one is live. Returns what to tell the user ('' when nothing is
+ * in the way): which session holds it and that it has to be closed first.
+ */
+export function remoteVideoSessionBusyMessage(active: ActiveRemoteSessionRecord | null, hostId: string,
+  activeLabel: string): string {
+  if (active === null || !active.protocolConnected || active.hostId === hostId) { return ''; }
+  if (active.protocol !== RemoteProtocol.rdp && active.protocol !== RemoteProtocol.rustdesk &&
+    active.protocol !== RemoteProtocol.vnc) { return ''; }
+  const name: string = active.protocol === RemoteProtocol.rdp ? 'RDP' :
+    (active.protocol === RemoteProtocol.vnc ? 'VNC' : 'RustDesk');
+  const label: string = activeLabel.trim().length > 0 ? '「' + activeLabel.trim() + '」的 ' : '';
+  return label + name + ' 会话还在运行。目前同一时间只能打开一个远程画面（RDP、RustDesk、VNC），请先断开它再连接。';
+}

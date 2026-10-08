@@ -1,3 +1,29 @@
+import { recordSshFailure } from '../services/SshDiagnosticEvents';
+import { appUiOnAccentText, appUiTint } from '../common/AppUiColorPolicy';
+import { ProBadge } from '../components/ProBadge';
+import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
+import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
+import { WorkspaceView } from '../services/pro/workspace/WorkspacePolicy';
+import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
+import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
+import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
+import { ProContinuationSecret, validProContinuationSecret } from '../services/pro/ProContinuationCredentials';
+import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { SessionAiHost } from '../components/diagnosticAi/SessionAiHost';
+import { SshSkinStore } from '../services/ssh/skin/SshSkinStore';
+import { SshSkin, sshSkinFont } from '../services/ssh/skin/SshSkinPolicy';
+import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
+import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
+import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
+import { persistSshHostKeyTrust } from '../services/ssh/auth/SshHostKeyTrustWriter';
+import { ProFeatureGate } from '../components/ProFeatureGate';
+import { ProAccessContext } from '../services/pro/ProAccessPolicy';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProKnockReceiver, proKnockSupported, KNOCK_SHARE_CAPABILITY } from '../services/pro/ProKnockReceiver';
+import { KnockPoint, matchKnockWindow } from '../services/pro/ProKnockPolicy';
+import { SshSftpShareStager } from '../services/ssh/sftp/SshSftpShareStager';
 /**
  * SshTerminal.ets v5 — 推送式 SSH 终端页 (Phase 4 统一输入模型)
  *
@@ -34,6 +60,8 @@ import { inputDevice, KeyCode } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { sshDiagnosticErrorCode } from
   '../services/ssh/observability/SshDiagnosticPolicy';
+import { recordDiagnosticWindowObservation } from '../services/DiagnosticCaptureRuntime';
+import { DiagnosticWindowOrientation } from '../services/DiagnosticCapturePolicy';
 import { HostSyncService } from '../services/HostSyncService';
 import { BoundedDocumentIo } from '../services/BoundedDocumentIo';
 import {
@@ -92,7 +120,7 @@ import {
 } from '../services/SessionContextualGuidePolicy';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
-import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
+import { SSH_REVERSE_WHEEL_KEY, SSH_WHEEL_SPEED_KEY, normalizeRemoteWheelSpeed } from '../services/RemoteWheelPreferencePolicy';
 import { SSH_PINCH_ZOOM_ENABLED_KEY } from '../services/RemotePinchZoomPreferencePolicy';
 import {
   REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
@@ -107,6 +135,7 @@ import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearch
 import { SshTerminalProfileSheet } from
   '../components/ssh/profile/SshTerminalProfileSheet';
 import { SshCommandPalette } from '../components/ssh/command/SshCommandPalette';
+import { SftpActionButton, SftpColors, SftpEmptyState, SftpFileRow, SftpIconButton } from '../components/ssh/sftp/SftpUi';
 import { SshProductivitySheet } from '../components/ssh/productivity/SshProductivitySheet';
 import { SshSessionLogSheet } from '../components/ssh/log/SshSessionLogSheet';
 import { SshBroadcastSheet } from '../components/ssh/broadcast/SshBroadcastSheet';
@@ -158,6 +187,7 @@ import {
 } from '../services/SshTerminalPipService';
 import {
   SSH_PIP_EXIT_GRACE_MS,
+  SSH_PIP_REARM_DELAY_MS,
   matchesSshPipExitFence,
   shouldCoordinateSshPipExit
 } from '../services/ssh/pip/SshPipLifecyclePolicy';
@@ -230,6 +260,8 @@ import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
   SSH_DEFAULT_TERMINAL_FONT_SIZE,
   SSH_SESSION_LOCALE_KEY,
+  SSH_TERMINAL_FONT_SIZE_MAX,
+  SSH_TERMINAL_FONT_SIZE_MIN,
   normalizeSshTerminalLineSpacing,
   normalizeSshSessionLocale,
   sshTerminalFontSizeForPinch,
@@ -322,7 +354,7 @@ import {
   SshBroadcastMode,
   SshBroadcastTargetV1
 } from '../services/ssh/broadcast/SshBroadcastPolicy';
-import { SshWorkspaceCapabilityStore } from
+import { SshWorkspaceCapabilityStore, sshWorkbenchHostIsPc } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import {
   SSH_TAB_STRIP_HEIGHT_VP,
@@ -405,7 +437,8 @@ import {
   defaultSshTerminalResolvedProfile,
   sshTerminalSessionProfileScopeKey,
   SshTerminalProfileV1,
-  SshTerminalResolvedProfile
+  SshTerminalResolvedProfile,
+  SSH_TERMINAL_PROFILE_LEGACY_ID
 } from '../services/ssh/profile/SshTerminalProfilePolicy';
 import { SshTerminalProfileStore } from
   '../services/ssh/profile/SshTerminalProfileStore';
@@ -461,7 +494,8 @@ import {
   SshCommandDescriptor,
   SshCommandExecutionFence,
   SshCommandHostRef,
-  SshCommandSessionRef
+  SshCommandSessionRef,
+  SSH_COMMAND_PALETTE_MOTION_MS
 } from '../services/ssh/command/SshCommandPolicy';
 import {
   TransferSession,
@@ -637,16 +671,23 @@ type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
   'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
-  'orientation' | 'quick-commands';
+  'orientation' | 'quick-commands' | 'ai';
+
+const SSH_PTY_STARTUP_SETTLE_WINDOW_MS: number = 2500;
+const SSH_PTY_STARTUP_SETTLE_MS: number = 900;
 
 @Entry
 @Component
 struct SshTerminal {
   @StorageLink('currentTheme') theme: string = 'light';
+  // Pro SSH skin: re-render on skin edits and on entitlement changes.
+  @StorageProp('sshSkinRevision') sshSkinRevision: number = 0;
+  @State sshSkinProTick: number = 0;
+  private sshSkinStopPro: (() => void) | null = null;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
   remoteSessionQuickExitDisabled: boolean = false;
-  @State connected: boolean = false;
+  @State @Watch('onSshContinuationConnectionChange') connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
   @State hostLabel: string = '';
@@ -654,10 +695,15 @@ struct SshTerminal {
   /** 顶栏低频 SSH 操作统一收进官方 bindPopup 文字菜单。 */
   @State showSshHeaderActionPopup: boolean = false;
   /** Observable identity of the host currently rendered by this page. */
-  @State visibleSshHostId: string = '';
+  @State @Watch('stopSftpKnock') visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
-  @State showSshCommandPalette: boolean = false;
+  @State @Watch('onSshCommandPaletteVisibilityChange') showSshCommandPalette: boolean = false;
+  /** The authentication sheet's measured content height (0 until measured). */
+  @State sshAuthPromptContentH: number = 0;
+  /** The page's own size, for the floating command palette. */
+  @State sshPageAreaW: number = 0;
+  @State sshPageAreaH: number = 0;
   @State showSshProductivitySheet: boolean = false;
   @State sshProductivityQuery: string = '';
   @State sshProductivityReady: boolean = false;
@@ -676,7 +722,7 @@ struct SshTerminal {
   @State sshBroadcastActive: boolean = false;
   @State showSftpTransferCenter: boolean = false;
   @State sftpTransferCenterRevision: number = 0;
-  @State sftpWorkspaceTabState: SshSftpWorkspaceTabState =
+  @State @Watch('stopSftpKnock') sftpWorkspaceTabState: SshSftpWorkspaceTabState =
     createSshSftpWorkspaceTabState();
   @State sshCommandRegistry: Array<SshCommandDescriptor> = [];
   @State showSshTabRenameSheet: boolean = false;
@@ -754,6 +800,7 @@ struct SshTerminal {
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
+  @StorageProp(SSH_WHEEL_SPEED_KEY) sshWheelSpeed: number = 100;
   @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) @Watch('onSshPinchZoomSettingChange')
   sshPinchZoomEnabled: boolean = true;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
@@ -905,11 +952,11 @@ struct SshTerminal {
   @State forwardingConfirmDanger: boolean = false;
   private forwardingConfirmResolve: ((confirmed: boolean) => void) | null = null;
   /** SFTP 文件传输面板 */
-  @State showSftpPanel: boolean = false;
+  @State @Watch('onProContinuationPaneChange') showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
   /** Internal gate only; changing it must not rebuild a Sheet during entrance. */
   private sftpRootSheetSurfaceReady: boolean = false;
-  @State sftpPath: string = '.';
+  @State @Watch('stopSftpKnock') sftpPath: string = '.';
   @State sftpEntries: SftpFileEntry[] = [];
   @State sftpSelectedPath: string = '';
   @State sftpSelectedName: string = '';
@@ -918,6 +965,8 @@ struct SshTerminal {
   private sftpSelectedMtime: number = -1;
   @State sftpPathInput: string = '.';
   @State sftpNameInput: string = '';
+  /** The inline name editor of the current host: '' closed, 'mkdir' or 'rename'. */
+  @State sftpNameMode: string = '';
   @State sftpBusy: boolean = false;
   @State sftpStatus: string = '打开后会加载远端当前目录。';
   @State sftpProgress: number = -1;
@@ -942,6 +991,8 @@ struct SshTerminal {
   @State sftpPeerEntries: SftpFileEntry[] = [];
   @State sftpPeerSelectedPath: string = '';
   @State sftpPeerSelectedName: string = '';
+  /** The inline name editor of the peer host: '' closed, 'mkdir' or 'rename'. */
+  @State sftpPeerNameMode: string = '';
   @State sftpPeerSelectedIsDir: boolean = false;
   @State sftpPeerSelectedSize: number = 0;
   @State sftpPeerBusy: boolean = false;
@@ -949,6 +1000,8 @@ struct SshTerminal {
   @State sftpRecoveredTasks: SshSftpTaskRecord[] = [];
   @State sftpDropHoverActive: boolean = false;
   @State isLandscape: boolean = false;
+  /** Bumped by 「更多 → AI 助理」: SessionAiHost brings up the AI as the orb with its small chat. */
+  @State aiSessionOpenRequest: number = 0;
   // Kept only in-memory to retry the current picker grant; never logged or placed in diagnostics.
   private sftpTransferUri: string = '';
   private sftpTransferRemotePath: string = '';
@@ -979,6 +1032,23 @@ struct SshTerminal {
     new Map<string, SshSftpTrackedSession>();
   private sftpLocalProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
   private sftpDropAdapter: SshSftpDropAdapter = new SshSftpDropAdapter();
+  private proConnectionTransferId: string = '';
+  private proContinuationWindowId: number = 0;
+  private proContinuationAutoStop: (() => void) | null = null;
+  private proContinuationArming: boolean = false;
+  private proContinuationPersistent: boolean = false;
+  private proContinuationAutoRetryAt: number = 0;
+  private proContinuationRestoreRunning: boolean = false;
+  private proConnectionShareWindowId: number = 0;
+  private proConnectionShareEpoch: number = 0;
+  private proConnectionShareId: string = '';
+  private proConnectionShareRestoreRunning: boolean = false;
+  private sftpKnockReceiver: ProKnockReceiver = new ProKnockReceiver();
+  private sftpShareStager: SshSftpShareStager = new SshSftpShareStager();
+  private sftpKnockStopPro: (() => void) | null = null;
+  private sftpKnockEpoch: number = 0;
+  @State sftpKnockActive: boolean = false;
+  @State sftpKnockStatus: string = '';
   private sftpDropBatches: Set<string> = new Set<string>();
   private sftpBatchLocalRoots: Map<string, string> = new Map<string, string>();
   private sftpBatchRemoteRoots: Map<string, string> = new Map<string, string>();
@@ -1017,6 +1087,8 @@ struct SshTerminal {
   private sshSignalBackgroundTasks: SshBackgroundSignalTaskRegistry =
     new SshBackgroundSignalTaskRegistry();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
+  /** Re-arms PiP once a background cycle has ended (see scheduleSshPipRearm). */
+  private sshPipRearmTimer: number = -1;
   private sshTabStore: SshTerminalTabStore = SshTerminalTabStore.getInstance();
   private sshTranscriptStore: SshTerminalTranscriptStore =
     SshTerminalTranscriptStore.getInstance();
@@ -1805,75 +1877,8 @@ struct SshTerminal {
   }
 
   private persistSshHostKeyTrust(prompt: SshAuthPromptRequest): boolean {
-    const ownerId: string = prompt.trustHostId.trim();
-    const endpointHost: string = prompt.endpointHost.trim();
-    const fingerprint: string = prompt.hostKeyFingerprintSha256.trim();
-    const rawBase64: string = prompt.hostKeyRawBase64.trim();
-    if (prompt.kind !== 'host_key' || ownerId.length === 0 || endpointHost.length === 0 ||
-      prompt.endpointPort <= 0 || prompt.endpointPort > 65535 ||
-      fingerprint.indexOf('SHA256:') !== 0 || rawBase64.length === 0) {
-      return false;
-    }
-    const current: RemoteHost | undefined = this.srv.getHost(ownerId);
-    if (current === undefined || current.protocol !== 'ssh') { return false; }
-    if (!this.sshProxyProfilesReady) { return false; }
-    const plan: SshProxyRuntimePlan = this.terminalSshProxyPlan(current);
-    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(current, plan);
-    if (!binding.ok || prompt.routeIdentity !== binding.identity) { return false; }
-    const trustedAt: number = Date.now();
-    if (prompt.hostKeyHopIndex < 0) {
-      if (plan.route.endpointHost.trim() !== endpointHost ||
-        plan.route.endpointPort !== prompt.endpointPort) { return false; }
-      const updated: RemoteHost = current.runtimeClone();
-      updated.sshHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
-      updated.sshHostKeyFingerprintSha256 = fingerprint;
-      updated.sshHostKeyRawBase64 = rawBase64;
-      updated.sshHostKeyTrustedAt = trustedAt;
-      updated.sshHostKeyTrustMode = 1;
-      updated.sshHostKeyRouteIdentity = binding.identity;
-      return this.srv.updateHost(updated);
-    }
-
-    const hopIndex: number = prompt.hostKeyHopIndex;
-    const previousProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(ownerId);
-    let profileUpdated: boolean = false;
-    if (previousProfile !== null) {
-      if (previousProfile.route.type !== 'ssh_jump' || hopIndex >= previousProfile.route.hops.length) {
-        return false;
-      }
-      const hop: SshJumpHop = previousProfile.route.hops[hopIndex];
-      if (hop.host.trim() !== endpointHost || hop.port !== prompt.endpointPort) { return false; }
-      const nextProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(ownerId);
-      if (nextProfile === null) { return false; }
-      nextProfile.route.hops[hopIndex].expectedHostKeyRawBase64 = rawBase64;
-      nextProfile.route.hops[hopIndex].expectedHostKeyFingerprintSha256 = fingerprint;
-      nextProfile.updatedAtMs = trustedAt;
-      if (!this.sshProxyProfiles.upsert(nextProfile)) { return false; }
-      profileUpdated = true;
-    } else if (hopIndex !== 0 || current.proxyHost.trim() !== endpointHost ||
-      current.proxyPort !== prompt.endpointPort) {
-      return false;
-    }
-
-    // The canonical profile is authoritative. Mirror the first hop into the
-    // legacy fields only when both routes name the same endpoint, so SFTP and
-    // older entry points keep the same strict binding without cross-endpoint trust.
-    if (hopIndex === 0 && current.proxyHost.trim() === endpointHost &&
-      current.proxyPort === prompt.endpointPort) {
-      const updated: RemoteHost = current.runtimeClone();
-      updated.sshJumpHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
-      updated.sshJumpHostKeyFingerprintSha256 = fingerprint;
-      updated.sshJumpHostKeyRawBase64 = rawBase64;
-      updated.sshJumpHostKeyTrustedAt = trustedAt;
-      updated.sshJumpHostKeyTrustMode = 1;
-      if (!this.srv.updateHost(updated)) {
-        if (profileUpdated && previousProfile !== null) {
-          this.sshProxyProfiles.upsert(previousProfile);
-        }
-        return false;
-      }
-    }
-    return true;
+    return this.sshProxyProfilesReady &&
+      persistSshHostKeyTrust(prompt, this.srv, this.sshProxyProfiles);
   }
 
   private submitSshAuthPrompt(): void {
@@ -1916,6 +1921,8 @@ struct SshTerminal {
 
   @Builder
   SshAuthPromptSheet() {
+    Column() {
+    // Measured on this inner column: it wraps the content even when the Sheet stretches its root.
     Column() {
       if (this.sshAuthPrompt !== null) {
         Row() {
@@ -2038,7 +2045,7 @@ struct SshTerminal {
                 : '信任并连接')
               : '提交'))
             .height(40).layoutWeight(1).margin({ left: 10 })
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
             .borderRadius(8)
             .enabled(!this.sshAuthPromptSubmitting)
             .onClick((): void => { this.submitSshAuthPrompt(); })
@@ -2060,9 +2067,30 @@ struct SshTerminal {
       }
     }
       .width('100%')
-      .constraintSize({ maxWidth: this.isDesktopDevice ? 560 : 620 })
       .padding({ left: 20, right: 20, top: 20, bottom: 20 })
+      .onAreaChange((_oldArea: Area, newArea: Area): void => {
+        const height: number = newArea.height as number;
+        if (Number.isFinite(height) && height > 0 && Math.abs(height - this.sshAuthPromptContentH) >= 1) {
+          this.sshAuthPromptContentH = height;
+        }
+      })
+    }
+      .width('100%')
+      .constraintSize({ maxWidth: this.isDesktopDevice ? 560 : 620 })
+      .justifyContent(FlexAlign.Start)
       .backgroundColor(this.pal().sheetBg)
+  }
+
+  /**
+   * The authentication sheet's height: its measured content (plus the drag bar on touch devices), within the room
+   * above the keyboard. Before the first measurement it keeps the old bounded height, never FIT_CONTENT.
+   */
+  private sshAuthPromptSheetHeight(): number {
+    const room: number = (this.shellAreaH > 0 ? this.shellAreaH : 720) + 60 - this.kbHeight;
+    const cap: number = Math.max(200, Math.min(this.isDesktopDevice ? 560 : 520, room));
+    if (this.sshAuthPromptContentH <= 0) { return Math.max(200, Math.min(320, cap)); }
+    const content: number = this.sshAuthPromptContentH + (this.isDesktopDevice ? 0 : 24);
+    return Math.max(160, Math.min(cap, Math.ceil(content)));
   }
 
   /**
@@ -4326,7 +4354,7 @@ struct SshTerminal {
 
   private reloadSshProductivityAfterSecurityChange(): void {
     this.scrubSshProductivitySecurityState();
-    if (this.terminalClosing || !DataCrypto.getInstance().isReady()) { return; }
+    if (this.terminalClosing) { return; }
     try {
       const context: common.Context = getContext(this) as common.Context;
       this.sshProductivityReady = this.sshProductivityStore.init(context);
@@ -4953,7 +4981,7 @@ struct SshTerminal {
   private openSshProductivity(): void {
     if (!this.sshProductivityReady) {
       promptAction.showToast({
-        message: '本地加密存储尚未解锁，暂时无法使用常用命令', duration: 2000
+        message: '常用命令存储不可用；若已启用加密，请先解锁', duration: 2000
       });
       return;
     }
@@ -4963,7 +4991,7 @@ struct SshTerminal {
     this.sshProductivityQuery = '';
     this.refreshSshProductivityDocument(true);
     if (!this.sshProductivityReady) {
-      promptAction.showToast({ message: '常用命令刷新失败，请重新解锁后再试', duration: 1900 });
+      promptAction.showToast({ message: '常用命令读取失败，请重试', duration: 1900 });
       return;
     }
     this.terminalFocusMode = false;
@@ -5529,6 +5557,7 @@ struct SshTerminal {
   }
 
   private activateSshTerminalWorkspace(): void {
+    this.stopSftpKnock();
     this.sftpWorkspaceTabState = activateSshTerminalSurface(this.sftpWorkspaceTabState);
   }
 
@@ -5550,6 +5579,7 @@ struct SshTerminal {
   }
 
   private closeSftpWorkbenchTab(): void {
+    this.stopSftpKnock();
     this.sftpWorkspaceTabState = closeSshSftpWorkspaceTab(this.sftpWorkspaceTabState);
     this.sftpRootSheetReopenRequested = false;
     this.sftpPeerHostPickerReopenRequested = false;
@@ -5714,6 +5744,7 @@ struct SshTerminal {
   private SftpTransferCenterContent() {
     SshTransferCenter({
       sheetBackgroundColor: this.bindSheetBg('#111820'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       tasks: this.sftpTransferCenterTasks(),
       summary: this.sftpTransferCenterSummary(),
       compact: this.sshCompactChrome(),
@@ -5743,11 +5774,14 @@ struct SshTerminal {
       bottomAlignSparseContent: !this.isDesktopDevice,
       bottomAlignSafeRows: this.terminalBottomSafeRows(),
       bottomInsetPx: this.terminalXtermBottomInsetPx(),
-      profileEnabled: this.terminalProfileEnabled(),
-      profileForegroundColor: profile.foregroundColor,
-      profileBackgroundColor: profile.backgroundColor,
-      profilePalette: profile.palette,
-      profileFontFamily: profile.fontFamily,
+      // A Pro skin supplies colors and font; profiles keep cursor, scrollback and behavior.
+      profileEnabled: this.terminalProfileEnabled() || this.sshSkin(tab.hostId) !== null,
+      profileForegroundColor: this.sshSkin(tab.hostId)?.terminal.foreground ?? profile.foregroundColor,
+      profileBackgroundColor: this.sshSkin(tab.hostId)?.terminal.background ?? profile.backgroundColor,
+      profilePalette: this.sshSkin(tab.hostId)?.terminal.palette ?? profile.palette,
+      profileFontFamily: this.sshTerminalFontFamily(tab.hostId, profile.fontFamily),
+      profileCursorColor: this.sshSkin(tab.hostId)?.terminal.cursor ?? '',
+      profileSelectionColor: this.sshSkin(tab.hostId)?.terminal.selection ?? '',
       profileFontWeight: profile.fontWeight,
       profileCursorStyle: profile.cursorStyle,
       profileCursorBlink: profile.cursorBlink,
@@ -5755,6 +5789,7 @@ struct SshTerminal {
       profileBellStyle: profile.bellStyle,
       profileCopyOnSelect: profile.copyOnSelect,
       reverseWheel: this.sshReverseWheel,
+      wheelSpeed: normalizeRemoteWheelSpeed(this.sshWheelSpeed),
       viewportHeight: this.sshWorkspaceViewportHeightForTab(tab.tabId, viewportHeight),
       outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
       outputSequence: this.termOutputSequence,
@@ -5871,10 +5906,10 @@ struct SshTerminal {
       x: this.sshWorkspaceFrameForTab(tab.tabId)?.xVp ?? -10,
       y: this.sshWorkspaceFrameForTab(tab.tabId)?.yVp ?? -10
     })
-    .backgroundColor('#0D0D0D')
+    .backgroundColor(this.terminalBgColor())
     .border({ width: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ? 1 : 0.5,
       color: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ?
-        this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
+        appUiTint(this.accentColor, 'AA') : 'rgba(255,255,255,0.12)' })
     .clip(true)
     .zIndex(this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ? 3 : 2)
   }
@@ -5938,7 +5973,7 @@ struct SshTerminal {
     .backgroundColor('#10141A')
     .border({ width: this.sshWorkspaceFrameForPane(paneId)?.active === true ? 1 : 0.5,
       color: this.sshWorkspaceFrameForPane(paneId)?.active === true ?
-        this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
+        appUiTint(this.accentColor, 'AA') : 'rgba(255,255,255,0.12)' })
     .clip(true)
     .zIndex(this.sshWorkspaceFrameForPane(paneId)?.active === true ? 3 : 2)
   }
@@ -5948,10 +5983,10 @@ struct SshTerminal {
     Row() {
       Column() {
         Text(tab.label.length > 0 ? tab.label : tab.address)
-          .fontSize(12).fontColor(tab.active ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
+          .fontSize(12).fontColor(tab.active ? this.chromeText(1) : this.chromeText(0.76))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(this.sshTabDisplayState(tab))
-          .fontSize(9).fontColor(tab.state === 'error' ? '#FF7777' : 'rgba(242,244,247,0.48)')
+          .fontSize(9).fontColor(tab.state === 'error' ? '#FF7777' : this.chromeText(0.48))
           .maxLines(1)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       if (tab.active) {
@@ -5977,7 +6012,7 @@ struct SshTerminal {
       }, (tab: SshTerminalTabView): string => sshTerminalTabChromeRenderKey(tab))
       if (sshTabStripShowsStandaloneNewSessionAction(this.sshHeaderActionPopupEnabled())) {
         Row() {
-          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
+          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor([this.chromeText(0.86)])
         }
         .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
         .backgroundColor('rgba(255,255,255,0.07)')
@@ -5993,6 +6028,8 @@ struct SshTerminal {
   private sshTabStripItems() {
     if (this.sshWorkbenchEnabled) {
       SshBrowserTabStrip({
+        skinText: this.sshSkin()?.chrome.barText ?? '',
+        skinAccent: this.sshSkin()?.chrome.accent ?? '',
         tabs: this.sshWorkspaceModeEnabled() ? this.sshWorkspaceTabViews() : this.sshTabViews,
         compact: this.sshCompactChrome(),
         terminalTabsActive: this.sftpWorkspaceTabState.activeSurface === 'terminal',
@@ -6041,12 +6078,18 @@ struct SshTerminal {
 
   @Builder
   private sshTabStrip() {
-    Column() {
-      this.sshTabStripItems()
+    Row() {
+      Column() { this.sshTabStripItems() }.layoutWeight(1)
     }
-    .width('100%').height(this.sshTabStripHeight())
+    .width('100%').height(this.sshTabStripHeight() + this.sshTopChromeLayout().standaloneTabTopInsetVp)
+    .padding({ top: this.sshTopChromeLayout().standaloneTabTopInsetVp })
+    // The tab row and the host bar below read as one block: same color, the highlight
+    // gradient starts here instead of on the host bar, and no divider between them.
     .backgroundColor(this.chromeBg())
-    .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
+    .linearGradient({
+      direction: GradientDirection.Bottom,
+      colors: [[this.chromeText(0.07), 0], [this.chromeText(0), 1]]
+    })
     .id('ssh-workspace-focus-tab-strip-standalone')
     .focusable(this.sshWorkspaceModeEnabled())
     .focusOnTouch(false)
@@ -6061,8 +6104,6 @@ struct SshTerminal {
     }
     .layoutWeight(1)
     .height(this.sshTabStripHeight())
-    .borderRadius(8)
-    .backgroundColor('rgba(255,255,255,0.025)')
     .margin({ left: 12, right: 8 })
     .id('ssh-workspace-focus-tab-strip-inline')
     .focusable(this.sshWorkspaceModeEnabled())
@@ -6129,12 +6170,57 @@ struct SshTerminal {
       commands: this.sshCommandRegistry,
       compact: this.breakpoint === 'sm',
       onExecute: (commandId: string): void => { this.queueSshCommand(commandId); },
-      onClose: (): void => {
-        this.pendingSshCommandId = '';
-        this.showSshCommandPalette = false;
-      }
+      maxBodyHeightVp: this.sshCommandPaletteListMaxVp(),
+      onClose: (): void => { this.closeSshCommandPalette(); }
     })
-      .width('100%').height('100%')
+      .width('100%')
+  }
+
+  private closeSshCommandPalette(): void {
+    this.pendingSshCommandId = '';
+    this.showSshCommandPalette = false;
+  }
+
+  /** The palette's exit plays for SSH_COMMAND_PALETTE_MOTION_MS; its queued action runs once the card is gone. */
+  private onSshCommandPaletteVisibilityChange(): void {
+    if (this.showSshCommandPalette) { return; }
+    setTimeout((): void => {
+      if (!this.showSshCommandPalette) { this.onSshCommandPaletteDisappear(); }
+    }, SSH_COMMAND_PALETTE_MOTION_MS);
+  }
+
+  private sshCommandPalettePageW(): number {
+    if (this.sshPageAreaW > 0) { return this.sshPageAreaW; }
+    return this.shellAreaW > 0 ? this.shellAreaW : 360;
+  }
+
+  private sshCommandPalettePageH(): number {
+    if (this.sshPageAreaH > 0) { return this.sshPageAreaH; }
+    return this.shellAreaH > 0 ? this.shellAreaH : 720;
+  }
+
+  /** Phone: just under the status bar; wider windows: the upper part of the page, like a desktop command palette. */
+  private sshCommandPaletteTopVp(): number {
+    const top: number = this.isDesktopDevice ? 0 : this.topSafeHeight;
+    if (this.breakpoint === 'sm') { return top + 10; }
+    const room: number = this.sshCommandPalettePageH() - this.kbHeight;
+    return top + Math.max(24, Math.min(96, room * 0.10));
+  }
+
+  private sshCommandPaletteCardWidth(): number {
+    const page: number = this.sshCommandPalettePageW();
+    return this.breakpoint === 'sm' ? Math.max(240, page - 24) : Math.max(240, Math.min(680, page - 48));
+  }
+
+  private sshCommandPaletteCardX(): number {
+    return Math.max(0, (this.sshCommandPalettePageW() - this.sshCommandPaletteCardWidth()) / 2);
+  }
+
+  /** The list's room: what is left above the keyboard under the card's search row, footer and margins. */
+  private sshCommandPaletteListMaxVp(): number {
+    const chrome: number = 44 + 12 + 28 + (this.breakpoint === 'sm' ? 0 : 12 + 18);
+    const room: number = this.sshCommandPalettePageH() - this.sshCommandPaletteTopVp() - this.kbHeight - chrome - 16;
+    return Math.max(120, Math.min(560, room));
   }
 
   @Builder
@@ -6703,6 +6789,20 @@ struct SshTerminal {
       SSH_DEFAULT_TERMINAL_FONT_SIZE;
   }
 
+  /** 「更多 → 终端字号」 on PC: the same live session size a pinch sets, one step at a time. */
+  private setSshTerminalFontSizeFromMore(size: number): void {
+    const next: number = Math.max(SSH_TERMINAL_FONT_SIZE_MIN, Math.min(SSH_TERMINAL_FONT_SIZE_MAX, Math.round(size)));
+    if (next === this.activeSshTerminalFontSize()) { return; }
+    this.terminalPinchActive = false;
+    this.clearTerminalZoomIndicatorTimer();
+    if (this.terminalProfileEnabled()) {
+      this.terminalEffectiveFontSize = next;
+      this.setCurrentSshTerminalFontOverride(next);
+    } else {
+      this.fontSize = this.sshSettings.saveFontSize(next);
+    }
+  }
+
   private resetSshTerminalFontSizeFromMore(): void {
     this.terminalPinchActive = false;
     this.clearTerminalZoomIndicatorTimer();
@@ -6754,6 +6854,21 @@ struct SshTerminal {
     }
   }
 
+  // While a new session's layout, font and appearance settle (about the first two seconds on
+  // phones), every PTY resize makes the remote shell reprint its prompt. Coalesce harder then
+  // so only the final size is sent.
+  private ptyStartupKey: string = '';
+  private ptyStartupDeadline: number = 0;
+
+  private ptyResizeDelay(): number {
+    const key: string = this.sessionId.toString() + ':' + this.sshSessionGeneration.toString();
+    if (key !== this.ptyStartupKey) {
+      this.ptyStartupKey = key;
+      this.ptyStartupDeadline = Date.now() + SSH_PTY_STARTUP_SETTLE_WINDOW_MS;
+    }
+    return Date.now() < this.ptyStartupDeadline ? SSH_PTY_STARTUP_SETTLE_MS : SSH_TERMINAL_PTY_RESIZE_COALESCE_MS;
+  }
+
   private schedulePtyResize(): void {
     if (this.sessionId <= 0) { return; }
     const requestPageGeneration: number = this.pageGeneration;
@@ -6782,7 +6897,7 @@ struct SshTerminal {
       if (!this.isDesktopDevice) {
         this.requestTerminalScrollToBottomSettled();
       }
-    }, SSH_TERMINAL_PTY_RESIZE_COALESCE_MS);
+    }, this.ptyResizeDelay());
   }
 
   /** Coalesce each retained pane independently without keeping stale native owners alive. */
@@ -6939,9 +7054,12 @@ struct SshTerminal {
   }
 
   private sshTabsInline(): boolean {
+    // Phone keeps a dedicated tab row in both orientations. Session actions
+    // remain in the header's More menu regardless of the window breakpoint.
+    if (!this.isDesktopDevice && !this.isPadDevice) { return false; }
     if (!this.sshWorkbenchEnabled) {
-      // Exact pre-M2 behavior while the rollout flag is disabled.
-      return this.sshTabViews.length > 0 &&
+      // Pre-M2 chrome: a single tab only repeated the host and status beside it, so tabs appear from the second.
+      return this.sshTabViews.length > 1 &&
         (this.isDesktopDevice || this.breakpoint !== 'sm');
     }
     // Narrow free-form PC windows use the same full-width strip as phones so
@@ -6963,6 +7081,11 @@ struct SshTerminal {
       this.sshWorkbenchEnabled, this.isDesktopDevice, this.isPadDevice);
   }
 
+  /** Pro AI 助理 in this terminal: 「更多 → AI 助理」. */
+  private sshAiVisible(): boolean {
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
   private sshHeaderActionPopupWidth(): number {
     const uiContext = this.getUIContext();
     const measureTextVp = (text: string, fontSize: number): number => {
@@ -6972,7 +7095,7 @@ struct SshTerminal {
       }));
     };
     const labels: string[] = [
-      '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
+      'AI 助理', '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
       '显示会话详情', '隐藏会话详情', '取消显示会话详情',
       '终端搜索', '终端外观', '恢复终端字号', '语言与地区',
@@ -7009,7 +7132,9 @@ struct SshTerminal {
         hostId !== this.hostId.trim()) {
         return;
       }
-      if (action === 'new-session') {
+      if (action === 'ai') {
+        this.aiSessionOpenRequest = Date.now();
+      } else if (action === 'new-session') {
         this.openSshTabPicker();
       } else if (action === 'tabs') {
         this.openSshTabPicker();
@@ -7046,9 +7171,76 @@ struct SshTerminal {
     }, 32);
   }
 
+  private sshHeaderActionIcon(action: SshHeaderAction): Resource {
+    switch (action) {
+      case 'ai': return $r('sys.symbol.wand_and_stars');
+      case 'new-session': return $r('sys.symbol.plus');
+      case 'quick-commands': return $r('sys.symbol.text_clipboard');
+      case 'tabs': return $r('sys.symbol.rectangle_on_rectangle');
+      case 'palette': return $r('sys.symbol.bolt_fill');
+      case 'transfers': return $r('sys.symbol.arrow_down_to_line');
+      case 'restore': return $r('sys.symbol.arrow_clockwise');
+      case 'sidebar': return $r('sys.symbol.line_3_horizontal');
+      case 'inspector': return $r('sys.symbol.info_circle');
+      case 'search': return $r('sys.symbol.magnifyingglass');
+      case 'profile': return $r('sys.symbol.paintpalette_fill');
+      case 'reset-font': return $r('sys.symbol.textformat');
+      case 'locale': return $r('sys.symbol.translate');
+      case 'orientation': return $r('sys.symbol.rectangle_rotate');
+      case 'sftp': return $r('sys.symbol.folder_fill');
+      default: return $r('sys.symbol.arrow_left_arrow_right');
+    }
+  }
+
+  @Builder
+  private SshFontSizeStep(symbol: Resource, delta: number, label: string) {
+    Button() {
+      SymbolGlyph(symbol).fontSize(14).fontColor([this.pal().text])
+    }
+    .width(32).height(32).padding(0).borderRadius(16)
+    .backgroundColor(this.pal().surface)
+    .enabled(delta < 0 ? this.activeSshTerminalFontSize() > SSH_TERMINAL_FONT_SIZE_MIN :
+      this.activeSshTerminalFontSize() < SSH_TERMINAL_FONT_SIZE_MAX)
+    .onClick((): void => { this.setSshTerminalFontSizeFromMore(this.activeSshTerminalFontSize() + delta); })
+    .accessibilityText(label)
+  }
+
+  /** PC has no pinch: the size is chosen here, and the number restores the default. */
+  @Builder
+  private SshFontSizeRow() {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.textformat')).fontSize(16).fontColor([this.pal().text2])
+      }
+      .width(32).height(32).borderRadius(10).backgroundColor(this.pal().surface)
+      Column({ space: 2 }) {
+        Text('终端字号').fontSize(14).fontColor(this.pal().text).maxLines(1)
+        Text('默认 ' + this.sshTerminalFontResetTarget().toString() + ' 号 · 点数字恢复')
+          .fontSize(11).fontColor(this.pal().text3).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Row({ space: 6 }) {
+        this.SshFontSizeStep($r('sys.symbol.minus'), -1, '减小终端字号')
+        Text(this.activeSshTerminalFontSize().toString())
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .width(30).textAlign(TextAlign.Center)
+          .onClick((): void => { this.resetSshTerminalFontSizeFromMore(); })
+          .accessibilityText('终端字号 ' + this.activeSshTerminalFontSize().toString() + '，点按恢复默认')
+        this.SshFontSizeStep($r('sys.symbol.plus'), 1, '增大终端字号')
+      }
+    }
+    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 12, right: 12 })
+  }
+
   @Builder
   private SshHeaderActionRow(label: string, detail: string, action: SshHeaderAction) {
-    Row() {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph(this.sshHeaderActionIcon(action)).fontSize(16)
+          .fontColor([action === 'sftp' || action === 'ai' ? this.accentColor : this.pal().text2])
+      }
+      .width(32).height(32).borderRadius(10)
+      .backgroundColor(action === 'sftp' || action === 'ai' ? appUiTint(this.accentColor, '1F') : this.pal().surface)
       Column({ space: 2 }) {
         Text(label).fontSize(14).fontColor(this.pal().text).maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -7059,7 +7251,8 @@ struct SshTerminal {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
     }
-    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
+    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 12, right: 12 })
+    .stateStyles({ pressed: { .backgroundColor(this.pal().surface) }, normal: { .backgroundColor(Color.Transparent) } })
     .onClick((): void => { this.openSshHeaderAction(action); })
     .accessibilityText(label + (detail.length > 0 ? '，' + detail : ''))
   }
@@ -7073,10 +7266,14 @@ struct SshTerminal {
           .margin({ left: 14, right: 14, top: 8, bottom: 6 })
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        if (this.sshAiVisible()) {
+          this.SshHeaderActionRow('AI 助理', '悬浮球加小对话框：单击退出，双击语音', 'ai')
+        }
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
+        // Continuation is automatic and managed in 设置 > Pro 功能; no per-session menu rows.
         this.SshHeaderActionRow('常用命令', this.sshProductivityReady
           ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
-          : '本地加密存储未解锁', 'quick-commands')
+          : '本地存储不可用；若已启用加密，请先解锁', 'quick-commands')
 
         if (this.sshWorkbenchEnabled) {
           this.SshHeaderActionRow('显示全部标签',
@@ -7113,8 +7310,12 @@ struct SshTerminal {
         if (this.terminalProfileEnabled()) {
           this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
         }
-        this.SshHeaderActionRow('恢复终端字号',
-          '回到 ' + this.sshTerminalFontResetTarget().toString() + ' 号字', 'reset-font')
+        if (this.isDesktopDevice) {
+          this.SshFontSizeRow()
+        } else {
+          this.SshHeaderActionRow('恢复终端字号',
+            '回到 ' + this.sshTerminalFontResetTarget().toString() + ' 号字', 'reset-font')
+        }
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('语言与地区',
@@ -7160,8 +7361,7 @@ struct SshTerminal {
   }
 
   private headerTopOffset(): number {
-    // The real session toolbar is always the first app-owned row. It owns the
-    // system top inset even when a compact tab strip follows underneath.
+    // Phone tabs own the top inset when present; otherwise the header owns it.
     return this.sshTopChromeLayout().headerTopInsetVp;
   }
 
@@ -7169,15 +7369,20 @@ struct SshTerminal {
     return SSH_SESSION_HEADER_BASE_HEIGHT_VP + this.headerTopOffset();
   }
 
+  /**
+   * The standalone tab row shows once there is something to switch between: a second session, the SFTP tab or a
+   * workspace. A single session's tab only repeated the header's title above it.
+   */
   private sshStandaloneTabStripVisible(): boolean {
-    return (this.sshTabViews.length > 0 ||
+    return (this.sshTabViews.length > 1 || this.sftpWorkspaceTabState.open ||
       (this.sshWorkspaceModeEnabled() && this.sshWorkspaceSnapshot.tabs.length > 0)) &&
       !this.sshTabsInline();
   }
 
   private sshTopChromeLayout(): SshTopChromeLayout {
     return resolveSshTopChromeLayout(
-      this.topChromeOffset(), this.sshStandaloneTabStripVisible());
+      this.topChromeOffset(), this.sshStandaloneTabStripVisible(),
+      !this.isDesktopDevice && !this.isPadDevice, this.sshTabStripHeight());
   }
 
   private shellViewportHeight(): number {
@@ -8722,9 +8927,350 @@ struct SshTerminal {
       '已选择本机文件 ' + entry.name + ' (' + this.formatFileSize(entry.size) + ')';
   }
 
+  private onSshContinuationConnectionChange(): void {
+    this.stopSftpKnock();
+    if (!this.connected && this.proContinuationWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
+      this.proContinuationPersistent = false;
+    }
+    if (this.connected) { this.proContinuationAutoRetryAt = 0; this.startProContinuationAuto(); }
+  }
+
+  // Always-on Pro continuation: armed while connected, re-armed after a transfer or state change.
+  private startProContinuationAuto(): void {
+    if (this.proContinuationAutoStop !== null) { this.maybeAutoArmProContinuation(); return; }
+    ProContinuationPreferences.getInstance().load(getContext(this) as common.UIAbilityContext);
+    const stopPreferences = ProContinuationPreferences.getInstance().subscribe((): void => { this.maybeAutoArmProContinuation(); });
+    const stopEntries = ProEntries.subscribe((): void => { this.maybeAutoArmProContinuation(); });
+    const stopService = ProContinuationService.getInstance().subscribe((): void => { this.maybeAutoArmProContinuation(); });
+    this.proContinuationAutoStop = (): void => { stopPreferences(); stopEntries(); stopService(); };
+  }
+
+  private maybeAutoArmProContinuation(): void {
+    if (this.proContinuationArming || this.terminalClosing) { return; }
+    const service = ProContinuationService.getInstance();
+    const auto = ProContinuationPreferences.getInstance().settings().auto &&
+      ProContinuationPreferences.getInstance().protocolEnabled('ssh');
+    const armed = service.armed(this.proContinuationWindowId);
+    if (!auto && armed && this.proContinuationPersistent) {
+      service.cancelSource(this.proContinuationWindowId); this.proContinuationPersistent = false; return;
+    }
+    if (!auto || !this.connected || armed || Date.now() < this.proContinuationAutoRetryAt) { return; }
+    void this.armProContinuation(true, false).then((ok: boolean): void => {
+      if (!ok) { this.proContinuationAutoRetryAt = Date.now() + 30000; }
+    });
+  }
+
+  private proContinuationPaneEpoch: number = 0;
+  private onProContinuationPaneChange(): void {
+    this.proContinuationPaneEpoch++;
+    this.stopSftpKnock();
+  }
+
+  private proContinuationSessionCurrent(page: number, binding: number, session: number,
+    generation: number, hostId: string): boolean {
+    return !this.terminalClosing && this.connected && this.pageGeneration === page &&
+      this.sshBindingGeneration === binding && this.sessionId === session && this.hostId === hostId &&
+      generation > 0 && this.sshSessionGeneration === generation &&
+      this.loader.getConnectionState(session) === SSH_STATE_CONNECTED &&
+      this.loader.getSshTerminalDiagnostics(session).sessionGeneration === generation;
+  }
+
+  // Menu action: arms with the current always-on preference and may request the permission.
+  private async prepareProContinuation(): Promise<void> {
+    this.showSshHeaderActionPopup = false;
+    if (!this.connected || this.terminalClosing) { return; }
+    if (this.proContinuationDescribe() === null) {
+      promptAction.showToast({ message: '本轮接续仅支持直连 SSH；代理配置暂未开放', duration: 2200 }); return;
+    }
+    try {
+      const prepared = await this.armProContinuation(ProContinuationPreferences.getInstance().settings().auto, true);
+      promptAction.showToast({ message: prepared ? '接续已开启，本端会话保持连接' :
+        proContinuationFailureText(ProContinuationService.getInstance().lastPrepareFailure()), duration: 2400 });
+    } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
+  }
+
+  // Described when the other device continues, so the current pane and SFTP directory are carried.
+  private proContinuationDescribe(): ProConnectionDescription | null {
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return null; }
+    const files = this.showSftpPanel && !this.sftpRootSheetClosing && this.sftpPath.startsWith('/');
+    return describeProSshConnection(host, files ? 'files' : 'terminal', files ? this.sftpPath : '',
+      getContext(this) as common.UIAbilityContext);
+  }
+
+  // Only this host's stored credential; read when the other device continues and the user opted in.
+  private proContinuationSecret(hostId: string): ProContinuationSecret | null {
+    const host = HostSyncService.getInstance().getHost(hostId);
+    if (host === undefined || host.id !== this.hostId) { return null; }
+    if (host.sshUseKey) {
+      const key: string = host.sshKeyId.length > 0 ?
+        (KeyVaultService.getInstance().getSshKey(host.sshKeyId)?.privateKey || '') : host.sshKeyData;
+      return key.length > 0 ? validProContinuationSecret({ kind: 'key', password: '', privateKeyPem: key,
+        passphrase: host.sshKeyPassphrase } as ProContinuationSecret) : null;
+    }
+    return host.password.length > 0 ? validProContinuationSecret({ kind: 'password', password: host.password,
+      privateKeyPem: '', passphrase: '' } as ProContinuationSecret) : null;
+  }
+
+  private async armProContinuation(persistent: boolean, requestPermission: boolean): Promise<boolean> {
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined || !this.connected || this.terminalClosing) { return false; }
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration;
+    const session = this.sessionId; const hostId = this.hostId;
+    const sessionGeneration = this.sshSessionGeneration;
+    if (!this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId) ||
+        this.proContinuationDescribe() === null) { return false; }
+    this.proContinuationArming = true;
+    try {
+      const win = window.findWindow(this.getUIContext().getWindowName());
+      this.proContinuationWindowId = win.getWindowProperties().id;
+      const prepared = await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+        windowId: this.proContinuationWindowId,
+        describe: (): ProConnectionDescription | null => this.hostId === hostId ? this.proContinuationDescribe() : null,
+        isCurrent: (): boolean => this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId),
+        close: (): void => { this.closeSessionAndBack(); },
+        secret: (): ProContinuationSecret | null => this.proContinuationSecret(hostId)
+      }, persistent, requestPermission);
+      this.proContinuationPersistent = prepared && persistent;
+      return prepared;
+    } catch (_error) {
+      return false;
+    } finally { this.proContinuationArming = false; }
+  }
+
+  private async restoreProContinuation(): Promise<void> {
+    if (this.proContinuationRestoreRunning || this.proConnectionTransferId === '' || !this.connected ||
+        this.sessionId <= 0 || this.terminalClosing) { return; }
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return; }
+    const service = ProContinuationService.getInstance();
+    const id = this.proConnectionTransferId;
+    const view = service.restoreView(id, host);
+    if (view === null) { this.proConnectionTransferId = ''; return; }
+    this.proContinuationRestoreRunning = true;
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration; const session = this.sessionId;
+    const sessionGeneration = this.sshSessionGeneration;
+    try {
+      let restored: boolean = true;
+      if (view.sshPane === 'files') { this.openSftpPanel(); restored = this.showSftpPanel; }
+      const paneEpoch = this.proContinuationPaneEpoch;
+      if (view.sshDirectory !== '') { restored = (await this.refreshSftp(view.sshDirectory)) && restored; }
+      if (this.proConnectionTransferId !== id || service.incomingId() !== id) { return; }
+      restored = restored && this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, host.id) &&
+        paneEpoch === this.proContinuationPaneEpoch &&
+        (view.sshPane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing &&
+          !this.sftpCloseRootAfterPeerPicker) : !this.showSftpPanel) &&
+        (view.sshDirectory === '' || this.sftpPath === this.normalizeRemoteDir(view.sshDirectory));
+      if (!restored || !service.complete(id, host)) {
+        service.cancelIncoming(id);
+        promptAction.showToast({ message: 'SSH 已连接，目录恢复或接续回执未完成；源端仍保留', duration: 2400 });
+      }
+      this.proConnectionTransferId = '';
+    } finally { this.proContinuationRestoreRunning = false; }
+  }
+
+  private stopProConnectionShare(): void {
+    this.proConnectionShareEpoch++;
+    if (this.proConnectionShareWindowId > 0) {
+      ProConnectionShareSender.getInstance().stop(this.proConnectionShareWindowId);
+      this.proConnectionShareWindowId = 0;
+    }
+  }
+
+  private async prepareProConnectionShare(): Promise<void> {
+    this.showSshHeaderActionPopup = false;
+    this.stopSftpKnock();
+    if (proConnectionShareBase() === '') {
+      promptAction.showToast({ message: '连接分享正在完成应用链接配置与设备验证，暂未开放', duration: 2600 }); return;
+    }
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return; }
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration;
+    const session = this.sessionId; const generation = this.sshSessionGeneration;
+    const pane = this.showSftpPanel ? 'files' : 'terminal';
+    const directory = this.sftpPath.startsWith('/') ? this.sftpPath : '';
+    const epoch = this.proConnectionShareEpoch;
+    const current = (): boolean => epoch === this.proConnectionShareEpoch &&
+      !this.sshContextualGuideInBackground() && this.proContinuationSessionCurrent(page, binding, session, generation, host.id) &&
+      (pane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing && this.sftpPath === directory) : !this.showSftpPanel);
+    if (!current() || (pane === 'files' && directory === '')) { return; }
+    const context = getContext(this) as common.UIAbilityContext;
+    const description = describeProSshConnection(host, pane, directory, context);
+    if (description === null) {
+      promptAction.showToast({ message: '目前仅支持分享直连 SSH，代理连接暂未开放', duration: 2200 }); return;
+    }
+    const preview = '主机：' + description.label + '\n地址：' + description.host + ':' + description.port.toString() +
+      '\n用户名：' + description.username + (directory === '' ? '' : '\n目录：' + directory) +
+      '\n以上信息将发送给接收设备；密码和密钥需由对方自行填写。本端会话继续保留。';
+    try {
+      const ownWindow = window.findWindow(this.getUIContext().getWindowName());
+      const answer = await this.getUIContext().getPromptAction().showDialog({ title: '准备分享 SSH 连接', message: preview,
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '准备分享', color: this.accentColor }] });
+      if (answer.index !== 1 || !current()) { return; }
+      this.proConnectionShareWindowId = ownWindow.getWindowProperties().id;
+      const armed = ProConnectionShareSender.getInstance().arm({ windowId: this.proConnectionShareWindowId,
+        context, description, isCurrent: current,
+        confirm: async (point: KnockPoint | null): Promise<boolean> => {
+          if (!current()) { return false; }
+          const rect = ownWindow.getWindowProperties().windowRect;
+          const match = matchKnockWindow(point, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+          if (match === 'outside') { return false; }
+          const confirmation = await this.getUIContext().getPromptAction().showDialog({
+            title: '发送给碰一碰设备', message: (match === 'unknown' ? '未取得有效碰点，请确认分享的是当前窗口。\n' : '') + preview,
+            buttons: [{ text: '取消', color: this.pal().text2 }, { text: '发送连接信息', color: this.accentColor }] });
+          return confirmation.index === 1 && current();
+        }
+      });
+      promptAction.showToast({ message: armed ? '已准备分享，请在 2 分钟内碰一碰当前窗口' :
+        '无法准备分享，请检查 Pro、系统分享能力和当前连接', duration: 2400 });
+    } catch (_error) { this.stopProConnectionShare(); }
+  }
+
+  /** A session opened from a Pro workspace restores the entry's initial pane and directory once. */
+  private async restoreProWorkspaceView(hostId: string): Promise<void> {
+    const view: WorkspaceView | null = WorkspaceHandoff.getInstance().takeView(hostId);
+    if (view === null || this.terminalClosing || !this.connected || this.hostId !== hostId) { return; }
+    if (view.sshPane === 'files') { this.openSftpPanel(); }
+    if (view.sshDirectory !== '' && !(await this.refreshSftp(view.sshDirectory))) {
+      promptAction.showToast({ message: '工作区目录未能打开，可在 SFTP 中手动进入', duration: 2200 });
+    }
+  }
+
+  private async restoreProConnectionShare(): Promise<void> {
+    if (this.proConnectionShareRestoreRunning || this.proConnectionShareId === '' || !this.connected ||
+        this.sessionId <= 0 || this.terminalClosing) { return; }
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return; }
+    const service = ProConnectionShareReceiver.getInstance();
+    const id = this.proConnectionShareId;
+    const view = service.restoreView(id, host);
+    if (view === null) { service.cancel(id); this.proConnectionShareId = ''; return; }
+    this.proConnectionShareRestoreRunning = true;
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration; const session = this.sessionId;
+    const generation = this.sshSessionGeneration;
+    try {
+      let restored: boolean = true;
+      if (view.sshPane === 'files') { this.openSftpPanel(); restored = this.showSftpPanel; }
+      const paneEpoch = this.proContinuationPaneEpoch;
+      if (view.sshDirectory !== '') { restored = (await this.refreshSftp(view.sshDirectory)) && restored; }
+      if (this.proConnectionShareId !== id || service.incomingId() !== id) { return; }
+      restored = restored && this.proContinuationSessionCurrent(page, binding, session, generation, host.id) &&
+        paneEpoch === this.proContinuationPaneEpoch &&
+        (view.sshPane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing &&
+          !this.sftpCloseRootAfterPeerPicker) : !this.showSftpPanel) &&
+        (view.sshDirectory === '' || this.sftpPath === this.normalizeRemoteDir(view.sshDirectory));
+      if (!restored || !service.complete(id, host)) {
+        service.cancel(id);
+        promptAction.showToast({ message: 'SSH 已连接，分享目录未恢复；可在 SFTP 中手动打开', duration: 2400 });
+      }
+      this.proConnectionShareId = '';
+    } finally { this.proConnectionShareRestoreRunning = false; }
+  }
+
+  private sftpKnockContext(): ProAccessContext {
+    const context: ProAccessContext = ProAppRuntime.getInstance().context('ssh');
+    if (proKnockSupported()) { context.capabilities = [KNOCK_SHARE_CAPABILITY]; }
+    return context;
+  }
+
+  private stopSftpKnock(): void {
+    this.stopProConnectionShare();
+    this.sftpKnockEpoch++;
+    this.sftpKnockReceiver.stop();
+    if (this.sftpKnockActive) { this.sftpKnockStatus = '已停止接收投递，未入队文件会在本机接收结束后清理'; }
+    this.sftpKnockActive = false;
+  }
+
+  private armSftpKnock(): void {
+    if (this.sftpKnockActive) { this.stopSftpKnock(); return; }
+    const runtime = ProAppRuntime.getInstance().runtime;
+    if (!runtime.decision('pro.file.knockTransfer', this.sftpKnockContext()).executable ||
+      this.sftpBusy || !this.sftpWorkbenchSurfaceActive()) { return; }
+    const page: number = this.pageGeneration;
+    const binding: number = this.sshBindingGeneration;
+    const session: number = this.sessionId;
+    const generation: number = this.sshSessionGeneration;
+    const owner: string = this.hostId;
+    const remoteRoot: string = this.sftpPath;
+    const epoch: number = ++this.sftpKnockEpoch;
+    const current = (): boolean => epoch === this.sftpKnockEpoch &&
+      this.hostId === owner && this.sshBindingGeneration === binding && this.sftpPath === remoteRoot &&
+      this.sftpWorkbenchSurfaceActive() && !this.sshContextualGuideInBackground() &&
+      this.isSftpRequestActive(page, session, generation) &&
+      runtime.decision('pro.file.knockTransfer', this.sftpKnockContext()).executable;
+    if (!current()) { return; }
+    try {
+      // Resolve this UI instance's window; the last focused window could belong
+      // to another SSH session in the same process.
+      const name: string = this.getUIContext().getWindowName() || '';
+      const ownWindow: window.Window = window.findWindow(name);
+      const windowId: number = ownWindow.getWindowProperties().id;
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const armed: boolean = this.sftpKnockReceiver.arm({
+        windowId, cacheDir: context.cacheDir, isCurrent: current,
+        confirm: async (point: KnockPoint | null): Promise<boolean> => {
+          if (!current() || this.sftpBusy) { return false; }
+          const rect: window.Rect = ownWindow.getWindowProperties().windowRect;
+          const match = matchKnockWindow(point, { left: rect.left, top: rect.top,
+            width: rect.width, height: rect.height });
+          if (match === 'outside') {
+            this.sftpKnockStatus = '碰点不在当前窗口内，请重新准备接收';
+            return false;
+          }
+          const answer = await this.getUIContext().getPromptAction().showDialog({
+            title: '上传手机文件到远端',
+            message: (match === 'unknown' ? '未取得有效碰点，请确认目标。\n' : '') +
+              '主机：' + this.hostLabel + '\n目录：' + remoteRoot +
+              '\n最多 16 个文件，合计不超过 512 MB；同名文件会单独询问。',
+            buttons: [{ text: '取消', color: this.pal().text2 }, { text: '接收并上传', color: this.accentColor }]
+          });
+          return answer.index === 1 && current() && !this.sftpBusy;
+        },
+        deliver: async (uris: string[], root: string, live: () => boolean): Promise<boolean> => {
+          if (!live() || this.sftpBusy) { return false; }
+          this.sftpBusy = true;
+          let staging: string = '';
+          let batchId: string = '';
+          try {
+            staging = await this.sftpLocalProvider.createTransferStagingRoot();
+            if (staging.length === 0 || !live()) { return false; }
+            const items: SshSftpTreeItem[] = await this.sftpShareStager.stage(uris, root, staging, live);
+            if (!live()) { return false; }
+            const plan = planSshSftpBatch(items, SFTP_BATCH_LIMITS);
+            if (!plan.accepted) { throw new Error('接收文件无法组成上传批次'); }
+            const result = this.sftpTaskStore.enqueueBatch(owner, 'upload', remoteRoot, plan);
+            if (!result.accepted) { throw new Error('无法创建上传任务'); }
+            batchId = result.batchId;
+            this.sftpBatchLocalRoots.set(batchId, staging);
+            this.sftpBatchRemoteRoots.set(batchId, remoteRoot);
+            this.sftpDropBatches.add(batchId);
+            this.refreshRecoveredSftpTasks();
+            return true;
+          } finally {
+            if (batchId.length === 0 && staging.length > 0) {
+              await this.sftpLocalProvider.remove(staging, true);
+            }
+            if (this.isSftpRequestActive(page, session, generation)) {
+              this.sftpBusy = false;
+              if (batchId.length > 0) { this.startSftpEngineBatch(batchId); }
+            }
+          }
+        },
+        status: (message: string, active: boolean): void => {
+          if (epoch !== this.sftpKnockEpoch || !this.isPageGenerationActive(page)) { return; }
+          this.sftpKnockStatus = message;
+          this.sftpKnockActive = active;
+        }
+      });
+      if (!armed) { this.sftpKnockStatus = '无法准备碰一碰接收，请等待上次接收结束或检查系统分享能力'; }
+    } catch (_err) { this.sftpKnockStatus = '当前窗口暂不能接收碰一碰文件'; }
+  }
+
   private async handleSftpExternalDrop(event: DragEvent): Promise<void> {
     this.sftpDropHoverActive = false;
-    if (!this.sftpWorkbenchSurfaceActive() || this.sftpBusy ||
+    // The popup (showSftpSheet) accepts a drop as the workbench tab did.
+    if (!(this.sftpWorkbenchSurfaceActive() || this.showSftpSheet) || this.sftpBusy ||
       !this.sftpLocalProvider.snapshot().plan.supportsExternalDrag ||
       !this.isSftpRequestActive(this.pageGeneration, this.sessionId, this.sshSessionGeneration)) {
       event.setResult(DragResult.DRAG_FAILED);
@@ -10041,8 +10587,10 @@ struct SshTerminal {
   }
 
   private stageIndependentWindowAfterAuthentication(params: Object): void {
-    if (this.sessionWindowId.length > 0 || !this.isDesktopDevice) { return; }
     const values: Record<string, Object> = params as Record<string, Object>;
+    // PC always hands the authenticated session to its own window; a Pad workspace does so to open in split screen.
+    if (this.sessionWindowId.length > 0 ||
+      (!this.isDesktopDevice && values['workspaceSplitWindow'] !== true)) { return; }
     if (values['pcWindowAfterAuthentication'] !== true) { return; }
     const preflightKind: string = typeof values['pcWindowPreflightKind'] === 'string' ?
       values['pcWindowPreflightKind'] as string : '';
@@ -10165,6 +10713,10 @@ struct SshTerminal {
       routeParams['authenticated'] = true;
       routeParams['sshWindowPreauthenticated'] = true;
       routeParams['sshInitialTranscript'] = transcript;
+      const sharedId = this.proConnectionShareId;
+      if (sharedId !== '' && ProConnectionShareReceiver.getInstance().restoreView(sharedId, host) !== null) {
+        routeParams['proConnectionShareId'] = sharedId;
+      }
       const request: RemoteSessionWindowRequest = {
         target: 'ssh_terminal',
         protocol: 'ssh',
@@ -10179,6 +10731,10 @@ struct SshTerminal {
         context, request,
         new RemoteSessionWindowNativeHandoff(this.loader, sourceRegistry, active));
       if (!opened) { throw new Error('independent SSH ability launch rejected'); }
+
+      // The target owns the same authenticated native session and the one-use
+      // view token. Removing the carrier page must not cancel its restoration.
+      if (this.proConnectionShareId === sharedId) { this.proConnectionShareId = ''; }
 
       this.pcWindowHandoffComplete = true;
       // Remove only the transferred source tab. Other SSH tabs remain owned by
@@ -10394,6 +10950,12 @@ struct SshTerminal {
   }
 
   async aboutToAppear(): Promise<void> {
+    SshSkinStore.getInstance().load(getContext(this) as common.Context);
+    this.sshSkinStopPro?.();
+    this.sshSkinStopPro = ProEntries.subscribe((): void => { this.sshSkinProTick++; });
+    this.stopSftpKnock();
+    this.sftpKnockStopPro?.();
+    this.sftpKnockStopPro = ProAppRuntime.getInstance().runtime.subscribe((): void => { this.stopSftpKnock(); });
     // A reused route must not expose a previous page's passphrase prompt or
     // retain its resolver while the new SSH binding is being established.
     this.clearSshSecretPrompt();
@@ -10406,6 +10968,12 @@ struct SshTerminal {
     this.sshAuthPromptPageReadyAtMs = 0;
     this.clearSshAuthPromptPendingIdentity();
     const routeParams: Object = router.getParams();
+    const continuationValue: Object | undefined = (routeParams as Record<string, Object>)?.['proConnectionTransferId'];
+    this.proConnectionTransferId = typeof continuationValue === 'string' ? continuationValue : '';
+    this.proContinuationRestoreRunning = false;
+    const shareValue: Object | undefined = (routeParams as Record<string, Object>)?.['proConnectionShareId'];
+    this.proConnectionShareId = typeof shareValue === 'string' && /^[a-f0-9]{32}$/.test(shareValue) ? shareValue : '';
+    this.proConnectionShareRestoreRunning = false;
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
     this.stopSshAuthPromptPolling(true);
@@ -10492,7 +11060,8 @@ struct SshTerminal {
       // AppStorage. Read the durable appearance here as well so mobile xterm
       // never boots with a default font that masks the user's saved choice.
       const sshContext: common.Context = getContext(this) as common.Context;
-      this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext);
+      this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext,
+        sshWorkbenchHostIsPc(this.isDesktopDevice));
       this.refreshSshWorkspaceCapabilitySelection();
       this.sshProductivityReady = this.sshProductivityStore.init(sshContext);
       this.refreshSshProductivityDocument();
@@ -10823,7 +11392,16 @@ struct SshTerminal {
             if (!r.ok) { this.connecting = false; this.connectionError = lockGateErrorMessage(r) || '验证未通过'; return; }
           }
           if (!this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) { return; }
-          if (windowPreauthenticated) {
+          const authenticatedHandoff: string = (p['sshAuthenticatedHandoff'] as string) || '';
+          if (authenticatedHandoff.length > 0) {
+            const handedSessionId: number = SshAuthenticatedHandoff.getInstance().consume(
+              authenticatedHandoff, host, this.terminalSshProxyPlan(host));
+            if (handedSessionId <= 0 || !await this.attachSshSession(
+              pageGeneration, bindingGeneration, handedSessionId, this.hostId)) {
+              this.connecting = false;
+              this.connectionError = '已鉴权 SSH 会话交接失败，请返回主机列表重试';
+            }
+          } else if (windowPreauthenticated) {
             const handedSessionId: number = this.loader.getSessionId();
             if (handedSessionId <= 0 || !await this.attachSshSession(
               pageGeneration, bindingGeneration, handedSessionId, this.hostId)) {
@@ -10850,6 +11428,20 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.clearSshPipRearm();
+    this.sshSkinStopPro?.(); this.sshSkinStopPro = null;
+    this.proContinuationAutoStop?.(); this.proContinuationAutoStop = null;
+    if (this.proContinuationWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
+      this.proContinuationWindowId = 0;
+    }
+    this.stopSftpKnock();
+    if (this.proConnectionShareId !== '') {
+      ProConnectionShareReceiver.getInstance().cancel(this.proConnectionShareId);
+      this.proConnectionShareId = '';
+    }
+    this.sftpKnockStopPro?.();
+    this.sftpKnockStopPro = null;
     // Scrub page-local authentication material before any asynchronous
     // teardown work can leave this page instance reachable.
     this.clearSshSecretPrompt();
@@ -11151,6 +11743,8 @@ struct SshTerminal {
     this.scheduleSshContextualGuide(760);
   }
 
+  onPageHide(): void { this.stopSftpKnock(); }
+
   private backgroundSshInfos(): SshTerminalBackgroundInfo[] {
     const result: SshTerminalBackgroundInfo[] = [];
     const seenSessions: Set<number> = new Set<number>();
@@ -11200,18 +11794,32 @@ struct SshTerminal {
 
   private async setPreferredOrientation(orientation: window.Orientation, label: string,
     requestPageGeneration: number = -1): Promise<void> {
+    const startedAt: number = Date.now();
+    const generation: number = requestPageGeneration >= 0 ? requestPageGeneration : this.pageGeneration;
+    const requestedName: DiagnosticWindowOrientation = this.diagnosticOrientationName(orientation);
     try {
       if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          generation, false, Math.max(0, Date.now() - startedAt));
         return;
       }
       const ctx = this.getUIContext().getHostContext();
-      if (!ctx) { return; }
+      if (!ctx) {
+        recordDiagnosticWindowObservation('failed', requestedName, 'unknown', 'failed',
+          generation, false, Math.max(0, Date.now() - startedAt));
+        this.scheduleSshOrientationRestoreRetry(orientation, label, generation);
+        return;
+      }
       const win: window.Window = await window.getLastWindow(ctx);
       if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          generation, false, Math.max(0, Date.now() - startedAt));
         return;
       }
       await win.setPreferredOrientation(orientation);
       if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          generation, false, Math.max(0, Date.now() - startedAt));
         return;
       }
       this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
@@ -11221,13 +11829,45 @@ struct SshTerminal {
         this.isLandscape = false;
       }
       hilog.info(0x0000, 'SshTerminal', 'setPreferredOrientation(' + label + ') OK');
+      recordDiagnosticWindowObservation('succeeded', requestedName, requestedName,
+        'succeeded', generation, this.orientationApplied,
+        Math.max(0, Date.now() - startedAt));
       if (orientation !== window.Orientation.UNSPECIFIED && !this.isDesktopDevice) {
         void this.forceStatusBarDark();
       }
     } catch (err) {
       hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed code=' +
         sshDiagnosticErrorCode(err));
+      recordDiagnosticWindowObservation('failed', requestedName, 'unknown', 'failed',
+        generation, this.orientationApplied,
+        Math.max(0, Date.now() - startedAt));
+      this.scheduleSshOrientationRestoreRetry(orientation, label, generation);
     }
+  }
+
+  private scheduleSshOrientationRestoreRetry(orientation: window.Orientation,
+    label: string, generation: number): void {
+    if (orientation !== window.Orientation.UNSPECIFIED || label.indexOf('-RETRY') >= 0) {
+      return;
+    }
+    setTimeout((): void => {
+      if (this.pageGeneration === generation) {
+        void this.setPreferredOrientation(orientation, label + '-RETRY', generation);
+      }
+    }, 250);
+  }
+
+  private diagnosticOrientationName(orientation: window.Orientation): DiagnosticWindowOrientation {
+    if (orientation === window.Orientation.PORTRAIT) { return 'portrait'; }
+    if (orientation === window.Orientation.LANDSCAPE) { return 'landscape'; }
+    if (orientation === window.Orientation.AUTO_ROTATION) { return 'auto_rotation'; }
+    if (orientation === window.Orientation.AUTO_ROTATION_PORTRAIT) {
+      return 'auto_rotation_portrait';
+    }
+    if (orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE) {
+      return 'auto_rotation_landscape';
+    }
+    return 'unspecified';
   }
 
   private async toggleSshOrientation(): Promise<void> {
@@ -11550,11 +12190,14 @@ struct SshTerminal {
 
   private onSshAbilityBackgroundChange(): void {
     if (this.sshContextualGuideInBackground()) {
+      this.stopSftpKnock();
       this.clearSshRouteSecretCapture();
       SshOperationRouteSecretService.getInstance().clearAll();
     }
     if (!this.sshContextualGuideInBackground()) {
       this.scheduleSshContextualGuide();
+      // Back in front: the PiP of the last background cycle is being retired; the next one needs a new controller.
+      this.scheduleSshPipRearm();
     }
     this.syncSshBackgroundTasksForAbilitySignal();
   }
@@ -11662,8 +12305,40 @@ struct SshTerminal {
     } catch (_) {}
   }
 
+  /** The Pro skin for a host (the active tab by default), or null for the free appearance. */
+  private sshSkin(hostId: string = this.hostId): SshSkin | null {
+    if (this.sshSkinRevision < 0 || this.sshSkinProTick < 0) { return null; }
+    return SshSkinStore.getInstance().resolve(hostId);
+  }
+
+  /** Terminal fonts are Pro: the skin font, else a profile font only with Pro. */
+  private sshTerminalFontFamily(hostId: string, profileFont: string): string {
+    const skin: SshSkin | null = this.sshSkin(hostId);
+    if (skin !== null) { return sshSkinFont(skin.fontId).css; }
+    return this.sshSkinProTick >= 0 && ProEntries.visible(PRO_PERSONALIZATION_FEATURE) ? profileFont : 'monospace';
+  }
+
+  private terminalBgColor(): string {
+    return this.sshSkin()?.terminal.background ?? '#0D0D0D';
+  }
+
   private sshPal(): Palette {
-    return buildDark(this.accentColor);
+    const skin: SshSkin | null = this.sshSkin();
+    if (skin === null) { return buildDark(this.accentColor); }
+    const pal: Palette = skin.dark ? buildDark(skin.chrome.accent) : buildLight(skin.chrome.accent);
+    pal.bg = skin.terminal.background;
+    pal.sheetBg = skin.chrome.sheet;
+    pal.card = skin.chrome.chip;
+    pal.surface = skin.chrome.chip;
+    pal.cardBorder = skin.chrome.divider;
+    pal.divider = skin.chrome.divider;
+    pal.text = skin.chrome.barText;
+    pal.text2 = skin.chrome.barTextDim;
+    pal.text3 = skin.chrome.barTextDim;
+    pal.terminalBg = skin.terminal.background;
+    pal.terminalBar = skin.chrome.bar;
+    pal.terminalFg = skin.terminal.foreground;
+    return pal;
   }
 
   private bindSheetBg(originalBackground: string): string {
@@ -11672,11 +12347,24 @@ struct SshTerminal {
 
   // SSH 终端始终深色模式 — 顶栏和底栏不跟随系统主题, 固定深色背景+亮色文字
   private chromeBg(): string {
-    return '#11151C';
+    return this.sshSkin()?.chrome.bar ?? '#11151C';
+  }
+
+  /** Text on the terminal bars: the skin's bar text, or the classic light text on dark chrome. */
+  private chromeText(opacity: number): string {
+    const skin: SshSkin | null = this.sshSkin();
+    if (skin === null) { return opacity >= 1 ? '#F4F7FA' : 'rgba(242,244,247,' + opacity.toString() + ')'; }
+    const alpha: string = Math.round(Math.max(0, Math.min(1, opacity)) * 255).toString(16).toUpperCase();
+    return '#' + (alpha.length < 2 ? '0' + alpha : alpha) + skin.chrome.barText.substring(1);
+  }
+
+  /** Floating buttons over the terminal: an opaque bar-colored disc. */
+  private floatingChromeBg(): string {
+    return this.sshSkin()?.chrome.bar ?? 'rgba(20,25,33,0.90)';
   }
 
   private chromeChipBg(): string {
-    return 'rgba(255,255,255,0.08)';
+    return this.sshSkin()?.chrome.chip ?? 'rgba(255,255,255,0.08)';
   }
 
   private connectionDotColor(): string {
@@ -12002,6 +12690,7 @@ struct SshTerminal {
 
   private async connect(host: RemoteHost, pageGeneration: number,
     bindingGeneration: number): Promise<void> {
+    const connectBeganAt: number = Date.now();
     const bindingHostId: string = host.id.trim();
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
     // This path creates a new native identity after adoption/reconnect failed;
@@ -12187,6 +12876,8 @@ struct SshTerminal {
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       hilog.error(0x0001, 'SshTerminal', '[connect] failed code=' +
         sshDiagnosticErrorCode(err));
+      const nativeCode: number = parseInt(sshDiagnosticErrorCode(err), 10);
+      recordSshFailure(msg, Number.isFinite(nativeCode) ? nativeCode : 0, Date.now() - connectBeganAt);
       this.connectionError = msg;
       this.sshTabStore.invalidateSession(bindingHostId, 'error', msg);
       this.refreshSshTabViews();
@@ -12279,6 +12970,11 @@ struct SshTerminal {
     // that was never fully rebound to the page.
     this.connected = true;
     this.connecting = false;
+    const authenticatedHost: RemoteHost | undefined = this.srv.getHost(bindingHostId);
+    if (authenticatedHost !== undefined) {
+      SshAuthenticatedHandoff.getInstance().remember(authenticatedHost,
+        this.terminalSshProxyPlan(authenticatedHost), connectedSessionId, sessionGeneration);
+    }
     // Publish the tab state only after the callback and resume gate succeed.
     // This is the same commit boundary as the page-owned connected state and
     // prevents the toolbar from oscillating between stale connecting/connected.
@@ -12305,6 +13001,11 @@ struct SshTerminal {
     this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId);
     this.publishIndependentWindowReady('ssh-session-attached');
+    // Receipt restoration starts only after callback, SFTP generation and the
+    // authenticated page binding are committed, never from a raw CONNECTED poll.
+    void this.restoreProContinuation();
+    void this.restoreProConnectionShare();
+    void this.restoreProWorkspaceView(bindingHostId);
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
@@ -12384,6 +13085,9 @@ struct SshTerminal {
       const prepared: boolean = await this.sshPipService.prepare(
         context, this.makeSshPipInfo(), (reason: string): void => {
           hilog.info(0x0017, 'SshTerminal', 'SSH PiP stopped reason=' + reason);
+          // WMS retires a controller after each background cycle (restore or close); without a new one the
+          // second time the app leaves shows no PiP.
+          this.scheduleSshPipRearm();
         });
       if (prepared && this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         hilog.info(0x0017, 'SshTerminal', 'SSH PiP prepared session=' + this.sessionId.toString());
@@ -12391,6 +13095,28 @@ struct SshTerminal {
     } catch (err) {
       hilog.warn(0x0017, 'SshTerminal', 'SSH PiP prepare failed code=' +
         sshDiagnosticErrorCode(err));
+    }
+  }
+
+  /**
+   * Arm PiP again for the next time the app leaves, once the last cycle's controller is gone: only in front, for a
+   * connected session of this page (an independent SSH window never owns the phone PiP).
+   */
+  private scheduleSshPipRearm(): void {
+    this.clearSshPipRearm();
+    this.sshPipRearmTimer = setTimeout((): void => {
+      this.sshPipRearmTimer = -1;
+      if (this.terminalClosing || this.sessionWindowId.length > 0 || this.sshContextualGuideInBackground() ||
+        !this.connected || this.sessionId <= 0 || this.sshPipService.isPreparedOrPreparing()) { return; }
+      hilog.info(0x0017, 'SshTerminal', 'SSH PiP re-arming for the next background');
+      void this.prepareSshPip(this.pageGeneration, this.sshBindingGeneration, this.hostId);
+    }, SSH_PIP_REARM_DELAY_MS);
+  }
+
+  private clearSshPipRearm(): void {
+    if (this.sshPipRearmTimer !== -1) {
+      clearTimeout(this.sshPipRearmTimer);
+      this.sshPipRearmTimer = -1;
     }
   }
 
@@ -12969,12 +13695,24 @@ struct SshTerminal {
       normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
     const override: number | undefined = sessionScopeKey.length > 0 ?
       this.terminalSessionFontSizeOverrides.get(sessionScopeKey) : undefined;
+    // The migrated compatibility profile only mirrors the settings appearance; the
+    // 设置 > 终端字体大小 value stays authoritative unless a real profile sets a size.
+    const onlyLegacy: boolean = profile.appliedProfileIds.every((id: string): boolean =>
+      id === SSH_TERMINAL_PROFILE_LEGACY_ID);
     return override === undefined || revision < 0 ?
-      profile.fontSize : sshTerminalFontSizeForPinch(override, 1);
+      (onlyLegacy ? sshTerminalFontSizeForPinch(this.fontSize, 1) : profile.fontSize) :
+      sshTerminalFontSizeForPinch(override, 1);
   }
 
   private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
-    if (!this.terminalProfileStore.isReady()) { return defaultSshTerminalResolvedProfile(); }
+    if (!this.terminalProfileStore.isReady()) {
+      // Lay out with the user's appearance until profiles load, so the grid does not start at
+      // the built-in 18 and resize (and reprint the remote prompt) a moment later.
+      const fallback: SshTerminalResolvedProfile = defaultSshTerminalResolvedProfile();
+      fallback.fontSize = this.fontSize;
+      fallback.lineSpacing = this.lineSpacing;
+      return fallback;
+    }
     const normalizedHostId: string = hostId.trim();
     const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
       normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
@@ -13121,6 +13859,7 @@ struct SshTerminal {
   private TerminalProfileSheetContent() {
     SshTerminalProfileSheet({
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       profiles: this.terminalProfiles,
       resolvedProfile: this.resolvedTerminalProfile,
       globalProfileId: this.terminalGlobalProfileId,
@@ -13146,10 +13885,20 @@ struct SshTerminal {
     })
   }
 
+  /** Tallest scrolling body for a content-sized SSH sheet: the visible page minus keyboard and chrome. */
+  private sshSheetBodyMaxVp(): number {
+    const page: number = this.shellAreaH > 0 ? this.shellAreaH : 720;
+    return Math.max(160, Math.min(640, page - this.kbHeight - 140));
+  }
+
   @Builder
   private SshProductivitySheetContent() {
     SshProductivitySheet({
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
+      // Content determines the sheet height; only long forms/lists scroll.
+      // The SSH page owns keyboard avoidance, so use its live keyboard inset.
+      maxBodyHeightVp: Math.max(48, Math.min(600,
+        (this.shellAreaH > 0 ? this.shellAreaH : 720) - this.kbHeight - 128)),
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
       connected: this.sshProductivityInsertionAllowed(),
@@ -13210,6 +13959,7 @@ struct SshTerminal {
   private SshSessionLogSheetContent() {
     SshSessionLogSheet({
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       document: this.sshSessionLogDocument,
       results: this.sshSessionLogResults,
       ready: this.sshSessionLogReady,
@@ -13230,6 +13980,7 @@ struct SshTerminal {
   private SshBroadcastSheetContent() {
     SshBroadcastSheet({
       sheetBackgroundColor: this.bindSheetBg('#341A1A'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       targets: this.sshBroadcastTargets,
       selectedHostIds: this.sshBroadcastSelectedHostIds,
       text: this.sshBroadcastText,
@@ -14375,8 +15126,8 @@ struct SshTerminal {
     }).onAppear((): void => { this.onForwardingSheetAppear(token); })
   }
 
-  private async refreshSftp(path?: string): Promise<void> {
-    if (this.terminalClosing || this.sessionId <= 0 || this.sftpBusy) { return; }
+  private async refreshSftp(path?: string): Promise<boolean> {
+    if (this.terminalClosing || this.sessionId <= 0 || this.sftpBusy) { return false; }
     this.clearSftpRefreshTimer();
     this.invalidateSftpRefreshRequest();
     const target: string = this.normalizeRemoteDir(path || this.sftpPath);
@@ -14401,10 +15152,10 @@ struct SshTerminal {
       const result = await this.loader.listRemoteDirAsync(
         requestSessionId, target, requestSessionGeneration);
       if (!this.isSftpRefreshRequestActive(requestPageGeneration, requestSessionId,
-        requestSessionGeneration, requestToken)) { return; }
+        requestSessionGeneration, requestToken)) { return false; }
       if (result.errorCode < 0) {
         this.sftpStatus = '[SFTP-LIST] 读取目录失败 ret=' + result.errorCode.toString();
-        return;
+        return false;
       }
       const entries: SftpFileEntry[] = result.entries;
       this.sftpEntries = this.sortSftpEntries(entries);
@@ -14417,6 +15168,7 @@ struct SshTerminal {
       this.sftpSelectedMtime = -1;
       this.sftpNameInput = '';
       this.sftpStatus = '已加载 ' + entries.length.toString() + ' 项';
+      return true;
     } catch (err) {
       if (this.isSftpRefreshRequestActive(requestPageGeneration, requestSessionId,
         requestSessionGeneration, requestToken)) {
@@ -14424,11 +15176,12 @@ struct SshTerminal {
       }
     } finally {
       if (!this.isSftpRefreshRequestActive(requestPageGeneration, requestSessionId,
-        requestSessionGeneration, requestToken)) { return; }
+        requestSessionGeneration, requestToken)) { return false; }
       this.clearSftpRefreshTimeout();
       this.sftpRefreshOwnerToken = 0;
       this.sftpBusy = false;
     }
+    return false;
   }
 
   private openSftpPanel(): void {
@@ -14949,7 +15702,9 @@ struct SshTerminal {
   }
 
   private closeSftpPanel(): void {
-    if (this.sshWorkbenchEnabled) {
+    this.sftpNameMode = '';
+    this.sftpPeerNameMode = '';
+    if (this.sshWorkbenchEnabled && !this.sftpUsesRootBindSheet()) {
       this.closeSftpWorkbenchTab();
       return;
     }
@@ -17337,46 +18092,129 @@ struct SshTerminal {
     }
   }
 
+  // ==================== SFTP (popup on every device) ====================
+  // One visual language for both endpoints: round icon tools beside a path capsule, file rows that select on tap
+  // and open a selected folder on a second tap, a selection bar with its actions, and an inline name editor for
+  // new folders and renames. Every action calls the same guarded operation as before.
+
+  private sftpColors(): SftpColors {
+    const pal: Palette = this.sshPal();
+    const colors: SftpColors = new SftpColors();
+    colors.text = pal.text;
+    colors.text2 = pal.text2;
+    colors.text3 = pal.text3;
+    colors.card = pal.card;
+    colors.surface = pal.surface;
+    colors.divider = pal.divider;
+    colors.accent = this.accentColor;
+    colors.danger = pal.danger;
+    return colors;
+  }
+
+  private sftpEntryMeta(isDirectory: boolean, size: number): string {
+    return isDirectory ? '文件夹' : this.formatFileSize(size);
+  }
+
+  /** The phone's list height inside its content-sized sheet. */
+  private sftpPhoneListHeight(): number {
+    const page: number = this.shellAreaH > 0 ? this.shellAreaH : 720;
+    return Math.max(220, Math.min(380, Math.round(page * 0.42)));
+  }
+
+  private beginSftpName(mode: string): void {
+    this.sftpNameMode = mode;
+    this.sftpNameInput = mode === 'rename' ? this.sftpSelectedName : '';
+    setTimeout((): void => {
+      try { focusControl.requestFocus('sftpNameInput'); } catch (_err) {}
+    }, 80);
+  }
+
+  private confirmSftpName(): void {
+    const name: string = this.sftpNameInput.trim();
+    if (this.sftpNameMode === 'rename') {
+      if (!this.isValidRemoteName(name)) { this.sftpStatus = '新名称无效'; return; }
+      this.sftpNameMode = '';
+      void this.renameSftpSelected();
+      return;
+    }
+    if (name.length > 0 && !this.isValidRemoteName(name)) { this.sftpStatus = '文件夹名称无效'; return; }
+    this.sftpNameMode = '';
+    void this.makeSftpDir();
+  }
+
+  private selectSftpRemoteEntry(entry: SftpFileEntry): void {
+    this.sftpNameMode = '';
+    this.enterSftpEntry(entry);
+  }
+
+  private openSftpRemoteEntry(entry: SftpFileEntry): void {
+    this.sftpNameMode = '';
+    this.enterSftpEntry(entry);
+    this.openSftpSelectedDir();
+  }
+
+  private beginSftpPeerName(mode: string): void {
+    this.sftpPeerNameMode = mode;
+    this.sftpPeerNameInput = mode === 'rename' ? this.sftpPeerSelectedName : '';
+    setTimeout((): void => {
+      try { focusControl.requestFocus('sftpPeerNameInput'); } catch (_err) {}
+    }, 80);
+  }
+
+  private confirmSftpPeerName(): void {
+    const name: string = this.sftpPeerNameInput.trim();
+    if (this.sftpPeerNameMode === 'rename') {
+      if (!this.isValidRemoteName(name)) { this.sftpPeerStatus = '新名称无效'; return; }
+      this.sftpPeerNameMode = '';
+      void this.renameSftpPeerSelected();
+      return;
+    }
+    if (name.length > 0 && !this.isValidRemoteName(name)) { this.sftpPeerStatus = '文件夹名称无效'; return; }
+    this.sftpPeerNameMode = '';
+    void this.makeSftpPeerDir();
+  }
+
   @Builder
   SftpRightEndpointChooser() {
-    Column() {
-      Text('选择右侧文件端点').fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(this.sshPal().text)
-      Text('选择后才会加载内容，可随时切换')
-        .fontSize(11).fontColor(this.sshPal().text3).margin({ top: 6, bottom: 18 })
-      if (this.sftpWideLayout()) {
-        Row({ space: 10 }) {
-          Button('本机文件')
-            .width(156).height(44).fontSize(12)
-            .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text)
-            .enabled(!this.sftpEndpointChangeBlocked() && !this.sftpRootSheetClosing)
-            .onClick((): void => { this.useSftpLocalEndpoint(); })
-          Button('选择 SSH 主机')
-            .width(156).height(44).fontSize(12)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .enabled(!this.sftpEndpointChangeBlocked() && !this.sftpRootSheetClosing)
-            .onClick((): void => { this.openSftpPeerPicker(); })
-        }.width('100%').justifyContent(FlexAlign.Center)
-      } else {
-        Column({ space: 10 }) {
-          Button('本机文件')
-            .width('100%').height(44).fontSize(12)
-            .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text)
-            .enabled(!this.sftpEndpointChangeBlocked() && !this.sftpRootSheetClosing)
-            .onClick((): void => { this.useSftpLocalEndpoint(); })
-          Button('选择 SSH 主机')
-            .width('100%').height(44).fontSize(12)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .enabled(!this.sftpEndpointChangeBlocked() && !this.sftpRootSheetClosing)
-            .onClick((): void => { this.openSftpPeerPicker(); })
-        }.width('100%').constraintSize({ maxWidth: 320 })
+    Column({ space: 14 }) {
+      Column({ space: 4 }) {
+        Text('另一端放什么').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+        Text('选好后才会读取内容，之后随时可以换').fontSize(12).fontColor(this.sshPal().text3)
       }
+      Column({ space: 10 }) {
+        this.SftpEndpointOption($r('sys.symbol.folder_fill'), '本机文件', '本机传输箱和你授权的文件夹', false)
+        this.SftpEndpointOption($r('sys.symbol.computer_host_fill'), '另一台 SSH 主机', '在两台主机之间直接传输', true)
+      }.width('100%').constraintSize({ maxWidth: 360 })
     }
     .width('100%')
     .height(this.sftpWideLayout() ? '100%' : this.sftpListHeight())
     .constraintSize({ minHeight: 0 })
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  SftpEndpointOption(icon: Resource, title: string, detail: string, peer: boolean) {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph(icon).fontSize(20).fontColor([peer ? appUiOnAccentText(this.accentColor) : this.accentColor])
+      }
+      .width(42).height(42).borderRadius(13)
+      .backgroundColor(peer ? this.accentColor : appUiTint(this.accentColor, '1F'))
+      Column({ space: 2 }) {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+        Text(detail).fontSize(11).fontColor(this.sshPal().text3)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.sshPal().text3])
+    }
+    .width('100%').height(66).padding({ left: 12, right: 14 })
+    .borderRadius(18).backgroundColor(this.sshPal().card)
+    .opacity(!this.sftpEndpointChangeBlocked() && !this.sftpRootSheetClosing ? 1 : 0.4)
+    .onClick((): void => {
+      if (this.sftpEndpointChangeBlocked() || this.sftpRootSheetClosing) { return; }
+      if (peer) { this.openSftpPeerPicker(); } else { this.useSftpLocalEndpoint(); }
+    })
+    .accessibilityText(title + '，' + detail)
   }
 
   @Builder
@@ -17450,557 +18288,443 @@ struct SshTerminal {
     .borderRadius(18)
   }
 
+  /** 上级 · the peer's path capsule · 刷新 · 新建文件夹. */
   @Builder
   SftpPeerNavigation() {
-    Column() {
-      Row({ space: 6 }) {
-        Button('上级').width(58).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-          .onClick((): void => { void this.refreshSftpPeer(this.parentRemotePath(this.sftpPeerPath)); })
-        Button('刷新').width(58).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-          .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPath); })
-        Button('根目录').width(66).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-          .onClick((): void => { void this.refreshSftpPeer('/'); })
-        Button('新建目录').width(78).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-          .onClick((): void => { void this.makeSftpPeerDir(); })
-      }.width('100%').margin({ bottom: 7 })
-      if (this.sftpWideLayout()) {
-        Row({ space: 6 }) {
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        SftpIconButton({ icon: $r('sys.symbol.chevron_left'), label: '上级目录', colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy,
+          onTap: (): void => { void this.refreshSftpPeer(this.parentRemotePath(this.sftpPeerPath)); } })
+        Row() {
+          Stack() {
+            SymbolGlyph($r('sys.symbol.house_fill')).fontSize(15).fontColor([this.sshPal().text3])
+          }
+          .width(36).height(40)
+          .onClick((): void => { if (!this.sftpBusy && !this.sftpPeerBusy) { void this.refreshSftpPeer('/'); } })
+          .accessibilityText('根目录')
           TextInput({ text: this.sftpPeerPathInput, placeholder: '路径' })
-            .fontSize(11).fontColor(this.sshPal().text).fontFamily('monospace')
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8)
-            .layoutWeight(1).constraintSize({ minWidth: 90 })
+            .fontSize(13).fontColor(this.sshPal().text).fontFamily('monospace')
+            .placeholderColor(this.sshPal().text3).backgroundColor(Color.Transparent)
+            .height(40).padding({ left: 2, right: 2 }).layoutWeight(1)
+            .enterKeyType(EnterKeyType.Go)
             .onChange((value: string): void => { this.sftpPeerPathInput = value; })
             .onSubmit((): void => { void this.refreshSftpPeer(this.sftpPeerPathInput); })
-          Button('跳转').width(60).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-            .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPathInput); })
-          TextInput({ text: this.sftpPeerNameInput, placeholder: '新名称' })
-            .fontSize(11).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8)
-            .layoutWeight(1).constraintSize({ minWidth: 90 })
+          Stack() {
+            SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(15).fontColor([this.accentColor])
+          }
+          .width(38).height(40)
+          .onClick((): void => {
+            if (!this.sftpBusy && !this.sftpPeerBusy) { void this.refreshSftpPeer(this.sftpPeerPathInput); }
+          })
+          .accessibilityText('跳转到这个路径')
+        }
+        .layoutWeight(1).height(40).borderRadius(20).backgroundColor(this.sshPal().card)
+        SftpIconButton({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新', colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy,
+          onTap: (): void => { void this.refreshSftpPeer(this.sftpPeerPath); } })
+        SftpIconButton({ icon: $r('sys.symbol.folder_badge_plus'), label: '新建文件夹', colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy,
+          onTap: (): void => { this.beginSftpPeerName('mkdir'); } })
+      }.width('100%')
+      if (this.sftpPeerNameMode !== '') {
+        Row({ space: 8 }) {
+          TextInput({ text: this.sftpPeerNameInput,
+            placeholder: this.sftpPeerNameMode === 'mkdir' ? '新文件夹名称（留空自动命名）' : '新名称' })
+            .id('sftpPeerNameInput')
+            .fontSize(13).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
+            .backgroundColor(this.sshPal().card).height(40).borderRadius(20).layoutWeight(1)
             .onChange((value: string): void => { this.sftpPeerNameInput = value; })
-            .onSubmit((): void => { void this.renameSftpPeerSelected(); })
-          Button('重命名').width(78).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy && !this.sftpPeerBusy &&
-              this.sftpPeerSelectedPath.length > 0 && this.sftpPeerNameInput.trim().length > 0)
-            .onClick((): void => { void this.renameSftpPeerSelected(); })
-        }.width('100%')
-      } else {
-        Row({ space: 6 }) {
-          TextInput({ text: this.sftpPeerPathInput, placeholder: '路径' })
-            .fontSize(11).fontColor(this.sshPal().text).fontFamily('monospace')
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8).layoutWeight(1)
-            .onChange((value: string): void => { this.sftpPeerPathInput = value; })
-            .onSubmit((): void => { void this.refreshSftpPeer(this.sftpPeerPathInput); })
-          Button('跳转').width(60).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-            .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPathInput); })
-        }.width('100%').margin({ bottom: 6 })
-        Row({ space: 6 }) {
-          TextInput({ text: this.sftpPeerNameInput, placeholder: '新名称' })
-            .fontSize(11).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8).layoutWeight(1)
-            .onChange((value: string): void => { this.sftpPeerNameInput = value; })
-            .onSubmit((): void => { void this.renameSftpPeerSelected(); })
-          Button('重命名').width(78).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy && !this.sftpPeerBusy &&
-              this.sftpPeerSelectedPath.length > 0 && this.sftpPeerNameInput.trim().length > 0)
-            .onClick((): void => { void this.renameSftpPeerSelected(); })
-        }.width('100%')
+            .onSubmit((): void => { this.confirmSftpPeerName(); })
+          SftpIconButton({ icon: $r('sys.symbol.checkmark'), tone: 'accent', colors: this.sftpColors(),
+            label: this.sftpPeerNameMode === 'mkdir' ? '创建文件夹' : '确认重命名',
+            usable: !this.sftpBusy && !this.sftpPeerBusy,
+            onTap: (): void => { this.confirmSftpPeerName(); } })
+          SftpIconButton({ icon: $r('sys.symbol.xmark'), label: '取消', colors: this.sftpColors(),
+            onTap: (): void => { this.sftpPeerNameMode = ''; } })
+        }
+        .width('100%')
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 }))
+          .animation({ duration: 180, curve: Curve.FastOutSlowIn }))
       }
     }.width('100%').margin({ bottom: 8 })
   }
 
   @Builder
   SftpCurrentEndpointHeader() {
-    Row() {
-      Column() {
-        Row({ space: 7 }) {
-          Text('当前主机').fontSize(14).fontWeight(FontWeight.Medium)
-            .fontColor(this.sshPal().text)
+    Row({ space: 10 }) {
+      Column({ space: 3 }) {
+        Row({ space: 8 }) {
+          Text('当前主机').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
           Text(this.hostLabel).fontSize(11).fontColor(this.accentColor)
+            .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(9)
+            .backgroundColor(appUiTint(this.accentColor, '1F'))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        Text(this.userAtHost + '  ·  ' + this.sftpPath)
-          .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 3 })
+        Text(this.userAtHost).fontSize(11).fontColor(this.sshPal().text3)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Text(this.sftpEntries.length.toString() + ' 项')
-        .fontSize(10).fontColor(this.sshPal().text3)
-    }.width('100%').alignItems(VerticalAlign.Center).margin({ bottom: 9 })
+      if (this.sftpBusy && !this.sftpTransferInProgress()) {
+        LoadingProgress().width(18).height(18).color(this.accentColor)
+      }
+      Text(this.sftpEntries.length.toString() + ' 项').fontSize(11).fontColor(this.sshPal().text3)
+    }.width('100%').alignItems(VerticalAlign.Center).margin({ bottom: 10 })
   }
 
   @Builder
   SftpPeerEndpointHeader() {
-    Column() {
-      Row() {
-        Column() {
-          Text(this.sftpPeerHostLabel()).fontSize(14).fontWeight(FontWeight.Medium)
-            .fontColor(this.sshPal().text)
-          Text(this.sftpPeerHostAddress() + '  ·  ' + this.sftpPeerPath)
-            .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 3 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(this.sftpPeerEntries.length.toString() + ' 项')
-          .fontSize(10).fontColor(this.sshPal().text3).margin({ right: 8 })
-        Button('本机文件').height(30).fontSize(10).width(78).padding(0)
-          .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpEndpointChangeBlocked())
-          .onClick((): void => { this.useSftpLocalEndpoint(); })
-        Button('更换主机').height(30).fontSize(10).width(82).padding(0)
-          .margin({ left: 6 }).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-          .enabled(!this.sftpEndpointChangeBlocked())
-          .onClick((): void => { this.changeSftpPeerHost(); })
-      }.width('100%').alignItems(VerticalAlign.Center)
-    }.width('100%').margin({ bottom: 9 })
+    Row({ space: 8 }) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.computer_host_fill')).fontSize(17).fontColor([this.accentColor])
+      }.width(36).height(36).borderRadius(11).backgroundColor(appUiTint(this.accentColor, '1F'))
+      Column({ space: 3 }) {
+        Text(this.sftpPeerHostLabel()).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.sftpPeerHostAddress()).fontSize(11).fontColor(this.sshPal().text3)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SftpIconButton({ icon: $r('sys.symbol.folder_fill'), label: '改用本机文件', diameter: 36, colors: this.sftpColors(),
+        usable: !this.sftpEndpointChangeBlocked(),
+        onTap: (): void => { this.useSftpLocalEndpoint(); } })
+      SftpIconButton({ icon: $r('sys.symbol.arrow_left_arrow_right'), label: '更换主机', diameter: 36,
+        colors: this.sftpColors(), usable: !this.sftpEndpointChangeBlocked(),
+        onTap: (): void => { this.changeSftpPeerHost(); } })
+    }.width('100%').alignItems(VerticalAlign.Center).margin({ bottom: 10 })
+  }
+
+  /** What the current host's selection can do: open a folder, rename, delete. */
+  @Builder
+  SftpCurrentSelectionActions() {
+    if (this.sftpSelectedPath.length > 0) {
+      Row({ space: 6 }) {
+        SymbolGlyph(this.sftpSelectedIsDir ? $r('sys.symbol.folder_fill') : $r('sys.symbol.doc_text'))
+          .fontSize(16).fontColor([this.accentColor])
+        Text(this.sftpSelectedName).fontSize(13).fontColor(this.sshPal().text)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+        if (this.sftpSelectedIsDir) {
+          SftpIconButton({ icon: $r('sys.symbol.arrow_right'), label: '打开文件夹', diameter: 36, colors: this.sftpColors(),
+            usable: !this.sftpBusy, onTap: (): void => { this.openSftpSelectedDir(); } })
+        }
+        SftpIconButton({ icon: $r('sys.symbol.square_and_pencil'), label: '重命名', diameter: 36, colors: this.sftpColors(),
+          usable: !this.sftpBusy, onTap: (): void => { this.beginSftpName('rename'); } })
+        SftpIconButton({ icon: $r('sys.symbol.trash'), label: '删除', diameter: 36, tone: 'danger', colors: this.sftpColors(),
+          usable: !this.sftpBusy, onTap: (): void => { this.deleteSftpSelected(); } })
+      }
+      .width('100%').height(50).padding({ left: 14, right: 6 }).margin({ top: 8 })
+      .borderRadius(25).backgroundColor(this.sshPal().card)
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 }))
+        .animation({ duration: 200, curve: Curve.FastOutSlowIn }))
+    }
   }
 
   @Builder
-  SftpCurrentSelectionActions() {
-    Row({ space: 8 }) {
-      Button('进入目录').height(34).fontSize(11).layoutWeight(1)
-        .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 && this.sftpSelectedIsDir)
-        .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-        .onClick((): void => { this.openSftpSelectedDir(); })
-      Button('删除选中项').height(34).fontSize(11).layoutWeight(1)
-        .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0)
-        .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF')
-        .onClick((): void => { this.deleteSftpSelected(); })
-    }.width('100%').margin({ top: 8 })
+  SftpPeerSelectionActions() {
+    if (this.sftpPeerSelectedPath.length > 0) {
+      Row({ space: 6 }) {
+        SymbolGlyph(this.sftpPeerSelectedIsDir ? $r('sys.symbol.folder_fill') : $r('sys.symbol.doc_text'))
+          .fontSize(16).fontColor([this.accentColor])
+        Text(this.sftpPeerSelectedName).fontSize(13).fontColor(this.sshPal().text)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+        if (this.sftpPeerSelectedIsDir) {
+          SftpIconButton({ icon: $r('sys.symbol.arrow_right'), label: '打开文件夹', diameter: 36, colors: this.sftpColors(),
+            usable: !this.sftpBusy && !this.sftpPeerBusy,
+            onTap: (): void => { void this.refreshSftpPeer(this.sftpPeerSelectedPath); } })
+        }
+        SftpIconButton({ icon: $r('sys.symbol.square_and_pencil'), label: '重命名', diameter: 36, colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy, onTap: (): void => { this.beginSftpPeerName('rename'); } })
+        SftpIconButton({ icon: $r('sys.symbol.trash'), label: '删除', diameter: 36, tone: 'danger', colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy, onTap: (): void => { this.deleteSftpPeerSelected(); } })
+      }
+      .width('100%').height(50).padding({ left: 14, right: 6 }).margin({ top: 8 })
+      .borderRadius(25).backgroundColor(this.sshPal().card)
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 }))
+        .animation({ duration: 200, curve: Curve.FastOutSlowIn }))
+    }
   }
 
   @Builder
   SftpPeerWorkspace() {
     Column() {
-      Text(this.sftpPeerStatus)
-        .fontSize(10).fontColor(this.sshPal().text3).width('100%')
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        .margin({ bottom: 4 })
+      if (this.sftpPeerStatus.length > 0) {
+        Text(this.sftpPeerStatus)
+          .fontSize(11).fontColor(this.sshPal().text3).width('100%')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ bottom: 4 })
+      }
       Column() {
-        if (this.sftpPeerBusy) {
-          Column() {
-            LoadingProgress().width(24).height(24).color(this.accentColor)
-            Text(this.sftpPeerStatus).fontSize(11).fontColor(this.sshPal().text2).margin({ top: 8 })
-          }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+        if (this.sftpPeerBusy && this.sftpPeerEntries.length === 0) {
+          SftpEmptyState({ loading: true, title: this.sftpPeerStatus.length > 0 ? this.sftpPeerStatus : '正在读取',
+            colors: this.sftpColors() })
         } else if (this.sftpPeerEntries.length === 0) {
-          Column() {
-            Text(this.sftpPeerStatus).fontSize(12).fontColor(this.sshPal().text2)
-            Text('目标目录为空或尚未完成认证').fontSize(10)
-              .fontColor(this.sshPal().text3).margin({ top: 4 })
+          Column({ space: 10 }) {
+            SftpEmptyState({ icon: $r('sys.symbol.folder'), title: '这个目录是空的',
+              detail: '或这台主机还没有完成认证', colors: this.sftpColors() }).layoutWeight(1)
             if (this.sftpPeerHostId.length > 0) {
-              Button('重试连接 / 刷新').height(32).fontSize(11).margin({ top: 10 })
-                .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-                .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPath); })
+              SftpActionButton({ icon: $r('sys.symbol.arrow_clockwise'), label: '重试连接 / 刷新', barHeight: 40,
+                colors: this.sftpColors(), usable: !this.sftpBusy && !this.sftpPeerBusy,
+                onTap: (): void => { void this.refreshSftpPeer(this.sftpPeerPath); } })
+                .constraintSize({ maxWidth: 240 })
             }
-          }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+          }.width('100%').height('100%').padding({ bottom: 10 })
         } else {
-          List() {
+          List({ space: 4 }) {
             ForEach(this.sftpPeerEntries, (entry: SftpFileEntry): void => {
               ListItem() {
-                Row() {
-                  SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-                    .fontSize(18)
-                    .fontColor([entry.isDirectory ? this.accentColor : this.sshPal().text3])
-                    .width(28)
-                  Column() {
-                    Text(entry.name).fontSize(12).fontColor(this.sshPal().text)
-                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(entry.isDirectory ? '目录' : this.formatFileSize(entry.size))
-                      .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 2 })
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  if (this.sftpPeerSelectedPath === entry.path) {
-                    SymbolGlyph($r('sys.symbol.checkmark')).fontSize(16).fontColor([this.accentColor])
-                  }
-                }
-                .width('100%').height(this.sftpWideLayout() ? 34 : 44)
-                  .padding({ left: 8, right: 8 })
-                .borderRadius(7)
-                .backgroundColor(this.sftpPeerSelectedPath === entry.path
-                  ? this.sshPal().card : Color.Transparent)
-                .onClick((): void => { this.selectSftpPeerEntry(entry); })
+                SftpFileRow({ name: entry.name, meta: this.sftpEntryMeta(entry.isDirectory, entry.size),
+                  isDirectory: entry.isDirectory, selected: this.sftpPeerSelectedPath === entry.path,
+                  compact: this.sftpWideLayout(), usable: !this.sftpBusy && !this.sftpPeerBusy,
+                  colors: this.sftpColors(),
+                  onSelect: (): void => { this.sftpPeerNameMode = ''; this.selectSftpPeerEntry(entry); },
+                  onOpen: (): void => {
+                    this.sftpPeerNameMode = '';
+                    this.selectSftpPeerEntry(entry);
+                    void this.refreshSftpPeer(entry.path);
+                  } })
               }
+              .transition(TransitionEffect.OPACITY.animation({ duration: 180 }))
             }, (entry: SftpFileEntry): string => entry.path)
-          }.height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
-            .layoutWeight(this.sftpWideLayout() ? 1 : 0).width('100%')
-            .constraintSize({ minHeight: 0 }).scrollBar(BarState.Auto)
-            .edgeEffect(EdgeEffect.None)
+          }.width('100%').height('100%').scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         }
       }
       .width('100%')
       .height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
       .layoutWeight(this.sftpWideLayout() ? 1 : 0)
       .constraintSize({ minHeight: 0 })
-      .padding({ top: 4, bottom: 4 })
-      Row() {
-        Button('进入目录').height(32).fontSize(11).layoutWeight(1)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedIsDir)
-          .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerSelectedPath); })
-        Button('删除选中项').height(32).fontSize(11).layoutWeight(1).margin({ left: 8 })
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0)
-          .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF')
-          .onClick((): void => { this.deleteSftpPeerSelected(); })
-      }.width('100%').margin({ top: 8 })
+      this.SftpPeerSelectionActions()
     }.width('100%')
       .height(this.sftpWideLayout() ? 0 : 'auto')
       .layoutWeight(this.sftpWideLayout() ? 1 : 0)
       .constraintSize({ minHeight: 0 })
-      .padding({ top: 4, bottom: 4 })
   }
 
   @Builder
   SftpLocalWorkspace() {
     Column() {
-      Row() {
-        Column() {
-          Text('本机文件').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
-          if (this.sftpWideLayout()) {
-            Text(this.sftpLocalProviderStatus)
-              .fontSize(10).fontColor(this.sshPal().text2).margin({ top: 3 })
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
+      Row({ space: 8 }) {
+        Stack() {
+          SymbolGlyph($r('sys.symbol.folder_fill')).fontSize(17).fontColor([this.accentColor])
+        }.width(36).height(36).borderRadius(11).backgroundColor(appUiTint(this.accentColor, '1F'))
+        Column({ space: 3 }) {
+          Text('本机文件').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
           Text(this.sftpLocalPath.length > 0 ? this.sftpLocalPath : '未选择本机目录')
-            .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 3 })
+            .fontSize(11).fontColor(this.sshPal().text3)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Button('选择主机').height(30).fontSize(10).width(76).padding(0)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-          .enabled(!this.sftpEndpointChangeBlocked())
-          .onClick((): void => { this.changeSftpPeerHost(); })
-        Button('上级').height(32).fontSize(11).width(54).padding(0).margin({ left: 6 })
-          .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy && this.sftpLocalPath.length > 0)
-          .onClick((): void => { void this.openSftpLocalParent(); })
-        Button('刷新').height(32).fontSize(11).width(54).padding(0).margin({ left: 6 })
-          .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy)
-          .onClick((): void => { void this.refreshSftpLocal(this.pageGeneration); })
-      }.width('100%').margin({ bottom: this.sftpWideLayout() ? 4 : 8 })
+        SftpIconButton({ icon: $r('sys.symbol.chevron_left'), label: '上级目录', diameter: 36, colors: this.sftpColors(),
+          usable: !this.sftpBusy && this.sftpLocalPath.length > 0,
+          onTap: (): void => { void this.openSftpLocalParent(); } })
+        SftpIconButton({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新', diameter: 36, colors: this.sftpColors(),
+          usable: !this.sftpBusy, onTap: (): void => { void this.refreshSftpLocal(this.pageGeneration); } })
+        SftpIconButton({ icon: $r('sys.symbol.computer_host_fill'), label: '改用另一台 SSH 主机', diameter: 36,
+          colors: this.sftpColors(), usable: !this.sftpEndpointChangeBlocked(),
+          onTap: (): void => { this.changeSftpPeerHost(); } })
+      }.width('100%').margin({ bottom: 10 })
 
       if (this.sftpWideLayout() && this.localProviderNeedsAuthorization()) {
-        Button(this.sftpPickerBusy ? '正在选择本机目录...' : '授权本机目录')
-          .height(this.sftpWideLayout() ? 32 : 36).fontSize(12).width('100%')
-          .margin({ bottom: this.sftpWideLayout() ? 4 : 8 })
-          .enabled(!this.sftpBusy && !this.sftpPickerBusy)
-          .onClick((): void => { void this.authorizeLocalProvider(); })
+        SftpActionButton({ icon: $r('sys.symbol.folder_badge_plus'), barHeight: 40, colors: this.sftpColors(),
+          label: this.sftpPickerBusy ? '正在选择本机目录...' : '授权本机目录',
+          usable: !this.sftpBusy && !this.sftpPickerBusy,
+          onTap: (): void => { void this.authorizeLocalProvider(); } })
+          .margin({ bottom: 8 })
       }
 
       Column() {
         if (this.sftpLocalEntries.length === 0) {
-          Column() {
-            Text(this.sftpLocalProviderStatus === '本机文件能力不可用'
-              ? '当前设备没有可用的本机文件能力'
-              : '本机目录为空或尚未授权')
-              .fontSize(12).fontColor(this.sshPal().text2)
-            Text('选择本机文件后可上传到当前远端目录')
-              .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 4 })
-          }.height(this.sftpWideLayout() ? 0 : this.sftpLocalListHeight())
-            .layoutWeight(this.sftpWideLayout() ? 1 : 0)
-            .constraintSize({ minHeight: 0 })
-            .justifyContent(FlexAlign.Center)
+          SftpEmptyState({ icon: $r('sys.symbol.folder'), colors: this.sftpColors(),
+            title: this.sftpLocalProviderStatus === '本机文件能力不可用'
+              ? '这台设备没有可用的本机文件能力' : '本机目录为空或尚未授权',
+            detail: '选好本机文件后，可以上传到当前主机的目录' })
         } else {
-          List() {
+          List({ space: 4 }) {
             ForEach(this.sftpLocalEntries, (entry: SshLocalFileEntry) => {
               ListItem() {
-                Row() {
-                  SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-                    .fontSize(17)
-                    .fontColor([entry.isDirectory ? this.accentColor : this.sshPal().text3])
-                    .width(28)
-                  Column() {
-                    Text(entry.name)
-                      .fontSize(12).fontColor(this.sshPal().text)
-                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(entry.isDirectory ? '目录' : this.formatFileSize(entry.size))
-                      .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 2 })
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  if (this.sftpLocalSelectedUri === entry.uri) {
-                    SymbolGlyph($r('sys.symbol.checkmark'))
-                      .fontSize(16).fontColor([this.accentColor])
-                  }
-                }
-                .width('100%').height(this.sftpWideLayout() ? 34 : 44)
-                  .padding({ left: 8, right: 8 })
-                .borderRadius(7)
-                .backgroundColor(this.sftpLocalSelectedUri === entry.uri
-                  ? this.sshPal().card : Color.Transparent)
-                .onClick((): void => { this.selectSftpLocalEntry(entry); })
+                SftpFileRow({ name: entry.name, meta: this.sftpEntryMeta(entry.isDirectory, entry.size),
+                  isDirectory: entry.isDirectory, selected: this.sftpLocalSelectedUri === entry.uri,
+                  compact: this.sftpWideLayout(), usable: !this.sftpBusy, colors: this.sftpColors(),
+                  onSelect: (): void => { this.selectSftpLocalEntry(entry); },
+                  onOpen: (): void => {
+                    this.selectSftpLocalEntry(entry);
+                    this.openSftpLocalSelectedDir();
+                  } })
               }
+              .transition(TransitionEffect.OPACITY.animation({ duration: 180 }))
             }, (entry: SshLocalFileEntry) => entry.uri)
-          }
-          .height(this.sftpWideLayout() ? 0 : this.sftpLocalListHeight())
-          .layoutWeight(this.sftpWideLayout() ? 1 : 0)
-          .constraintSize({ minHeight: 0 })
-          .width('100%')
-          .scrollBar(BarState.Auto)
-          .edgeEffect(EdgeEffect.None)
+          }.width('100%').height('100%').scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         }
       }
       .width('100%')
       .height(this.sftpWideLayout() ? 0 : this.sftpLocalListHeight())
       .layoutWeight(this.sftpWideLayout() ? 1 : 0)
       .constraintSize({ minHeight: 0 })
-
-      Row() {
-        Button('进入目录')
-          .height(this.sftpWideLayout() ? 32 : 36).fontSize(11).layoutWeight(1)
-          .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy && this.sftpLocalSelectedIsDir)
-          .onClick((): void => { this.openSftpLocalSelectedDir(); })
-      }.width('100%').margin({ top: 8 })
     }
     .width('100%')
     .height(this.sftpWideLayout() ? 0 : 'auto')
     .layoutWeight(this.sftpWideLayout() ? 1 : 0)
     .constraintSize({ minHeight: 0 })
-    .padding({ top: 4, bottom: 4 })
   }
 
   @Builder
   SftpRecoveredTasks() {
     if (this.sftpRecoveredTasks.length > 0) {
-      Column() {
-        Row() {
-          Text('待恢复传输').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
-          Text(this.sftpRecoveredTasks.length.toString() + ' 项（显示最近一项）')
-            .fontSize(10).fontColor(this.sshPal().text3).margin({ left: 6 })
-        }.width('100%').margin({ bottom: 4 })
-          ForEach(this.sftpRecoveredTasks.slice(0, 1), (task: SshSftpTaskRecord) => {
-            Row() {
-              Column() {
+      Column({ space: 6 }) {
+        Row({ space: 6 }) {
+          SymbolGlyph($r('sys.symbol.clock')).fontSize(14).fontColor([this.accentColor])
+          Text('有未完成的传输').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+          Text(this.sftpRecoveredTasks.length.toString() + ' 项').fontSize(11).fontColor(this.sshPal().text3)
+        }.width('100%')
+        ForEach(this.sftpRecoveredTasks.slice(0, 1), (task: SshSftpTaskRecord) => {
+          Row({ space: 8 }) {
+            Column({ space: 2 }) {
               Text((task.sourceEndpoint?.kind === 'ssh' && task.targetEndpoint?.kind === 'ssh'
                 ? '双 SSH ' : (task.direction === 'upload' ? '上传 ' : '下载 ')) +
                 (task.isDirectory ? '目录 ' : '') + task.fileName)
-                .fontSize(11).fontColor(this.sshPal().text)
+                .fontSize(12).fontColor(this.sshPal().text)
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               Text(this.sftpTaskStageLabel(task.stage) + ' · ' + (task.isDirectory ? '目录' :
                 (task.totalBytes >= 0 ? this.formatFileSize(task.verifiedOffset) + ' / ' +
                   this.formatFileSize(task.totalBytes) : '大小未知')))
-                .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 2 })
+                .fontSize(11).fontColor(this.sshPal().text3)
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Button(task.sourceEndpoint?.kind === 'ssh' && task.targetEndpoint?.kind === 'ssh'
-              ? '恢复双 SSH' : (task.batchId.trim().length > 0 ? '恢复批次' : '恢复'))
-              .height(30).fontSize(10)
-              .enabled(!this.sftpBusy && this.sessionId > 0)
-              .onClick((): void => {
+            SftpIconButton({ icon: $r('sys.symbol.play_fill'), tone: 'accent', diameter: 36, colors: this.sftpColors(),
+              label: task.sourceEndpoint?.kind === 'ssh' && task.targetEndpoint?.kind === 'ssh'
+                ? '恢复双 SSH 传输' : (task.batchId.trim().length > 0 ? '恢复这批传输' : '恢复传输'),
+              usable: !this.sftpBusy && this.sessionId > 0,
+              onTap: (): void => {
                 if (task.sourceEndpoint?.kind === 'ssh' && task.targetEndpoint?.kind === 'ssh') {
                   void this.recoverSftpRemoteBatch(task.batchId);
                 } else if (task.batchId.trim().length > 0) { void this.recoverSftpBatch(task.batchId); }
                 else { void this.recoverSftpTask(task); }
-              })
-            Button('取消').height(30).fontSize(10).margin({ left: 6 })
-              .enabled(!this.sftpBusy)
-              .onClick((): void => { this.cancelRecoveredSftpTask(task); })
-          }
-          .width('100%').height(42).padding({ left: 8, right: 8 })
-          .borderRadius(7).backgroundColor(this.sshPal().surface)
-          .margin({ bottom: 4 })
+              } })
+            SftpIconButton({ icon: $r('sys.symbol.xmark'), label: '取消这项传输', diameter: 36, colors: this.sftpColors(),
+              usable: !this.sftpBusy, onTap: (): void => { this.cancelRecoveredSftpTask(task); } })
+          }.width('100%')
         }, (task: SshSftpTaskRecord) => task.taskId)
       }
-      .width('100%').padding({ top: 6, bottom: 6, left: 10, right: 10 })
-      .backgroundColor(this.sshPal().surface)
-      .borderRadius(10)
-      .border({ width: 0.5, color: this.sshPal().divider })
-      .margin({ bottom: 8 })
+      .width('100%').padding({ top: 10, bottom: 10, left: 14, right: 10 })
+      .backgroundColor(this.sshPal().card)
+      .borderRadius(18)
+      .margin({ bottom: 10 })
+      .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
     }
   }
 
+  /** The current host's files: rows that select on tap and open a selected folder on a second tap. */
   @Builder
   SftpRemoteWorkspace() {
     Column() {
       Column() {
-        if (this.sftpBusy || this.sftpTransferSession !== null &&
-          (this.sftpTransferSession.stage === 'paused' ||
-            this.sftpTransferSession.stage === 'waitingRemote')) {
-          Column() {
-            Row() {
-              if (this.sftpBusy) {
-                LoadingProgress().width(22).height(22).color(this.accentColor)
-              } else {
-                Text(this.sftpTransferSession !== null &&
-                  this.sftpTransferSession.stage === 'waitingRemote' ? '等待连接' : '暂停')
-                  .fontSize(12).fontColor(this.accentColor)
-                  .width(22).height(22).textAlign(TextAlign.Center)
-              }
-              Text(this.sftpProgress >= 0
-                ? (this.sftpProgressLabel + ' ' + Math.floor(this.sftpProgress * 100).toString() + '%')
-                : '处理中...')
-                .fontSize(12).fontColor(this.sshPal().text2).margin({ left: 8 })
-            }.height(34).justifyContent(FlexAlign.Center)
-            if (this.sftpProgress >= 0) {
-              Progress({ value: Math.floor(this.sftpProgress * 100), total: 100, type: ProgressType.Linear })
-                .width('86%').height(4).color(this.accentColor).backgroundColor(this.sshPal().divider)
-                .margin({ top: 4 })
-            }
-          }.height(this.sftpWideLayout() ? 0 :
-            transferProgressPanelHeight(this.sftpTransferSession))
-            .layoutWeight(this.sftpWideLayout() ? 1 : 0)
-            .constraintSize({ minHeight: 0 })
-            .justifyContent(FlexAlign.Center)
+        if (this.sftpBusy && this.sftpEntries.length === 0 && !this.sftpTransferInProgress()) {
+          SftpEmptyState({ loading: true, title: '正在读取目录', colors: this.sftpColors() })
         } else if (this.sftpEntries.length === 0) {
-          Column() {
-            Text('远端目录为空').fontSize(13).fontColor(this.sshPal().text2)
-            Text('可点击上传文件或刷新目录').fontSize(11).fontColor(this.sshPal().text3).margin({ top: 4 })
-          }.height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
-          .layoutWeight(this.sftpWideLayout() ? 1 : 0)
-            .constraintSize({ minHeight: 0 })
-            .justifyContent(FlexAlign.Center)
+          SftpEmptyState({ icon: $r('sys.symbol.folder'), title: '这个目录是空的',
+            detail: '可以上传文件，或新建一个文件夹', colors: this.sftpColors() })
         } else {
-          List() {
+          List({ space: 4 }) {
             ForEach(this.sftpEntries, (entry: SftpFileEntry) => {
               ListItem() {
-                Row() {
-                  SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-                    .fontSize(18)
-                    .fontColor([entry.isDirectory ? this.accentColor : this.sshPal().text3])
-                    .width(28)
-                  Column() {
-                    Text(entry.name)
-                      .fontSize(13).fontColor(this.sshPal().text)
-                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(entry.isDirectory ? '目录' : this.formatFileSize(entry.size))
-                      .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 2 })
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  if (this.sftpSelectedPath === entry.path) {
-                    SymbolGlyph($r('sys.symbol.checkmark'))
-                      .fontSize(17).fontColor([this.accentColor])
-                  }
-                }
-                .width('100%').height(this.sftpWideLayout() ? 34 : 38)
-                  .padding({ left: 10, right: 10 })
-                .borderRadius(8)
-                .backgroundColor(this.sftpSelectedPath === entry.path
-                  ? this.sshPal().card : Color.Transparent)
-                .onClick((): void => { this.enterSftpEntry(entry); })
+                SftpFileRow({ name: entry.name, meta: this.sftpEntryMeta(entry.isDirectory, entry.size),
+                  isDirectory: entry.isDirectory, selected: this.sftpSelectedPath === entry.path,
+                  compact: this.sftpWideLayout(), usable: !this.sftpBusy, colors: this.sftpColors(),
+                  onSelect: (): void => { this.selectSftpRemoteEntry(entry); },
+                  onOpen: (): void => { this.openSftpRemoteEntry(entry); } })
               }
+              .transition(TransitionEffect.OPACITY.animation({ duration: 180 }))
             }, (entry: SftpFileEntry) => entry.path)
-          }
-          .height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
-          .layoutWeight(this.sftpWideLayout() ? 1 : 0)
-          .constraintSize({ minHeight: 0 })
-          .width('100%')
-          .scrollBar(BarState.Auto)
-          .edgeEffect(EdgeEffect.None)
+          }.width('100%').height('100%').scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         }
       }
       .width('100%')
-      .height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
+      .height(this.sftpWideLayout() ? 0 : (this.sftpPadPcLayout() ? this.sftpListHeight() : this.sftpPhoneListHeight()))
       .layoutWeight(this.sftpWideLayout() ? 1 : 0)
       .constraintSize({ minHeight: 0 })
-      .padding({ top: 6, bottom: 6 })
     }
     .width('100%')
     .height(this.sftpWideLayout() ? 0 : 'auto')
     .layoutWeight(this.sftpWideLayout() ? 1 : 0)
     .constraintSize({ minHeight: 0 })
-    .padding({ top: 4, bottom: 4 })
   }
 
   @Builder
   SftpTransferHeader() {
-    Row() {
-      Column() {
-        Text('SFTP 文件传输').fontSize(18).fontWeight(FontWeight.Medium)
-          .fontColor(this.sshPal().text)
-        Text('当前主机 · ' + this.userAtHost).fontSize(11).fontColor(this.sshPal().text2)
-          .margin({ top: 4 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    Row({ space: 10 }) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.folder_fill')).fontSize(20).fontColor([appUiOnAccentText(this.accentColor)])
+      }
+      .width(42).height(42).borderRadius(13)
+      .linearGradient({ angle: 135, colors: [[this.accentColor, 0], [appUiTint(this.accentColor, 'B3'), 1]] })
+      Column({ space: 2 }) {
+        Text('SFTP 文件传输').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+        Text(this.userAtHost).fontSize(12).fontColor(this.sshPal().text3)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Row() {
+      Row({ space: 6 }) {
         Column().width(8).height(8).borderRadius(4)
           .backgroundColor(this.connected ? '#34C759' : '#FF9F0A')
-        Text(this.connected ? 'SFTP 已就绪' : '等待连接')
-          .fontSize(10).fontColor(this.sshPal().text2).margin({ left: 6 })
+        Text(this.connected ? '已就绪' : '等待连接').fontSize(11).fontColor(this.sshPal().text2)
       }
-      .height(30).padding({ left: 10, right: 10 }).borderRadius(15)
-      .backgroundColor(this.sshPal().surface).margin({ right: 12 })
-      Button() {
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(17)
-          .fontColor([this.sshPal().text2])
-      }
-      .width(38).height(38).borderRadius(19).padding(0)
-      .backgroundColor(this.sshPal().surface)
-      .accessibilityText('关闭 SFTP')
-      .onClick((): void => { this.closeSftpPanel(); })
+      .height(30).padding({ left: 10, right: 12 }).borderRadius(15)
+      .backgroundColor(this.sshPal().card)
+      .animation({ duration: 200 })
+      SftpIconButton({ icon: $r('sys.symbol.xmark'), label: '关闭 SFTP', colors: this.sftpColors(),
+        onTap: (): void => { this.closeSftpPanel(); } })
     }
-    .width('100%').height(44).alignItems(VerticalAlign.Center)
-    .margin({ bottom: 12 })
+    .width('100%').alignItems(VerticalAlign.Center)
+    .margin({ bottom: 14 })
   }
 
+  /** 上级 · the current host's path capsule (根目录 at its start, 跳转 at its end) · 刷新 · 新建文件夹. */
   @Builder
   SftpTransferNavigation() {
-    Column() {
-      Row({ space: 6 }) {
-        Button('上级').width(58).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy)
-          .onClick((): void => { this.refreshSftp(this.parentRemotePath(this.sftpPath)); })
-        Button('刷新').width(58).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy)
-          .onClick((): void => { this.refreshSftp(this.sftpPath); })
-        Button('根目录').width(66).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy)
-          .onClick((): void => { this.refreshSftp('/'); })
-        Button('新建目录').width(78).height(34).fontSize(11)
-          .padding(0).backgroundColor(this.sshPal().card).fontColor(this.sshPal().text2)
-          .enabled(!this.sftpBusy)
-          .onClick((): void => { this.makeSftpDir(); })
-      }.width('100%').margin({ bottom: 7 })
-      // Expanded panes keep both operations on one line. A narrow Pad/PC
-      // window splits the same pane-scoped controls into two rows instead of
-      // shrinking labels or falling back to the phone workflow.
-      if (this.sftpWideLayout()) {
-        Row({ space: 6 }) {
-          TextInput({ text: this.sftpPathInput, placeholder: '路径' })
-            .fontSize(11).fontColor(this.sshPal().text).fontFamily('monospace')
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8)
-            .layoutWeight(1).constraintSize({ minWidth: 90 })
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        SftpIconButton({ icon: $r('sys.symbol.chevron_left'), label: '上级目录', colors: this.sftpColors(),
+          usable: !this.sftpBusy,
+          onTap: (): void => { this.refreshSftp(this.parentRemotePath(this.sftpPath)); } })
+        Row() {
+          Stack() {
+            SymbolGlyph($r('sys.symbol.house_fill')).fontSize(15).fontColor([this.sshPal().text3])
+          }
+          .width(36).height(40)
+          .onClick((): void => { if (!this.sftpBusy) { this.refreshSftp('/'); } })
+          .accessibilityText('根目录')
+          TextInput({ text: this.sftpPathInput, placeholder: '远端路径' })
+            .fontSize(13).fontColor(this.sshPal().text).fontFamily('monospace')
+            .placeholderColor(this.sshPal().text3).backgroundColor(Color.Transparent)
+            .height(40).padding({ left: 2, right: 2 }).layoutWeight(1)
+            .enterKeyType(EnterKeyType.Go)
             .onChange((value: string): void => { this.sftpPathInput = value; })
             .onSubmit((): void => { this.gotoSftpPath(); })
-          Button('跳转').width(60).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy)
-            .onClick((): void => { this.gotoSftpPath(); })
-          TextInput({ text: this.sftpNameInput, placeholder: '新名称' })
-            .fontSize(11).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8)
-            .layoutWeight(1).constraintSize({ minWidth: 90 })
+          Stack() {
+            SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(15).fontColor([this.accentColor])
+          }
+          .width(38).height(40)
+          .onClick((): void => { this.gotoSftpPath(); })
+          .accessibilityText('跳转到这个路径')
+        }
+        .layoutWeight(1).height(40).borderRadius(20).backgroundColor(this.sshPal().card)
+        SftpIconButton({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新', colors: this.sftpColors(),
+          usable: !this.sftpBusy, onTap: (): void => { this.refreshSftp(this.sftpPath); } })
+        SftpIconButton({ icon: $r('sys.symbol.folder_badge_plus'), label: '新建文件夹', colors: this.sftpColors(),
+          usable: !this.sftpBusy, onTap: (): void => { this.beginSftpName('mkdir'); } })
+      }.width('100%')
+      if (this.sftpNameMode !== '') {
+        Row({ space: 8 }) {
+          TextInput({ text: this.sftpNameInput,
+            placeholder: this.sftpNameMode === 'mkdir' ? '新文件夹名称（留空自动命名）' : '新名称' })
+            .id('sftpNameInput')
+            .fontSize(13).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
+            .backgroundColor(this.sshPal().card).height(40).borderRadius(20).layoutWeight(1)
             .onChange((value: string): void => { this.sftpNameInput = value; })
-            .onSubmit((): void => { this.renameSftpSelected(); })
-          Button('重命名').width(78).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 &&
-              this.sftpNameInput.trim().length > 0)
-            .onClick((): void => { this.renameSftpSelected(); })
-        }.width('100%')
-      } else {
-        Row({ space: 6 }) {
-          TextInput({ text: this.sftpPathInput, placeholder: '路径' })
-            .fontSize(11).fontColor(this.sshPal().text).fontFamily('monospace')
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8).layoutWeight(1)
-            .onChange((value: string): void => { this.sftpPathInput = value; })
-            .onSubmit((): void => { this.gotoSftpPath(); })
-          Button('跳转').width(60).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy).onClick((): void => { this.gotoSftpPath(); })
-        }.width('100%').margin({ bottom: 6 })
-        Row({ space: 6 }) {
-          TextInput({ text: this.sftpNameInput, placeholder: '新名称' })
-            .fontSize(11).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
-            .backgroundColor(this.sshPal().card).height(34).borderRadius(8).layoutWeight(1)
-            .onChange((value: string): void => { this.sftpNameInput = value; })
-            .onSubmit((): void => { this.renameSftpSelected(); })
-          Button('重命名').width(78).height(34).fontSize(11).padding(0)
-            .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 &&
-              this.sftpNameInput.trim().length > 0)
-            .onClick((): void => { this.renameSftpSelected(); })
-        }.width('100%')
+            .onSubmit((): void => { this.confirmSftpName(); })
+          SftpIconButton({ icon: $r('sys.symbol.checkmark'), tone: 'accent', colors: this.sftpColors(),
+            label: this.sftpNameMode === 'mkdir' ? '创建文件夹' : '确认重命名', usable: !this.sftpBusy,
+            onTap: (): void => { this.confirmSftpName(); } })
+          SftpIconButton({ icon: $r('sys.symbol.xmark'), label: '取消', colors: this.sftpColors(),
+            onTap: (): void => { this.sftpNameMode = ''; } })
+        }
+        .width('100%')
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 }))
+          .animation({ duration: 180, curve: Curve.FastOutSlowIn }))
       }
     }.width('100%').margin({ bottom: 8 })
   }
@@ -18026,56 +18750,35 @@ struct SshTerminal {
   @Builder
   SftpWideRemoteActions() {
     if (this.sftpRightEndpointChosen && this.sftpRightEndpoint === 'ssh') {
-      Column() {
-        Row() {
-          Text('传输方向').fontSize(11).fontWeight(FontWeight.Medium)
-            .fontColor(this.sshPal().text)
-          Text('先在源端点选择文件或目录')
-            .fontSize(10).fontColor(this.sshPal().text3).margin({ left: 8 })
-        }.width('100%').margin({ bottom: 7 })
-        Row({ space: 8 }) {
-          Button('传输到当前主机')
-            .height(40).fontSize(12).layoutWeight(1)
-            .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .onClick((): void => { void this.enqueueSftpRemoteBatch(false); })
-          Button('传输到 ' + this.sftpPeerHostLabel())
-            .height(40).fontSize(12).layoutWeight(1)
-            .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpSelectedPath.length > 0)
-            .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text)
-            .onClick((): void => { void this.enqueueSftpRemoteBatch(true); })
-        }.width('100%')
-      }.width('100%').padding({ left: 10, right: 10, top: 9, bottom: 9 })
-        .margin({ top: 10 }).borderRadius(10)
-        .backgroundColor(this.sshPal().surface)
-        .border({ width: 0.5, color: this.sshPal().divider })
+      Row({ space: 10 }) {
+        SftpActionButton({ icon: $r('sys.symbol.arrow_left'), label: '传输到当前主机', tone: 'primary',
+          colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0,
+          onTap: (): void => { void this.enqueueSftpRemoteBatch(false); } }).layoutWeight(1)
+        SftpActionButton({ icon: $r('sys.symbol.arrow_right'), label: '传输到 ' + this.sftpPeerHostLabel(),
+          colors: this.sftpColors(),
+          usable: !this.sftpBusy && !this.sftpPeerBusy && this.sftpSelectedPath.length > 0,
+          onTap: (): void => { void this.enqueueSftpRemoteBatch(true); } }).layoutWeight(1)
+      }.width('100%').margin({ top: 12 })
     } else if (this.sftpRightEndpointChosen) {
-      Column() {
-        Row() {
-          Text('传输方向').fontSize(11).fontWeight(FontWeight.Medium)
-            .fontColor(this.sshPal().text)
-          Text(this.sftpSelectedIsDir && !this.sftpLocalSelectedIsDir
-            ? '下载目录前请在右侧选择目标文件夹' : '先在源端点选择文件或目录')
-            .fontSize(10).fontColor(this.sshPal().text3).margin({ left: 8 })
-        }.width('100%').margin({ bottom: 7 })
-        Row({ space: 8 }) {
-          Button(this.sftpLocalSelectedIsDir ? '上传目录到当前主机' :
-            (this.sftpLocalSelectedUri.length > 0 ? '上传到当前主机' : '选择文件并上传'))
-            .height(40).fontSize(12).layoutWeight(1)
-            .enabled(!this.sftpBusy).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .onClick((): void => { this.transferSftpLocalSelectionToCurrent(); })
-          Button(this.sftpSelectedIsDir ? '下载目录到本机' : '下载到本机')
-            .height(40).fontSize(12).layoutWeight(1)
-            .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 &&
-              (!this.sftpSelectedIsDir || this.sftpLocalSelectedIsDir &&
-                this.sftpLocalSelectedUri.length > 0))
-            .backgroundColor(this.sshPal().card).fontColor(this.sshPal().text)
-            .onClick((): void => { this.transferSftpCurrentSelectionToLocal(); })
+      Column({ space: 6 }) {
+        Row({ space: 10 }) {
+          SftpActionButton({ icon: $r('sys.symbol.arrow_up_to_line'), tone: 'primary', colors: this.sftpColors(),
+            label: this.sftpLocalSelectedIsDir ? '上传目录到当前主机' :
+              (this.sftpLocalSelectedUri.length > 0 ? '上传到当前主机' : '选择文件并上传'),
+            usable: !this.sftpBusy,
+            onTap: (): void => { this.transferSftpLocalSelectionToCurrent(); } }).layoutWeight(1)
+          SftpActionButton({ icon: $r('sys.symbol.arrow_down_to_line'), colors: this.sftpColors(),
+            label: this.sftpSelectedIsDir ? '下载目录到本机' : '下载到本机',
+            usable: !this.sftpBusy && this.sftpSelectedPath.length > 0 &&
+              (!this.sftpSelectedIsDir || this.sftpLocalSelectedIsDir && this.sftpLocalSelectedUri.length > 0),
+            onTap: (): void => { this.transferSftpCurrentSelectionToLocal(); } }).layoutWeight(1)
         }.width('100%')
-      }.width('100%').padding({ left: 10, right: 10, top: 9, bottom: 9 })
-        .margin({ top: 10 }).borderRadius(10)
-        .backgroundColor(this.sshPal().surface)
-        .border({ width: 0.5, color: this.sshPal().divider })
+        if (this.sftpSelectedIsDir && !this.sftpLocalSelectedIsDir) {
+          Text('下载目录前，先在右侧选择一个本机文件夹作为目标').fontSize(11).fontColor(this.sshPal().text3)
+            .width('100%').textAlign(TextAlign.Center)
+        }
+      }.width('100%').margin({ top: 12 })
     }
   }
 
@@ -18089,9 +18792,8 @@ struct SshTerminal {
           this.SftpRemoteWorkspace()
           this.SftpCurrentSelectionActions()
         }.layoutWeight(1).height('100%').constraintSize({ minWidth: 0, minHeight: 0 })
-          .padding({ left: 12, right: 12, top: 12, bottom: 10 })
-          .backgroundColor(this.sshPal().surface).borderRadius(12)
-          .border({ width: 0.5, color: this.sshPal().divider })
+          .padding({ left: 14, right: 14, top: 14, bottom: 12 })
+          .backgroundColor(this.sshPal().surface).borderRadius(22)
           .margin({ right: 7 })
         Column() {
           if (!this.sftpRightEndpointChosen) {
@@ -18104,10 +18806,10 @@ struct SshTerminal {
             this.SftpLocalWorkspace()
           }
         }.layoutWeight(1).height('100%').constraintSize({ minWidth: 0, minHeight: 0 })
-          .padding({ left: 12, right: 12, top: 12, bottom: 10 })
-          .backgroundColor(this.sshPal().surface).borderRadius(12)
-          .border({ width: 0.5, color: this.sshPal().divider })
+          .padding({ left: 14, right: 14, top: 14, bottom: 12 })
+          .backgroundColor(this.sshPal().surface).borderRadius(22)
           .margin({ left: 7 })
+          .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
       }.width('100%').height(0).layoutWeight(1)
         .constraintSize({ minHeight: sftpExpandedWorkspaceMinHeight(
           this.sftpTransferInProgress(), this.sftpRecoveredTasks.length > 0) })
@@ -18120,9 +18822,8 @@ struct SshTerminal {
             this.SftpRemoteWorkspace()
             this.SftpCurrentSelectionActions()
           }
-          .width('100%').padding({ left: 12, right: 12, top: 12, bottom: 10 })
-          .backgroundColor(this.sshPal().surface).borderRadius(12)
-          .border({ width: 0.5, color: this.sshPal().divider })
+          .width('100%').padding({ left: 14, right: 14, top: 14, bottom: 12 })
+          .backgroundColor(this.sshPal().surface).borderRadius(22)
           Column() {
             if (!this.sftpRightEndpointChosen) {
               this.SftpRightEndpointChooser()
@@ -18134,290 +18835,115 @@ struct SshTerminal {
               this.SftpLocalWorkspace()
             }
           }
-          .width('100%').padding({ left: 12, right: 12, top: 12, bottom: 10 })
-          .backgroundColor(this.sshPal().surface).borderRadius(12)
-          .border({ width: 0.5, color: this.sshPal().divider })
+          .width('100%').padding({ left: 14, right: 14, top: 14, bottom: 12 })
+          .backgroundColor(this.sshPal().surface).borderRadius(22)
         }.width('100%')
       }
       .width('100%').height(0).layoutWeight(1)
-      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None)
+      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }
+  }
+
+  /** A running, paused or waiting transfer: what it is, how far, and pause / resume / cancel; then the status. */
+  @Builder
+  SftpProgressCard() {
+    if (shouldShowTransferCancelAction(this.sftpTransferSession) || (this.sftpBusy && this.sftpProgress >= 0)) {
+      Column({ space: 8 }) {
+        Row({ space: 10 }) {
+          if (this.sftpTransferSession !== null && (this.sftpTransferSession.stage === 'paused' ||
+            this.sftpTransferSession.stage === 'waitingRemote')) {
+            SymbolGlyph($r('sys.symbol.pause_fill')).fontSize(18).fontColor([this.accentColor])
+          } else {
+            LoadingProgress().width(22).height(22).color(this.accentColor)
+          }
+          Column({ space: 2 }) {
+            Text(this.sftpTransferSession !== null && this.sftpTransferSession.stage === 'waitingRemote' ? '等待连接恢复' :
+              (this.sftpTransferSession !== null && this.sftpTransferSession.stage === 'paused' ? '已暂停' :
+                (this.sftpProgressLabel.length > 0 ? this.sftpProgressLabel : '正在传输')))
+              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.sftpProgress >= 0 ? Math.floor(this.sftpProgress * 100).toString() + '%' : '处理中…')
+              .fontSize(11).fontColor(this.sshPal().text3)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          if (this.sftpTransferSession !== null && this.sftpTransferSession.stage === 'transferring') {
+            SftpIconButton({ icon: $r('sys.symbol.pause_fill'), label: '暂停传输', diameter: 36, colors: this.sftpColors(),
+              onTap: (): void => { this.pauseSftpTransfer(); } })
+          }
+          if (this.sftpTransferSession !== null && (this.sftpTransferSession.stage === 'paused' ||
+            this.sftpTransferSession.stage === 'waitingRemote') && !this.sftpBusy) {
+            SftpIconButton({ icon: $r('sys.symbol.play_fill'), label: '继续传输', diameter: 36, tone: 'accent',
+              colors: this.sftpColors(), onTap: (): void => { void this.resumeSftpTransfer(); } })
+          }
+          if (shouldShowTransferCancelAction(this.sftpTransferSession)) {
+            SftpIconButton({ icon: $r('sys.symbol.xmark'), label: '取消传输', diameter: 36, tone: 'danger',
+              colors: this.sftpColors(), onTap: (): void => { this.cancelSftpTransfer(); } })
+          }
+        }.width('100%')
+        if (this.sftpProgress >= 0) {
+          Progress({ value: Math.floor(this.sftpProgress * 100), total: 100, type: ProgressType.Capsule })
+            .width('100%').height(6).color(this.accentColor).backgroundColor(this.sshPal().divider)
+            .style({ borderWidth: 0 })
+            .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+        }
+      }
+      .width('100%').padding({ left: 14, right: 8, top: 10, bottom: 12 }).margin({ top: 10 })
+      .borderRadius(18).backgroundColor(this.sshPal().card)
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 }))
+        .animation({ duration: 220, curve: Curve.FastOutSlowIn }))
+    }
+  }
+
+  @Builder
+  SftpStatusLine() {
+    Row({ space: 8 }) {
+      if (this.sftpStatus.length > 0) {
+        Text(this.sftpStatus)
+          .fontSize(12).fontColor(this.sshPal().text2).layoutWeight(1)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      } else {
+        Blank()
+      }
+      if (!this.sftpBusy && this.sftpTransferSession !== null &&
+        (this.sftpTransferSession.stage === 'failed' || this.sftpTransferSession.stage === 'cancelled')) {
+        SftpActionButton({ icon: $r('sys.symbol.arrow_clockwise'), label: '重试传输', barHeight: 36,
+          colors: this.sftpColors(), onTap: (): void => { this.retrySftpTransfer(); } })
+          .width(128)
+      }
+    }.width('100%').margin({ top: 10 }).alignItems(VerticalAlign.Center)
   }
 
   @Builder
   SftpTransferStatus() {
-    if (shouldShowTransferCancelAction(this.sftpTransferSession)) {
-      if (this.sftpTransferSession !== null && this.sftpTransferSession.stage === 'transferring') {
-        Button('暂停传输')
-          .height(36).fontSize(12).width('100%').margin({ top: 8 })
-          .onClick((): void => { this.pauseSftpTransfer(); })
-      }
-      if (this.sftpTransferSession !== null &&
-        (this.sftpTransferSession.stage === 'paused' ||
-          this.sftpTransferSession.stage === 'waitingRemote') && !this.sftpBusy) {
-        Button('继续传输')
-          .height(36).fontSize(12).width('100%').margin({ top: 8 })
-          .onClick((): void => { void this.resumeSftpTransfer(); })
-      }
-      Button('取消传输')
-        .height(36).fontSize(12).width('100%').margin({ top: 8 })
-        .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF').borderRadius(8)
-        .onClick((): void => { this.cancelSftpTransfer(); })
-    }
-
-    Text(this.sftpStatus)
-      .fontSize(11).fontColor(this.sshPal().text2).width('100%')
-      .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-      .margin({ top: 8 })
-
-    if (!this.sftpBusy && this.sftpTransferSession !== null &&
-      (this.sftpTransferSession.stage === 'failed' || this.sftpTransferSession.stage === 'cancelled')) {
-      Button('重试传输')
-        .height(32).fontSize(11).width('100%').margin({ top: 8 })
-        .onClick((): void => { this.retrySftpTransfer(); })
-    }
+    this.SftpProgressCard()
+    this.SftpStatusLine()
   }
 
-  @Builder
-  SftpTransferActions() {
-    if (shouldShowTransferCancelAction(this.sftpTransferSession)) {
-      if (this.sftpTransferSession !== null && this.sftpTransferSession.stage === 'transferring') {
-        Button('暂停传输')
-          .height(40).fontSize(13).width('100%').margin({ top: 10 })
-          .onClick((): void => { this.pauseSftpTransfer(); })
-      }
-      if (this.sftpTransferSession !== null &&
-        (this.sftpTransferSession.stage === 'paused' ||
-          this.sftpTransferSession.stage === 'waitingRemote') && !this.sftpBusy) {
-        Button('继续传输')
-          .height(40).fontSize(13).width('100%').margin({ top: 10 })
-          .onClick((): void => { void this.resumeSftpTransfer(); })
-      }
-      Button('取消传输')
-        .height(40).fontSize(13).width('100%').margin({ top: 10 })
-        .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF').borderRadius(8)
-        .onClick((): void => { this.cancelSftpTransfer(); })
-    }
-
-    Text(this.sftpStatus)
-      .fontSize(11).fontColor(this.sshPal().text2).width('100%')
-      .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-      .margin({ top: 10 })
-
-    if (!this.sftpBusy && this.sftpTransferSession !== null &&
-      (this.sftpTransferSession.stage === 'failed' || this.sftpTransferSession.stage === 'cancelled')) {
-      Button('重试传输')
-        .height(34).fontSize(12).width('100%').margin({ top: 10 })
-        .onClick((): void => { this.retrySftpTransfer(); })
-    }
-
-    if (this.sftpRightEndpointChosen && this.sftpRightEndpoint === 'ssh') {
-      Row() {
-        Button('传输到当前主机')
-          .height(40).layoutWeight(1)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0)
-          .fontSize(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-          .onClick((): void => { void this.enqueueSftpRemoteBatch(false); })
-        Button('传输到 ' + this.sftpPeerHostLabel())
-          .height(40).layoutWeight(1)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpSelectedPath.length > 0)
-          .fontSize(12).margin({ left: 10 })
-          .onClick((): void => { void this.enqueueSftpRemoteBatch(true); })
-      }.width('100%').margin({ top: 14 })
-    } else if (this.sftpRightEndpointChosen) {
-      Row() {
-        Button('上传到当前目录')
-          .height(40).layoutWeight(1).enabled(!this.sftpBusy)
-          .fontSize(12)
-          .onClick((): void => { this.uploadSftpFile(); })
-        Button('下载选中文件')
-          .height(40).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 && !this.sftpSelectedIsDir)
-          .fontSize(12)
-          .margin({ left: 10 })
-          .onClick((): void => { this.downloadSftpSelected(); })
-      }.width('100%').margin({ top: 14 })
-
-      Button('递归下载选中目录')
-        .height(40).width('100%').margin({ top: 10 })
-        .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 &&
-          this.sftpSelectedIsDir && this.sftpLocalSelectedIsDir &&
-          this.sftpLocalSelectedUri.length > 0)
-        .onClick((): void => { void this.enqueueSftpDownloadDirectory(); })
-    }
-
-    if (this.sftpRightEndpointChosen) {
-      Row() {
-        Button('进入目录')
-          .height(38).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 && this.sftpSelectedIsDir)
-          .fontSize(12)
-          .onClick((): void => { this.openSftpSelectedDir(); })
-        Button('删除选中项')
-          .height(38).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0)
-          .fontSize(12).backgroundColor(this.sshPal().danger).fontColor('#FFFFFF')
-          .margin({ left: 10 })
-          .onClick((): void => { this.deleteSftpSelected(); })
-      }.width('100%').margin({ top: 16 })
-    }
-  }
-
-  /** Phone keeps the compact 1.0.8 single-remote workflow and visual rhythm. */
+  /** Phone: the current host only, the same tools and rows, upload and download at the bottom. */
   @Builder
   SftpPhoneLegacySheet(rootSheetMountToken: number = 0) {
     Column() {
-      Row() {
-        Column() {
-          Text('SFTP 文件传输').fontSize(18).fontWeight(FontWeight.Medium)
-            .fontColor(this.sshPal().text)
-          Text(this.userAtHost).fontSize(12).fontColor(this.sshPal().text2).margin({ top: 4 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text('×').fontSize(22).fontColor(this.sshPal().text2)
-          .width(36).height(36).textAlign(TextAlign.Center)
-          .borderRadius(18).backgroundColor(this.sshPal().surface)
-          .accessibilityText('关闭 SFTP')
-          .onClick((): void => { this.closeSftpPanel(); })
-      }.width('100%').margin({ bottom: 18 })
-
+      this.SftpTransferHeader()
       this.SftpRecoveredTasks()
-
-      Row() {
-        Button('上级').height(36).fontSize(12)
-          .enabled(!this.sftpBusy)
-          .onClick((): void => { this.refreshSftp(this.parentRemotePath(this.sftpPath)); })
-        Button('刷新').height(36).fontSize(12).margin({ left: 8 })
-          .enabled(!this.sftpBusy).onClick((): void => { this.refreshSftp(this.sftpPath); })
-        Button('根目录').height(36).fontSize(12).margin({ left: 8 })
-          .enabled(!this.sftpBusy).onClick((): void => { this.refreshSftp('/'); })
-        Button('新建目录').height(36).fontSize(12).margin({ left: 8 })
-          .enabled(!this.sftpBusy).onClick((): void => { this.makeSftpDir(); })
-      }.width('100%').margin({ bottom: 10 })
-
-      Row() {
-        TextInput({ text: this.sftpPathInput })
-          .fontSize(12).fontColor(this.sshPal().text).fontFamily('monospace')
-          .backgroundColor(this.sshPal().surface).height(38).borderRadius(8).layoutWeight(1)
-          .onChange((value: string): void => { this.sftpPathInput = value; })
-          .onSubmit((): void => { this.gotoSftpPath(); })
-        Button('跳转').height(38).fontSize(12).margin({ left: 8 })
-          .enabled(!this.sftpBusy).onClick((): void => { this.gotoSftpPath(); })
-      }.width('100%').margin({ bottom: 10 })
-
-      Row() {
-        TextInput({ text: this.sftpNameInput, placeholder: '输入目录名或重命名后的名称' })
-          .fontSize(12).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
-          .backgroundColor(this.sshPal().surface).height(38).borderRadius(8).layoutWeight(1)
-          .onChange((value: string): void => { this.sftpNameInput = value; })
-        Button('重命名').height(38).fontSize(12).margin({ left: 8 })
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 &&
-            this.sftpNameInput.trim().length > 0)
-          .onClick((): void => { this.renameSftpSelected(); })
-      }.width('100%').margin({ bottom: 10 })
-
+      this.SftpTransferNavigation()
       Column() {
-        if (this.sftpBusy) {
-          Column() {
-            Row() {
-              LoadingProgress().width(22).height(22).color(this.accentColor)
-              Text(this.sftpProgress >= 0
-                ? this.sftpProgressLabel + ' ' + Math.floor(this.sftpProgress * 100).toString() + '%'
-                : '处理中...')
-                .fontSize(12).fontColor(this.sshPal().text2).margin({ left: 8 })
-            }.height(34).justifyContent(FlexAlign.Center)
-            if (this.sftpProgress >= 0) {
-              Progress({ value: Math.floor(this.sftpProgress * 100), total: 100,
-                type: ProgressType.Linear })
-                .width('86%').height(4).color(this.accentColor)
-                .backgroundColor(this.sshPal().divider).margin({ top: 4 })
-            }
-          }.height(transferProgressPanelHeight(this.sftpTransferSession))
-            .justifyContent(FlexAlign.Center)
-        } else if (this.sftpEntries.length === 0) {
-          Column() {
-            Text('远端目录为空').fontSize(13).fontColor(this.sshPal().text2)
-            Text('可点击上传文件或刷新目录').fontSize(11)
-              .fontColor(this.sshPal().text3).margin({ top: 4 })
-          }.height(120).justifyContent(FlexAlign.Center)
-        } else {
-          List() {
-            ForEach(this.sftpEntries, (entry: SftpFileEntry): void => {
-              ListItem() {
-                Row() {
-                  SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-                    .fontSize(18)
-                    .fontColor([entry.isDirectory ? this.accentColor : this.sshPal().text3])
-                    .width(28)
-                  Column() {
-                    Text(entry.name).fontSize(13).fontColor(this.sshPal().text)
-                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(entry.isDirectory ? '目录' : this.formatFileSize(entry.size))
-                      .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 2 })
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  if (this.sftpSelectedPath === entry.path) {
-                    SymbolGlyph($r('sys.symbol.checkmark')).fontSize(17)
-                      .fontColor([this.accentColor])
-                  }
-                }
-                .width('100%').height(48).padding({ left: 10, right: 10 })
-                .borderRadius(8).backgroundColor(this.sftpSelectedPath === entry.path
-                  ? this.sshPal().card : Color.Transparent)
-                .onClick((): void => { this.enterSftpEntry(entry); })
-              }
-            }, (entry: SftpFileEntry): string => entry.path)
-          }.height(this.sftpListHeight()).width('100%').scrollBar(BarState.Auto)
-        }
+        this.SftpRemoteWorkspace()
       }
-      .width('100%').padding({ top: 6, bottom: 6 })
-      .backgroundColor(this.sshPal().surface).borderRadius(10)
-      .border({ width: 0.5, color: this.sshPal().divider })
-
-      if (shouldShowTransferCancelAction(this.sftpTransferSession)) {
-        Row() {
-          if (this.sftpTransferSession !== null &&
-            this.sftpTransferSession.stage === 'transferring') {
-            Button('暂停传输').height(40).fontSize(13).layoutWeight(1)
-              .onClick((): void => { this.pauseSftpTransfer(); })
-          }
-          if (this.sftpTransferSession !== null &&
-            (this.sftpTransferSession.stage === 'paused' ||
-              this.sftpTransferSession.stage === 'waitingRemote') && !this.sftpBusy) {
-            Button('继续传输').height(40).fontSize(13).layoutWeight(1)
-              .onClick((): void => { void this.resumeSftpTransfer(); })
-          }
-          Button('取消传输').height(40).fontSize(13).layoutWeight(1).margin({ left: 8 })
-            .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF').borderRadius(8)
-            .onClick((): void => { this.cancelSftpTransfer(); })
-        }.width('100%').margin({ top: 10 })
-      }
-      Text(this.sftpStatus).fontSize(11).fontColor(this.sshPal().text2).width('100%')
-        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 10 })
-      if (!this.sftpBusy && this.sftpTransferSession !== null &&
-        (this.sftpTransferSession.stage === 'failed' ||
-          this.sftpTransferSession.stage === 'cancelled')) {
-        Button('重试传输').height(34).fontSize(12).width('100%').margin({ top: 10 })
-          .onClick((): void => { this.retrySftpTransfer(); })
-      }
-      Row() {
-        Button('上传到当前目录').height(40).layoutWeight(1).enabled(!this.sftpBusy)
-          .fontSize(12).onClick((): void => { void this.uploadSftpFile(); })
-        Button('下载选中文件').height(40).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 && !this.sftpSelectedIsDir)
-          .fontSize(12).margin({ left: 10 }).onClick((): void => { this.downloadSftpSelected(); })
+      .width('100%').padding(6)
+      .backgroundColor(this.sshPal().surface).borderRadius(20)
+      this.SftpCurrentSelectionActions()
+      this.SftpProgressCard()
+      this.SftpStatusLine()
+      Row({ space: 10 }) {
+        SftpActionButton({ icon: $r('sys.symbol.arrow_up_to_line'), label: '上传到这里', tone: 'primary',
+          colors: this.sftpColors(), usable: !this.sftpBusy,
+          onTap: (): void => { void this.uploadSftpFile(); } }).layoutWeight(1)
+        SftpActionButton({ icon: $r('sys.symbol.arrow_down_to_line'), label: '下载到本机', colors: this.sftpColors(),
+          usable: !this.sftpBusy && this.sftpSelectedPath.length > 0 && !this.sftpSelectedIsDir,
+          onTap: (): void => { this.downloadSftpSelected(); } }).layoutWeight(1)
       }.width('100%').margin({ top: 14 })
-      Row() {
-        Button('进入目录').height(38).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 && this.sftpSelectedIsDir)
-          .fontSize(12).onClick((): void => { this.openSftpSelectedDir(); })
-        Button('删除选中项').height(38).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0)
-          .fontSize(12).backgroundColor(this.sshPal().danger).fontColor('#FFFFFF')
-          .margin({ left: 10 }).onClick((): void => { this.deleteSftpSelected(); })
-      }.width('100%').margin({ top: 16 })
     }
     .width('100%').constraintSize({ maxWidth: 620 })
-    .padding({ left: 22, right: 22, top: 20, bottom: 22 })
+    .padding({ left: 18, right: 18, top: 18, bottom: 22 })
     .borderRadius(18).backgroundColor(rootSheetMountToken > 0 ?
       this.bindSheetBg(this.sshPal().bg) : this.sshPal().bg)
     .onAppear(this.sftpRootSheetAppearHandler(rootSheetMountToken))
@@ -18429,6 +18955,8 @@ struct SshTerminal {
       if (this.sftpPadPcLayout()) {
         Column() {
           this.SftpTransferHeader()
+          ProFeatureGate({ featureId: 'pro.file.knockTransfer', context: this.sftpKnockContext(),
+            content: (): void => { this.SftpKnockControl(); } })
           this.SftpRecoveredTasks()
           this.SftpTransferWorkspace()
           this.SftpWideRemoteActions()
@@ -18449,6 +18977,66 @@ struct SshTerminal {
     .onAppear((): void => {
       if (this.sftpPadPcLayout()) { this.handleSftpRootSheetAppear(rootSheetMountToken); }
     })
+    // Files dragged from the system file manager upload to the current directory, as they did in the tab.
+    .overlay(this.SftpDropHint())
+    .allowDrop(rootSheetMountToken > 0 && this.sftpLocalProvider.snapshot().plan.supportsExternalDrag
+      ? [uniformTypeDescriptor.UniformDataType.FILE] : [])
+    .onDragEnter((_event: DragEvent): void => { this.sftpDropHoverActive = true; })
+    .onDragLeave((_event: DragEvent): void => { this.sftpDropHoverActive = false; })
+    .onDrop((event: DragEvent): void => { void this.handleSftpExternalDrop(event); })
+  }
+
+  @Builder
+  SftpDropHint() {
+    if (this.sftpDropHoverActive) {
+      Column({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.arrow_up_to_line')).fontSize(30).fontColor([this.accentColor])
+        Text('松手上传到当前目录').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.sshPal().text)
+      }
+      .width('100%').height('100%').justifyContent(FlexAlign.Center)
+      .borderRadius(18).backgroundColor(appUiTint(this.accentColor, '29'))
+      .border({ width: 2, color: this.accentColor, style: BorderStyle.Dashed })
+      .hitTestBehavior(HitTestMode.None)
+      .transition(TransitionEffect.OPACITY.animation({ duration: 160 }))
+    }
+  }
+
+  /** 碰一碰接收: one SFTP-styled row — what it does (with its Pro mark beside the title), what is happening, one button. */
+  @Builder
+  SftpKnockControl() {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.phone_fill')).fontSize(18)
+          .fontColor([this.sftpKnockActive ? appUiOnAccentText(this.accentColor) : this.accentColor])
+      }
+      .width(40).height(40).borderRadius(12)
+      .backgroundColor(this.sftpKnockActive ? this.accentColor : appUiTint(this.accentColor, '24'))
+      Column({ space: 3 }) {
+        Row({ space: 6 }) {
+          Text('碰一碰接收手机文件').fontSize(14).fontWeight(FontWeight.Medium)
+            .fontColor(this.sshPal().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .flexShrink(1)
+          ProBadge()
+        }.alignItems(VerticalAlign.Center)
+        Text(this.sftpKnockStatus.length > 0 ? this.sftpKnockStatus :
+          (this.sftpKnockActive ? '等待手机碰一碰当前窗口，文件会存到当前远端目录' :
+            '手机碰一碰当前窗口，文件直接传到当前远端目录'))
+          .fontSize(11).fontColor(this.sshPal().text2).maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SftpActionButton({
+        icon: this.sftpKnockActive ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_down_to_line'),
+        label: this.sftpKnockActive ? '停止接收' : '准备接收',
+        tone: this.sftpKnockActive ? 'tonal' : 'primary', barHeight: 36, colors: this.sftpColors(),
+        usable: this.sftpKnockActive || !this.sftpBusy,
+        onTap: (): void => { this.armSftpKnock(); }
+      }).width(116)
+    }
+    .width('100%').padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(16).backgroundColor(this.sftpColors().card)
+    .margin({ bottom: 10 })
+    .accessibilityGroup(true)
+    .accessibilityText(this.sftpKnockActive ? '碰一碰接收已准备，点按停止' : '准备碰一碰接收手机文件到当前远端目录')
   }
 
   @Builder
@@ -18481,144 +19069,11 @@ struct SshTerminal {
     .onDrop((event: DragEvent): void => { void this.handleSftpExternalDrop(event); })
   }
 
-  @Builder PcWindowAuthenticationCarrier() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.pal().bg)
-
-      Row() {
-        Row() {
-          Text('←').fontSize(18).fontColor(this.pal().text).margin({ right: 6 })
-          Text('取消').fontSize(14).fontColor(this.pal().text)
-        }
-        .height(36)
-        .padding({ left: 12, right: 14 })
-        .borderRadius(18)
-        .backgroundColor(this.pal().surface)
-        .onClick((): void => { this.closeSessionAndBack(); })
-      }
-      .width('100%')
-      .padding({ left: 18, top: 14 })
-
-      Column({ space: 12 }) {
-        SymbolGlyph($r('sys.symbol.lock_shield_fill'))
-          .fontSize(38)
-          .fontColor([this.accentColor])
-        Text('正在完成 SSH 鉴权')
-          .fontSize(18)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.pal().text)
-        if (this.hostLabel.length > 0) {
-          Text(this.hostLabel)
-            .fontSize(13)
-            .fontColor(this.pal().text2)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 6 })
-        Text('鉴权成功后将在独立窗口中打开，不会在主窗口创建终端画面')
-          .fontSize(12)
-          .fontColor(this.pal().text3)
-          .textAlign(TextAlign.Center)
-          .maxLines(2)
-      }
-      .width('100%')
-      .height('100%')
-      .padding({ left: 28, right: 28 })
-      .justifyContent(FlexAlign.Center)
-      .hitTestBehavior(HitTestMode.Transparent)
-    }
-    .width('100%')
-    .height('100%')
-  }
-
-  build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      if (this.pcWindowAfterAuthentication && this.sessionWindowId.length === 0 &&
-        !this.pcWindowHandoffComplete) {
-        // Keep the unchanged SSH credential/host-key/MFA sheets on this page,
-        // but never mount its xterm surface in the app's primary window. The
-        // already-authenticated native session is transferred to the new
-        // ability before that window creates the only visible terminal.
-        this.PcWindowAuthenticationCarrier()
-      } else {
-      Column() {
-      // 顶栏 — SSH 终端始终深色模式, 固定深色背景+亮色文字, 不跟随系统主题
-      Row() {
-        if (this.isDesktopDevice) {
-          Row() {
-            Text('←').fontSize(18).fontColor('#E6E6E6').margin({ right: 6 })
-            Text('返回').fontSize(14).fontColor('#E6E6E6')
-          }
-          .height(36).padding({ left: 12, right: 14 })
-          .borderRadius(18)
-          .backgroundColor(this.backHover ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.05)')
-          .onHover((isHover: boolean): void => { this.backHover = isHover; })
-          .onClick((): void => { this.closeSessionAndBack(); })
-        } else {
-          Text('<').fontSize(20).fontColor('#E6E6E6')
-            .width(40).height(40).textAlign(TextAlign.Center)
-            .borderRadius(20)
-            .backgroundColor('rgba(255,255,255,0.06)')
-            .onClick((): void => { this.closeSessionAndBack(); })
-        }
-        Column() {
-          Text(this.hostLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.userAtHost).fontSize(11).fontColor('rgba(242,244,247,0.58)')
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start)
-          .layoutWeight(this.sshTabsInline() ? 0 : 1)
-          .width(this.sshTabsInline() ? this.sshInlineHostWidth() : 'auto')
-          .margin({ left: 10 })
-        if (this.sshTabsInline()) {
-          this.sshTabStripInline()
-        }
-        if (!this.sshHeaderActionPopupEnabled() &&
-          this.isDesktopDevice && !this.sshCompactChrome()) {
-          Text(this.remoteSessionQuickExitDisabled ? '仅按钮退出' : 'Ctrl+Shift+Q 退出')
-            .fontSize(11).fontColor('rgba(242,244,247,0.54)')
-            .margin({ right: 12 })
-        }
-        if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
-          !this.sshCompactChrome() && this.terminalProfileEnabled()) {
-          Row() {
-            SymbolGlyph($r('sys.symbol.gearshape_fill'))
-              .fontSize(17)
-              .fontColor(['rgba(242,244,247,0.86)'])
-          }
-          .width(34).height(34)
-          .justifyContent(FlexAlign.Center)
-          .borderRadius(17)
-          .backgroundColor(this.chromeChipBg())
-          .margin({ right: 8 })
-          .onClick((): void => { this.openTerminalProfileSheet(); })
-          .accessibilityText('打开终端 Profile')
-        }
-        if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
-          !this.sshCompactChrome() && this.terminalSearchAvailable()) {
-          Row() {
-            SymbolGlyph($r('sys.symbol.magnifyingglass'))
-              .fontSize(17)
-              .fontColor(['rgba(242,244,247,0.86)'])
-          }
-          .width(34).height(34)
-          .justifyContent(FlexAlign.Center)
-          .borderRadius(17)
-          .backgroundColor(this.chromeChipBg())
-          .margin({ right: 8 })
-          .onClick((): void => {
-            if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
-            else { this.openTerminalSearch(); }
-          })
-          .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
-        }
-        if (this.sshHeaderActionPopupEnabled()) {
+  @Builder
+  private SshHeaderMenuButton() {
           Button() {
             Text('更多').fontSize(11).fontWeight(FontWeight.Medium)
-              .fontColor('rgba(242,244,247,0.88)')
+              .fontColor(this.chromeText(0.92))
           }
           .width(60).height(40).padding(0)
           .borderRadius(20)
@@ -18641,13 +19096,169 @@ struct SshTerminal {
             });
           })
           .accessibilityText('打开 SSH 工作区与会话选项')
+  }
+
+  @Builder PcWindowAuthenticationCarrier() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.pal().bg)
+
+      Row() {
+        Row() {
+          Text('←').fontSize(18).fontColor(this.pal().text).margin({ right: 6 })
+          Text(this.connectionError.length > 0 ? '返回' : '取消').fontSize(14).fontColor(this.pal().text)
+        }
+        .height(36)
+        .padding({ left: 12, right: 14 })
+        .borderRadius(18)
+        .backgroundColor(this.pal().surface)
+        .onClick((): void => { this.closeSessionAndBack(); })
+      }
+      .width('100%')
+      .padding({ left: 18, top: 14 })
+
+      Column({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.lock_shield_fill'))
+          .fontSize(38)
+          .fontColor([this.accentColor])
+        Text(this.connectionError.length > 0 ? 'SSH 会话交接失败' : '正在打开 SSH 会话')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text)
+        if (this.hostLabel.length > 0) {
+          Text(this.hostLabel)
+            .fontSize(13)
+            .fontColor(this.pal().text2)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        if (this.connectionError.length === 0) {
+          LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 6 })
+        }
+        Text(this.connectionError || '正在将已鉴权会话移交到独立窗口')
+          .fontSize(12)
+          .fontColor(this.pal().text3)
+          .textAlign(TextAlign.Center)
+          .maxLines(2)
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 28, right: 28 })
+      .justifyContent(FlexAlign.Center)
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      // The AI in this terminal: the orb, its small chat and voice mode, in the AI top layer.
+      if (this.sshAiVisible()) {
+        SessionAiHost({
+          openRequest: this.aiSessionOpenRequest,
+          deviceClass: this.isDesktopDevice ? 'pc' : this.isPadDevice ? 'pad' : 'phone',
+          avoidSide: '',
+          avoidWidth: 0
+        })
+      }
+      if (this.pcWindowAfterAuthentication && this.sessionWindowId.length === 0 &&
+        !this.pcWindowHandoffComplete) {
+        // Keep the unchanged SSH credential/host-key/MFA sheets on this page,
+        // but never mount its xterm surface in the app's primary window. The
+        // already-authenticated native session is transferred to the new
+        // ability before that window creates the only visible terminal.
+        this.PcWindowAuthenticationCarrier()
+      } else {
+      Column() {
+      if (this.sshTopChromeLayout().tabStripAboveHeader) {
+        this.sshTabStrip()
+      }
+      // 顶栏 — SSH 终端始终深色模式, 固定深色背景+亮色文字, 不跟随系统主题
+      Row() {
+        if (this.isDesktopDevice) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.chromeText(0.9)])
+              .margin({ right: 4 })
+            Text('返回').fontSize(14).fontColor(this.chromeText(0.9))
+          }
+          .height(36).padding({ left: 12, right: 14 })
+          .borderRadius(18)
+          .backgroundColor(this.backHover ? this.chromeText(0.16) : this.chromeChipBg())
+          .onHover((isHover: boolean): void => { this.backHover = isHover; })
+          .onClick((): void => { this.closeSessionAndBack(); })
+        } else {
+          Stack() {
+            SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([this.chromeText(0.9)])
+          }
+            .width(40).height(40)
+            .borderRadius(20)
+            .backgroundColor(this.chromeChipBg())
+            .onClick((): void => { this.closeSessionAndBack(); })
+            .accessibilityText('返回')
+        }
+        Column() {
+          Text(this.hostLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.chromeText(1))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.userAtHost).fontSize(11).fontColor(this.chromeText(0.66))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start)
+          .layoutWeight(this.sshTabsInline() ? 0 : 1)
+          .width(this.sshTabsInline() ? this.sshInlineHostWidth() : 'auto')
+          .margin({ left: 10 })
+        if (this.sshTabsInline()) {
+          this.sshTabStripInline()
+        }
+        if (!this.sshHeaderActionPopupEnabled() &&
+          this.isDesktopDevice && !this.sshCompactChrome()) {
+          Text(this.remoteSessionQuickExitDisabled ? '仅按钮退出' : 'Ctrl+Shift+Q 退出')
+            .fontSize(11).fontColor(this.chromeText(0.54))
+            .margin({ right: 12 })
+        }
+        if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
+          !this.sshCompactChrome() && this.terminalProfileEnabled()) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.gearshape_fill'))
+              .fontSize(17)
+              .fontColor([this.chromeText(0.86)])
+          }
+          .width(34).height(34)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(17)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .onClick((): void => { this.openTerminalProfileSheet(); })
+          .accessibilityText('打开终端 Profile')
+        }
+        if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
+          !this.sshCompactChrome() && this.terminalSearchAvailable()) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.magnifyingglass'))
+              .fontSize(17)
+              .fontColor([this.chromeText(0.86)])
+          }
+          .width(34).height(34)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(17)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .onClick((): void => {
+            if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
+            else { this.openTerminalSearch(); }
+          })
+          .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
+        }
+        if (this.sshHeaderActionPopupEnabled()) {
+          this.SshHeaderMenuButton()
         } else {
           Row({ space: 4 }) {
             Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)
-              .fontColor('rgba(242,244,247,0.76)')
+              .fontColor(this.chromeText(0.76))
             if (this.isDesktopDevice && !this.sshCompactChrome()) {
               Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
-                .fontSize(10).fontColor('rgba(242,244,247,0.60)')
+                .fontSize(10).fontColor(this.chromeText(0.60))
             }
           }
           .height(34)
@@ -18661,7 +19272,7 @@ struct SshTerminal {
         if (this.sshConnectionIsConnected()) {
           if (!this.sshHeaderActionPopupEnabled() && !this.isDesktopDevice) {
             Row() {
-              Text('↻').fontSize(19).fontColor('rgba(242,244,247,0.86)')
+              Text('↻').fontSize(19).fontColor(this.chromeText(0.86))
             }
             .width(34)
             .height(34)
@@ -18675,7 +19286,7 @@ struct SshTerminal {
             Row() {
               SymbolGlyph($r('sys.symbol.doc'))
                 .fontSize(18)
-                .fontColor(['rgba(242,244,247,0.86)'])
+                .fontColor([this.chromeText(0.86)])
             }
             .width(34)
             .height(34)
@@ -18686,9 +19297,9 @@ struct SshTerminal {
             .onClick((): void => { this.openSftpPanel(); })
             Stack({ alignContent: Alignment.TopEnd }) {
               Row({ space: 4 }) {
-                Text('⇄').fontSize(18).fontColor('rgba(242,244,247,0.88)')
+                Text('⇄').fontSize(18).fontColor(this.chromeText(0.88))
                 if (this.isDesktopDevice) {
-                  Text('隧道').fontSize(11).fontColor('rgba(242,244,247,0.78)')
+                  Text('隧道').fontSize(11).fontColor(this.chromeText(0.78))
                 }
               }
               .width(this.isDesktopDevice ? 62 : 34)
@@ -18713,10 +19324,10 @@ struct SshTerminal {
         Row() {
           Column().width(8).height(8).borderRadius(4)
             .backgroundColor(this.connectionDotColor())
-            .shadow({ radius: 8, color: this.connectionDotColor() + '66', offsetY: 0 })
+            .shadow({ radius: 8, color: appUiTint(this.connectionDotColor(), '66'), offsetY: 0 })
           if (!this.sshCompactChrome()) {
             Text(this.connectionLabel())
-              .fontSize(11).fontColor('rgba(242,244,247,0.70)').margin({ left: 6 })
+              .fontSize(11).fontColor(this.chromeText(0.70)).margin({ left: 6 })
           }
         }
         .height(34)
@@ -18732,16 +19343,19 @@ struct SshTerminal {
       .backgroundBlurStyle(BlurStyle.NONE)
       .linearGradient({
         direction: GradientDirection.Bottom,
-        colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
+        colors: this.sshTopChromeLayout().tabStripAboveHeader ?
+          [[this.chromeText(0), 0], [this.chromeText(0), 1]] :
+          [[this.chromeText(0.07), 0], [this.chromeText(0), 1]]
       })
+      .border({ width: { bottom: 0.5 }, color: this.chromeText(0.1) })
       .id('ssh-workspace-focus-title-actions')
       .focusable(this.sshWorkspaceModeEnabled())
       .focusOnTouch(false)
       .onFocus((): void => { this.sshWorkspaceFocusRegion = 'title_actions'; })
       .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
 
-      // Phone and compact Pad/free-form windows keep a full-width tab strip,
-      // but it belongs below the real session toolbar and its safe-area inset.
+      // Compact Pad/free-form PC windows keep the full-width tabs below the
+      // toolbar; phone tabs were rendered above it.
       if (this.sshTopChromeLayout().tabStripBelowHeader) {
         this.sshTabStrip()
       }
@@ -18769,7 +19383,7 @@ struct SshTerminal {
             Button('返回').margin({ top: 16 }).backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
               .onClick((): void => { this.closeSessionAndBack(); })
           }
-        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
+        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor(this.terminalBgColor())
       } else {
         Column() {
           Stack({ alignContent: Alignment.TopStart }) {
@@ -18794,7 +19408,7 @@ struct SshTerminal {
               }
             }
             .width('100%').height('100%').justifyContent(FlexAlign.Center)
-            .backgroundColor('#0D0D0D').zIndex(30)
+            .backgroundColor(this.terminalBgColor()).zIndex(30)
           }
 
           Stack({ alignContent: Alignment.TopStart }) {
@@ -18924,17 +19538,17 @@ struct SshTerminal {
 
             if (this.terminalProfileEnabled() && !this.isDesktopDevice &&
               !this.terminalSearchVisible) {
+              // align() only places the glyph inside the button; position() pins the button itself.
               Button() {
                 SymbolGlyph($r('sys.symbol.gearshape_fill'))
                   .fontSize(18)
-                  .fontColor(['#F2F4F7'])
+                  .fontColor([this.chromeText(0.95)])
               }
-              .width(40).height(40)
+              .width(40).height(40).padding(0)
               .borderRadius(20)
-              .backgroundColor('rgba(20,25,33,0.90)')
+              .backgroundColor(this.floatingChromeBg())
               .shadow({ radius: 12, color: 'rgba(0,0,0,0.36)', offsetY: 4 })
-              .align(Alignment.TopEnd)
-              .margin({ top: 10, right: 10 })
+              .position({ top: 10, right: 10 })
               .zIndex(45)
               .onClick((): void => { this.openTerminalProfileSheet(); })
               .accessibilityText('打开终端 Profile')
@@ -18945,14 +19559,13 @@ struct SshTerminal {
               Button() {
                 SymbolGlyph($r('sys.symbol.magnifyingglass'))
                   .fontSize(18)
-                  .fontColor(['#F2F4F7'])
+                  .fontColor([this.chromeText(0.95)])
               }
-              .width(40).height(40)
+              .width(40).height(40).padding(0)
               .borderRadius(20)
-              .backgroundColor('rgba(20,25,33,0.90)')
+              .backgroundColor(this.floatingChromeBg())
               .shadow({ radius: 12, color: 'rgba(0,0,0,0.36)', offsetY: 4 })
-              .align(Alignment.TopEnd)
-              .margin({ top: 10, right: this.terminalProfileEnabled() ? 58 : 10 })
+              .position({ top: 10, right: this.terminalProfileEnabled() ? 58 : 10 })
               .zIndex(45)
               .onClick((): void => { this.openTerminalSearch(); })
               .accessibilityText('打开终端搜索')
@@ -19076,6 +19689,11 @@ struct SshTerminal {
           if (this.virtualKeyBarVisible()) {
             Column() {
               VirtualKeyBar({
+                skinBar: this.sshSkin()?.chrome.keyBar ?? '',
+                skinKey: this.sshSkin()?.chrome.key ?? '',
+                skinKeyText: this.sshSkin()?.chrome.keyText ?? '',
+                skinAccent: this.sshSkin()?.chrome.accent ?? '',
+                skinDivider: this.sshSkin()?.chrome.divider ?? '',
                 ctrlActive: $ctrlActive,
                 altActive: $altActive,
                 shiftActive: $shiftActive,
@@ -19096,7 +19714,7 @@ struct SshTerminal {
               Column()
                 .width('100%')
                 .height(this.barBottomOffset())
-                .backgroundColor('#0D0D0D')
+                .backgroundColor(this.terminalBgColor())
                 .hitTestBehavior(HitTestMode.None)
             }
           }
@@ -19166,7 +19784,7 @@ struct SshTerminal {
       .width('100%')
       .layoutWeight(1)
       .constraintSize({ minHeight: 0 })
-      .backgroundColor('#0D0D0D')
+      .backgroundColor(this.terminalBgColor())
       .id('ssh-terminal-pane')
       // API 23/24 requires the retained terminal root to participate in the
       // same focus scope as the hidden ArkUI input anchor. Keep the root
@@ -19305,8 +19923,9 @@ struct SshTerminal {
         .bindSheet($$this.showSshAuthPromptSheet, this.SshAuthPromptSheet(), {
           // API 23 can close a FIT_CONTENT sheet while its builder is still
           // resolving dynamic prompt rows. A bounded height keeps the
-          // official Sheet measurable through the first render.
-          height: this.isDesktopDevice ? '560vp' : '520vp',
+          // official Sheet measurable through the first render; it then
+          // follows the measured content so no empty band is left below.
+          height: this.sshAuthPromptSheetHeight(),
           preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
           width: this.isDesktopDevice ? '560vp' : '100%',
           dragBar: !this.isDesktopDevice,
@@ -19333,29 +19952,6 @@ struct SshTerminal {
           }
         })
 
-      // API 23 treats chained bindSheet modifiers as one native lifecycle.
-      // Give the command palette its own inert host so later closed Sheets
-      // cannot immediately dismiss it after the toolbar sets show=true.
-      Column()
-        .width(1)
-        .height(1)
-        .hitTestBehavior(HitTestMode.None)
-        .bindSheet($$this.showSshCommandPalette, this.sshCommandPaletteSheet(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '620vp',
-          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-          width: this.breakpoint === 'sm' ? '100%' : '700vp',
-          dragBar: this.breakpoint === 'sm',
-          backgroundColor: this.bindSheetBg('#171D25'),
-          blurStyle: BlurStyle.NONE,
-          showClose: false,
-          maskColor: 'rgba(0,0,0,0.48)',
-          onWillDismiss: (action: DismissSheetAction): void => {
-            if (this.pendingSshCommandId.length === 0) { this.showSshCommandPalette = false; }
-            action.dismiss();
-          },
-          onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
-        })
-
       // The transfer center is also a long-lived workbench modal. Keep it off
       // the root bindSheet chain so a later closed binding cannot consume its
       // show transition on API 23 multi-window devices.
@@ -19364,7 +19960,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
@@ -19392,7 +19988,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showTerminalProfileSheet, this.TerminalProfileSheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '680vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '620vp',
           dragBar: this.breakpoint === 'sm',
@@ -19418,9 +20014,10 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-          width: this.breakpoint === 'sm' ? '100%' : '760vp',
+          width: this.breakpoint === 'sm' ? '100%' : Math.max(1, Math.min(760,
+            (this.sshWorkspaceAreaW > 0 ? this.sshWorkspaceAreaW : 800) - 32)),
           dragBar: this.breakpoint === 'sm',
           backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
@@ -19446,7 +20043,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshSessionLogSheet, this.SshSessionLogSheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
@@ -19474,7 +20071,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshBroadcastSheet, this.SshBroadcastSheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '640vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
@@ -19560,8 +20157,43 @@ struct SshTerminal {
             this.clearSshSecretPrompt();
           }
         })
+
+      // The command palette floats above the terminal as the page's own layer, not a native Sheet: the page turns
+      // the window's keyboard avoidance off, so a Sheet shrank under the keyboard. Here the card hangs from the top
+      // and its list is bounded by the space left above the keyboard.
+      if (this.showSshCommandPalette) {
+        Column()
+          .width('100%').height('100%')
+          .backgroundColor('rgba(0,0,0,0.46)')
+          .zIndex(300)
+          .transition(TransitionEffect.OPACITY.animation({ duration: SSH_COMMAND_PALETTE_MOTION_MS,
+            curve: Curve.FastOutSlowIn }))
+          .onClick((): void => { this.closeSshCommandPalette(); })
+          .accessibilityText('关闭 SSH 命令面板')
+      }
+      if (this.showSshCommandPalette) {
+        Row() {
+          this.sshCommandPaletteSheet()
+        }
+        .width(this.sshCommandPaletteCardWidth())
+        .borderRadius(22).clip(true)
+        .border({ width: 0.6, color: 'rgba(255,255,255,0.10)' })
+        .shadow({ radius: 30, color: 'rgba(0,0,0,0.46)', offsetY: 12 })
+        .position({ x: this.sshCommandPaletteCardX(), y: this.sshCommandPaletteTopVp() })
+        .zIndex(301)
+        .transition(TransitionEffect.OPACITY
+          .combine(TransitionEffect.translate({ y: -16 }))
+          .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 }))
+          .animation({ duration: SSH_COMMAND_PALETTE_MOTION_MS, curve: Curve.FastOutSlowIn }))
+      }
     }
     .width('100%').height('100%')
+    .onAreaChange((_oldArea: Area, newArea: Area): void => {
+      const width: number = newArea.width as number;
+      const height: number = newArea.height as number;
+      if (Math.abs(width - this.sshPageAreaW) >= 1) { this.sshPageAreaW = width; }
+      if (Math.abs(height - this.sshPageAreaH) >= 1) { this.sshPageAreaH = height; }
+    })
   }
 
   pageTransition() {

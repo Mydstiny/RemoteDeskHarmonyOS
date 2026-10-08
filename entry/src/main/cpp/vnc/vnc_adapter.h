@@ -5,7 +5,7 @@
  * namespace，不进入 RDP/RustDesk 的 decoder 或 settings。
  *
  * 当前支持：RFB 3.3/3.7/3.8、None/VNC password、bounded ZRLE、Raw、
- * CopyRect、Cursor、DesktopSize、UltraVNC pairing、TLS transport、键鼠和
+ * CopyRect、Cursor、DesktopSize、UltraVNC pairing/monitor selection、TLS transport、键鼠和
  * 文本剪贴板。
  * WebSocket/generic relay code remains contract-gated and is not enabled by
  * the native entry point until a versioned server protocol is deployed.
@@ -35,6 +35,7 @@ public:
     int         connect(const ConnectionConfig& cfg) override;
     void        disconnect() override;
     ConnectionState getState() override;
+    std::string getConnectionLastMessage();
     void        onNetworkChanged(bool available,
                                  uint64_t networkGeneration) override;
     void        setSessionIdentity(uint64_t sessionId) override;
@@ -83,7 +84,16 @@ public:
 #endif
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     void        requestFrameRefresh() override;
+    int         monitorCount();
+    int         currentMonitor();
+    int         pendingMonitor();
+    uint64_t    monitorSwitchGeneration();
+    bool        monitorSwitchInputBlocked();
+    std::string monitorSwitchLastResult();
+    bool        requestMonitorSwitch(int monitor);
     std::string getClipboardText() override;
+    ClipboardSnapshot getClipboardSnapshot() override;
+    bool publishClipboard(const uint8_t* data, uint32_t len) override;
     bool        isClipboardReceiveReady() override;
     bool        supportsNatTraversal() override;
     bool        supportsFileTransfer() override;

@@ -15,6 +15,11 @@ export const SSH_DEFAULT_TERMINAL_FOREGROUND_COLOR: string = '#33FF33';
 export const SSH_DEFAULT_TERMINAL_FONT_SIZE: number = 18;
 export const SSH_DEFAULT_TERMINAL_LINE_SPACING: number = 1.12;
 export const SSH_TERMINAL_FONT_SIZE_MIN: number = 12;
+
+/** First-run terminal font size by device: phones need more columns than a PC window. */
+export function sshDefaultTerminalFontSizeForDevice(desktop: boolean, pad: boolean): number {
+  return desktop ? SSH_DEFAULT_TERMINAL_FONT_SIZE : pad ? 16 : 14;
+}
 export const SSH_TERMINAL_FONT_SIZE_MAX: number = 32;
 export const SSH_TERMINAL_LINE_SPACING_MIN: number = 1.0;
 export const SSH_TERMINAL_LINE_SPACING_MAX: number = 1.6;

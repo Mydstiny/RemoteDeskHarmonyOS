@@ -1,3 +1,4 @@
+import { AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
 import {
@@ -6,7 +7,8 @@ import {
   MoonlightToolbarLayout,
   moonlightToolbarAutoHideDelayMs,
   moonlightToolbarItems,
-  moonlightToolbarLayout
+  moonlightToolbarLayout,
+  sessionToolbarPcWidth
 } from '../../services/MoonlightUiPolicy';
 import {
   REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
@@ -37,13 +39,18 @@ export struct MoonlightSessionToolbar {
   @Prop keyboardOpen: boolean = false;
   @Prop modifiersOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
+  /** Pro AI 助理: its button before 性能. */
+  @Prop aiVisible: boolean = false;
   @Prop terminationBusy: boolean = false;
   @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
   @Prop qualityLabel: string = '良好';
   @Prop viewportWidth: number = 0;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
-  @State private expanded: boolean = false;
+  @State @Watch('publishRail') private expanded: boolean = false;
+  @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
   @State private pinned: boolean = false;
   @State private railSwipeX: number = 0;
   private hideTimer: number = -1;
@@ -66,7 +73,8 @@ export struct MoonlightSessionToolbar {
     const layout: MoonlightToolbarLayout = this.layout();
     const items: MoonlightToolbarItem[] = moonlightToolbarItems(
       this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
-      layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel);
+      layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel,
+      this.portraitDisplayEnabled, this.portraitDisplayActive, this.aiVisible);
     if (!this.canvasResetAvailable) { return items; }
     const resetItem: MoonlightToolbarItem = {
       action: 'resetCanvas', label: '复位', dangerous: false,
@@ -115,8 +123,10 @@ export struct MoonlightSessionToolbar {
     if (action === 'audio') { return $r('sys.symbol.speaker_slash_fill'); }
     if (action === 'display') { return $r('sys.symbol.display'); }
     if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
+    if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'more') { return $r('sys.symbol.ellipsis_bubble'); }
+    if (action === 'ai') { return $r('sys.symbol.wand_and_stars'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 
@@ -202,7 +212,14 @@ export struct MoonlightSessionToolbar {
     if (item.action === 'keyboard') { return this.keyboardOpen; }
     if (item.action === 'modifiers') { return this.modifiersOpen; }
     if (item.action === 'resetCanvas') { return this.canvasResetAvailable; }
+    if (item.action === 'portrait') { return this.portraitDisplayActive; }
+    if (item.action === 'ai') { return this.sessionAiOpen; }
     return item.action === 'diagnostics' && this.diagnosticsVisible;
+  }
+
+  /** The AI orb keeps clear of the rail while it is open, and may use the edge while it is only the handle. */
+  private publishRail(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, this.expanded);
   }
 
   private sessionPrimary(): string { return '#5B8FF9'; }
@@ -232,7 +249,13 @@ export struct MoonlightSessionToolbar {
     return item.enabled ? item.label : item.label + '，' + item.disabledReason;
   }
 
+  private itemRenderKey(item: MoonlightToolbarItem): string {
+    return item.action + '|' + this.itemLabel(item) + '|' + (this.itemEnabled(item) ? '1' : '0') + '|' +
+      (this.itemActive(item) ? '1' : '0') + '|' + (item.dangerous ? '1' : '0') + '|' + item.disabledReason;
+  }
+
   aboutToAppear(): void {
+    this.publishRail();
     this.expanded = false;
     this.pinned = false;
     this.onPointerRegionChange(false, false);
@@ -279,14 +302,14 @@ export struct MoonlightSessionToolbar {
   private railScrollMaxHeight(layout: MoonlightToolbarLayout): number {
     const contentHeight: number = this.railItems().length * 40 +
       Math.max(0, this.railItems().length - 1) * layout.itemGap;
-    return Math.max(1, Math.min(contentHeight, Math.max(1, layout.maxHeight - 92),
-      Math.max(1, this.availableHeight - 102)));
+    // Two 40vp fixed buttons, two gaps, padding and border.
+    const fixedHeight: number = 40 * 2 + layout.itemGap * 2 + 16;
+    return Math.max(1, Math.min(contentHeight, Math.max(1, layout.maxHeight - fixedHeight),
+      Math.max(1, this.availableHeight - fixedHeight)));
   }
 
   private pcExpandedToolbarWidth(): number {
-    const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
-      Math.max(1, this.viewportWidth - 24) : 560;
-    return Math.min(560, available);
+    return sessionToolbarPcWidth(this.items().length, 50, this.layout().itemGap, 44, this.viewportWidth);
   }
 
   @Builder private toolItem(item: MoonlightToolbarItem, layout: MoonlightToolbarLayout) {
@@ -318,6 +341,10 @@ export struct MoonlightSessionToolbar {
     .opacity(this.itemEnabled(item) ? 1 : 0.72)
     .accessibilityText(this.itemAccessibilityText(item))
     .onClick((): void => { this.invoke(item); })
+    // A long press on the AI button opens AI 控制面板; on any other it is a tap.
+    .gesture(LongPressGesture({ duration: 500 }).onAction((): void => {
+      if (item.action === 'ai') { AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now()); } else { this.invoke(item); }
+    }))
   }
 
   @Builder private pinItem(layout: MoonlightToolbarLayout) {
@@ -428,7 +455,7 @@ export struct MoonlightSessionToolbar {
           Column({ space: layout.itemGap }) {
             ForEach(this.railItems(), (item: MoonlightToolbarItem): void => {
               this.toolItem(item, layout);
-            }, (item: MoonlightToolbarItem): string => item.action)
+            }, (item: MoonlightToolbarItem): string => this.itemRenderKey(item))
           }
         }.width(layout.iconSize + 18)
           .constraintSize({ maxHeight: this.railScrollMaxHeight(layout) })
@@ -452,7 +479,7 @@ export struct MoonlightSessionToolbar {
         Row({ space: layout.itemGap }) {
           ForEach(this.items(), (item: MoonlightToolbarItem): void => {
             this.toolItem(item, layout);
-          }, (item: MoonlightToolbarItem): string => item.action)
+          }, (item: MoonlightToolbarItem): string => this.itemRenderKey(item))
           this.trailingItem(layout)
         }
         .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)

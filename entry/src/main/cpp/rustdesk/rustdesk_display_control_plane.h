@@ -45,6 +45,16 @@ public:
         return std::forward<Operation>(operation)(handleLease.get());
     }
 
+    // Existing jobs and receipts remain observable/cancellable after producer
+    // admission closes. The same admission mutex and handle lease still keep
+    // retirement from freeing the FFI context during the operation. This must
+    // never be used to enqueue new network work.
+    template<typename Operation>
+    bool dispatchExistingWork(std::mutex& admissionMutex, Operation&& operation) {
+        return dispatchOutbound(admissionMutex, []() { return true; },
+            std::forward<Operation>(operation));
+    }
+
     template<typename IsValid, typename Dispatch>
     bool dispatchFrame(int display, bool keyFrame, IsValid&& isValid, Dispatch&& dispatch) {
         if (!isValid()) {

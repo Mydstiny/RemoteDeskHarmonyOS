@@ -17,7 +17,7 @@ RDP_TEST_CASE(rdp_file_clipboard_offer_builds_freerdp_uri_list) {
     RDP_ASSERT_EQ(snapshot.paths.size(), 2U);
     RDP_ASSERT(snapshot.uriList ==
                std::string("file:///data/storage/el2/base/files/rdp_transfer/alpha.txt\r\n") +
-               "file:///data/storage/el2/base/files/rdp_transfer/with space.txt\r\n");
+               "file:///data/storage/el2/base/files/rdp_transfer/with%20space.txt\r\n");
 }
 
 RDP_TEST_CASE(rdp_file_clipboard_offer_rejects_unstable_or_unsafe_paths) {
@@ -58,4 +58,12 @@ RDP_TEST_CASE(rdp_file_clipboard_offer_generation_invalidates_stale_requests) {
     offer.clear();
     RDP_ASSERT(!offer.snapshot().ready());
     RDP_ASSERT(!offer.isCurrent(secondGeneration));
+}
+
+RDP_TEST_CASE(rdp_file_clipboard_offer_encodes_literal_percent_and_reserved_bytes) {
+    RdpFileClipboardOffer offer;
+    RDP_ASSERT(offer.replace({"/data/literal%20name%2F#.txt", "/data/中文.txt"}) ==
+        RdpFileClipboardOfferResult::Ready);
+    RDP_ASSERT(offer.snapshot().uriList == std::string("file:///data/literal%2520name%252F%23.txt\r\n") +
+        "file:///data/%E4%B8%AD%E6%96%87.txt\r\n");
 }

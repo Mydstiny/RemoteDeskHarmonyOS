@@ -1,3 +1,5 @@
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import { KeyCode } from '@kit.InputKit';
 import {
   routeSshShortcut,
@@ -111,7 +113,7 @@ export struct SshTerminalSearchBar {
   }
 
   private toggleBackground(active: boolean, action: string): string {
-    if (active) { return this.accentColor + 'CC'; }
+    if (active) { return appUiTint(this.accentColor, 'CC'); }
     return this.actionBackground(action);
   }
 
@@ -125,14 +127,15 @@ export struct SshTerminalSearchBar {
           .id('sshTerminalSearchInput')
           .layoutWeight(1)
           .constraintSize({ minWidth: 88 })
-          .height(34)
-          .fontSize(13)
+          .height(SEARCH_CAPSULE_HEIGHT)
+          .fontSize(SEARCH_CAPSULE_TEXT)
+          .placeholderFont({ size: SEARCH_CAPSULE_TEXT })
           .fontColor('#F2F4F7')
           .placeholderColor('rgba(242,244,247,0.46)')
           .caretColor(this.accentColor)
-          .backgroundColor('rgba(255,255,255,0.07)')
-          .borderRadius(8)
-          .padding({ left: 10, right: 10 })
+          .borderRadius(SEARCH_CAPSULE_RADIUS)
+          .backgroundColor('rgba(255,255,255,0.07)').linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(true))
+          .padding({ left: 16, right: 16 })
           .enterKeyType(EnterKeyType.Search)
           .enableAutoFill(false)
           .enablePreviewText(true)

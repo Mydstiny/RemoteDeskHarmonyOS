@@ -97,6 +97,8 @@ export class AccountSessionCoordinator {
   private current: AccountScopeToken = deviceLocalScopeToken(1);
   private transitionTail: Promise<void> = Promise.resolve();
   private listeners: Array<(scope: AccountScopeToken) => void> = [];
+  private transitionActivityCount: number = 0;
+  private transitionActivityListeners: Array<(active: boolean) => void> = [];
   private initPromise: Promise<boolean> | null = null;
   private startupFallbackPromise: Promise<boolean> | null = null;
   private initialized: boolean = false;
@@ -239,30 +241,55 @@ export class AccountSessionCoordinator {
     };
   }
 
+  onTransitionActivity(listener: (active: boolean) => void): () => void {
+    this.transitionActivityListeners.push(listener);
+    try { listener(this.transitionActivityCount > 0); } catch (_error) { /* isolate observers */ }
+    return (): void => {
+      this.transitionActivityListeners = this.transitionActivityListeners.filter(
+        (item: (active: boolean) => void): boolean => item !== listener);
+    };
+  }
+
+  private async trackTransitionActivity(action: AccountTransitionAction): Promise<AccountTransitionResult> {
+    this.transitionActivityCount++;
+    this.publishTransitionActivity();
+    try { return await action(); }
+    finally { this.transitionActivityCount--; this.publishTransitionActivity(); }
+  }
+
+  private publishTransitionActivity(): void {
+    const active: boolean = this.transitionActivityCount > 0;
+    this.transitionActivityListeners.slice().forEach((listener: (active: boolean) => void): void => {
+      try { listener(active); } catch (_error) { /* account transitions must continue */ }
+    });
+  }
+
   async transitionToAccount(identity: AccountLoginIdentity,
     options: AccountTransitionOptions = {}): Promise<AccountTransitionResult> {
     const intentGeneration: number = ++this.transitionIntentGeneration;
-    if (!AppCloneContext.getInstance().accountKitAllowed()) {
-      return this.result(false, 'local_only',
-        AppCloneContext.getInstance().snapshot().statusText +
-        '，华为账号登录与云同步不可用');
-    }
-    if (!(await this.whenReady())) {
-      return this.result(false, 'blocked', '账号生命周期初始化失败');
-    }
-    return await this.serialize((): Promise<AccountTransitionResult> =>
-      this.doTransitionToAccount(
-        identity, intentGeneration,
-        options.deferCloudBootstrap === true));
+    return await this.trackTransitionActivity(async (): Promise<AccountTransitionResult> => {
+      if (!AppCloneContext.getInstance().accountKitAllowed()) {
+        return this.result(false, 'local_only',
+          AppCloneContext.getInstance().snapshot().statusText +
+          '，华为账号登录与云同步不可用');
+      }
+      if (!(await this.whenReady())) {
+        return this.result(false, 'blocked', '账号生命周期初始化失败');
+      }
+      return await this.serialize((): Promise<AccountTransitionResult> =>
+        this.doTransitionToAccount(identity, intentGeneration, options.deferCloudBootstrap === true));
+    });
   }
 
   async transitionToOffline(reason: string = 'offline'): Promise<AccountTransitionResult> {
     const intentGeneration: number = ++this.transitionIntentGeneration;
-    if (!(await this.whenReady())) {
-      return this.result(false, 'blocked', '账号生命周期初始化失败');
-    }
-    return await this.serialize((): Promise<AccountTransitionResult> =>
-      this.doTransitionToOffline(reason, intentGeneration));
+    return await this.trackTransitionActivity(async (): Promise<AccountTransitionResult> => {
+      if (!(await this.whenReady())) {
+        return this.result(false, 'blocked', '账号生命周期初始化失败');
+      }
+      return await this.serialize((): Promise<AccountTransitionResult> =>
+        this.doTransitionToOffline(reason, intentGeneration));
+    });
   }
 
   private async whenReady(): Promise<boolean> {

@@ -1,0 +1,215 @@
+// Every Pro entry point must follow the entitlement, not only the user's display choice.
+// A new ProBadge or Pro entry fails this test until it is gated through ProEntries.visible
+// (or ProFeatureGate / AiAccess.proVisible, which apply the same rule) and registered below.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.join(__dirname, '../../entry/src/main/ets');
+function files(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? files(full) : entry.name.endsWith('.ets') ? [full] : [];
+  });
+}
+const sources = new Map(files(root).map(file => [path.relative(root, file).split(path.sep).join('/'), fs.readFileSync(file, 'utf8')]));
+const count = (text, pattern) => (text.match(pattern) || []).length;
+
+// 1. The display toggle alone is never an entitlement check.
+const rawVisibility = /ProFeatureVisibility\.getInstance\(\)\.isVisible\(|\bproVisibility\.isVisible\(/g;
+const rawAllowed = new Map([
+  ['services/pro/ProEntries.ets', 'defines visible() = display choice AND entitlement decision'],
+  ['services/pro/ProFeatureVisibility.ets', 'the display-choice store itself'],
+  ['components/ProFeatureVisibilityPanel.ets', 'edits the display choice for every catalog feature'],
+  ['components/ProFeatureManagerPanel.ets', 'Pro management list (shown only while Pro is active): edits display choices, shows the decision separately'],
+  ['components/ProPurchaseSheet.ets', 'purchase list describes features the user does not own yet'],
+  ['services/ai/AiAccess.ets', 'proVisible()/executable() combine it with runtime.decision']
+]);
+for (const [file, text] of sources) {
+  if (count(text, rawVisibility) > 0) {
+    assert.ok(rawAllowed.has(file), `${file}: use ProEntries.visible(featureId) instead of the display toggle alone`);
+  }
+}
+for (const file of rawAllowed.keys()) assert.ok(sources.has(file), `allowlisted ${file} no longer exists`);
+const entries = sources.get('services/pro/ProEntries.ets');
+assert.match(entries, /ProEntries\.shown\(featureId\) &&\s*ProAppRuntime\.getInstance\(\)\.runtime\.decision\(featureId, context\)\.visible/);
+assert.match(sources.get('components/ProFeatureGate.ets'), /ProEntries\.visible\(this\.featureId, this\.context\)/);
+assert.match(sources.get('services/ai/AiAccess.ets'),
+  /proVisible\(\): boolean \{[\s\S]*?isVisible\('pro\.ai\.workspace'\) &&\s*pro\.runtime\.decision\('pro\.ai\.workspace', pro\.context\('ai'\)\)\.visible/);
+
+// 2. Every Pro badge is a registered, gated entry.
+const badges = new Map([
+  ['components/ProConnectionShareControls.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.connection\.knockShare'/]],
+  ['components/ProContinuationControls.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.connection\.continuation'/]],
+  ['components/ProAppIconPanel.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.personalization\.appIcon'/]],
+  ['components/ProPurchaseSheet.ets', [1, /purchase/i]],
+  ['components/ProFeatureVisibilityPanel.ets', [1, /ProFeatureVisibility/]],
+  ['components/AppSheetHeader.ets', [1, /if \(this\.showProBadge\)/]],
+  // The 工作区 row shows only when the host page passes workspaceAvailable (ProEntries.visible('pro.workspaces')).
+  ['components/hostadd/HostProtocolPicker.ets', [2, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)[\s\S]*if \(this\.workspaceAvailable\) \{ this\.workspaceOption\(\) \}/]],
+  ['components/ai/AiHostEditor.ets', [1, /AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  // The remote AI session page (Claude and Codex style headers) clears its drafts and sheets when AI access is revoked.
+  ['pages/RemoteAiWorkspace.ets', [2, /!AiAccess\.getInstance\(\)\.proVisible\(\) \|\|\s*\(this\.host !== null && !AiAccess\.getInstance\(\)\.executable\(this\.host\.backend\)\)/]],
+  ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
+  // Per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
+  // The skin sheet opens only from the Pro-gated 终端皮肤 row in settings.
+  ['components/ssh/skin/SshSkinSettingsPanel.ets', [1, /export struct SshSkinSettingsPanel/]],
+  ['components/ProFeatureManagerPanel.ets', [1, /export struct ProBadgeSettingsPanel/]],
+  // The home workspace band renders only while 工作区与布局 is visible to an entitled account.
+  ['components/pro/workspace/WorkspaceStrip.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
+  ['components/pro/workspace/WorkspaceGroupCard.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
+  // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
+  // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible;
+  // 安全与数据 › 手机通行密钥 follows phonePasskeyEntryAvailable().
+  ['pages/HostListPage.ets', [10, /(?=[\s\S]*aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\))(?=[\s\S]*if \(phonePasskeyEntryAvailable\(\)\) \{\s*this\.phonePasskeyRow\(\))/]],
+  // RDP session panel: 远端显示方案 exists only while RemoteDesktop passes advancedDisplayVisible, and
+  // 安全密钥重定向 only while it passes securityKeyVisible.
+  ['components/rdp/RdpControlCenter.ets', [2, /(?=[\s\S]*if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\))(?=[\s\S]*if \(this\.securityKeyVisible\) \{\s*this\.securityKeyEntry\(\))/]],
+  // The 远端显示方案 sheet opens only from those gated entries (settings row and session panel).
+  ['components/rdp/RdpDisplayProfilePanel.ets', [1, /export struct RdpDisplayProfilePanel/]],
+  // RustDesk display menu: the custom-resolution section follows rustDeskCustomVisible.
+  ['pages/RemoteDesktop.ets', [1, /if \(this\.rustDeskCustomVisible\) \{[\s\S]{0,300}ProBadge\(\)/]]
+]);
+for (const [file, text] of sources) {
+  if (file === 'components/ProBadge.ets') continue;  // the badge component itself
+  const found = count(text, /\bProBadge\(\)/g);
+  if (found === 0) continue;
+  assert.ok(badges.has(file), `${file}: new Pro entry — gate it with ProEntries.visible/ProFeatureGate and register it here`);
+  const [expected, gate] = badges.get(file);
+  assert.equal(found, expected, `${file}: Pro badge count changed; gate and re-register each entry`);
+  assert.match(text, gate, `${file}: registered gate is missing`);
+}
+// Header badges appear on AI workspace sheets (closed when AI access is revoked) and, in 全新视觉, on the Pro
+// settings sheets whose own badge is registered and gated above (they open only from those gated entries).
+for (const [file, text] of sources) {
+  if (file === 'components/AppSheetHeader.ets' || !/showProBadge: true/.test(text)) continue;
+  assert.ok(file === 'pages/RemoteAiWorkspace.ets' || badges.has(file) || phonePasskeySheet(file),
+    `${file}: Pro sheet header needs a registered gate`);
+}
+// 手机通行密钥's sheet opens only from its 安全与数据 row and the AI route, both behind phonePasskeyEntryAvailable().
+function phonePasskeySheet(file) {
+  if (file !== 'components/pro/passkey/PhonePasskeySettingsSheet.ets') return false;
+  const host = sources.get('pages/HostListPage.ets');
+  assert.match(host, /if \(phonePasskeyEntryAvailable\(\)\) \{ this\.openSettingsLeafSheet\(SETTINGS_SHEET_PHONE_PASSKEY\)/);
+  assert.match(sources.get('services/pro/passkey/ProPasskeyEntry.ets'), /if \(!DEBUG\) \{ return false; \}[\s\S]{0,400}executable/);
+  return true;
+}
+
+// The Pro developer tools (权益模拟, 沙盒测试, the USB FIDO probe, the 「沙盒 ·」 label) are hidden even in Debug, and
+// Release gives everyone Pro through the free trial.
+{
+  const tools = sources.get('services/pro/ProDeveloperTools.ets');
+  assert.match(tools, /export const PRO_DEVELOPER_TOOLS_SHOWN: boolean = false;/);
+  assert.match(tools, /return DEBUG && PRO_DEVELOPER_TOOLS_SHOWN;/);
+  const host = sources.get('pages/HostListPage.ets');
+  assert.match(host, /if \(proDeveloperToolsVisible\(\)\) \{\s*this\.proDebugStateRow\(\)/);
+  assert.match(host, /if \(proDeveloperToolsVisible\(\) && !this\.proManagerVisible\) \{/);
+  assert.equal((host.match(/this\.proDebugStateRow\(\)/g) || []).length, 2);
+  const purchase = sources.get('components/ProPurchaseSheet.ets');
+  assert.match(purchase, /if \(proDeveloperToolsVisible\(\)\) \{\s*ProUsbFidoProbePanel/);
+  assert.equal(/if \(DEBUG\) \{\s*ProUsbFidoProbePanel/.test(purchase), false);
+  assert.match(purchase, /this\.testing && proDeveloperToolsVisible\(\) \? '沙盒 '/);
+  assert.match(sources.get('services/pro/ProRuntime.ets'), /real\.environment === 'sandbox' && proDeveloperToolsVisible\(\)\) \{ label = '沙盒 · '/);
+  assert.match(sources.get('services/pro/ProComplimentaryPolicy.ets'), /export const PRO_COMPLIMENTARY_TRIAL: boolean = true;/);
+}
+
+// RDP/RustDesk advanced display: every Pro choice follows ProEntries.visible for its own feature.
+const remoteDesktop = sources.get('pages/RemoteDesktop.ets');
+assert.match(sources.get('pages/HostListPage.ets'),
+  /this\.rdpAdvancedDisplayVisible = ProEntries\.visible\(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this\.rdpAdvancedDisplayContext\(\)\)/);
+assert.match(sources.get('pages/HostListPage.ets'), /if \(this\.rdpAdvancedDisplayVisible\) \{\s*this\.rdpDisplayProfileRow\(\)/);
+assert.match(sources.get('pages/HostListPage.ets'), /this\.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE\) \{\s*RdpDisplayProfilePanel\(/);
+assert.match(remoteDesktop, /advancedDisplayVisible: this\.rdpAdvancedDisplayVisible\(\)/);
+assert.match(remoteDesktop, /return ProEntries\.visible\(PRO_RDP_ADVANCED_DISPLAY_FEATURE, context\)/);
+assert.match(remoteDesktop, /this\.rustDeskCustomVisible = ProEntries\.visible\(PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE,/);
+// RDP security-key redirection: the session row and the connect request both follow the entitlement.
+assert.match(remoteDesktop, /securityKeyVisible: this\.rdpSecurityKeyVisible\(\)/);
+assert.match(remoteDesktop, /return ProEntries\.visible\(PRO_SECURITY_KEY_FEATURE, rdpSecurityKeyContext\(\)\) && ProRdpSecurityKey\.available\(\)/);
+assert.match(remoteDesktop, /rdpSecurityKeyRedirect: this\.rdpSecurityKeyRequested\(host\)/);
+assert.match(remoteDesktop, /if \(host\.protocol !== 'rdp' \|\| !ProRdpSecurityKey\.available\(\)\) \{ return false; \}/);
+const securityKeyService = sources.get('services/pro/ProRdpSecurityKey.ets');
+assert.match(securityKeyService, /if \(DEBUG\) \{[\s\S]*?runtime\.decision\(PRO_SECURITY_KEY_FEATURE, rdpSecurityKeyContext\(\)\)\.executable/);
+
+// 诊断与 AI 帮助: the two AI sub-settings follow their own features; 传统日志抓取 stays free.
+const hostSource = sources.get('pages/HostListPage.ets');
+assert.match(hostSource, /this\.diagnosticAiConfigVisible = ProEntries\.visible\(PRO_DIAGNOSTICS_PROVIDER_FEATURE\)/);
+assert.match(hostSource, /this\.diagnosticAiAssistantVisible = ProEntries\.visible\(PRO_DIAGNOSTICS_ASSISTANT_FEATURE\)/);
+assert.match(hostSource, /if \(this\.diagnosticAiConfigVisible\) \{\s*this\.diagnosticSubRow\(0\)/);
+assert.match(hostSource, /if \(this\.diagnosticAiAssistantVisible\) \{\s*this\.diagnosticSubRow\(1\)/);
+assert.match(hostSource, /\}\s*this\.diagnosticSubRow\(2\)\s*\}/);
+// The AI 助理 rows do not repeat the Pro mark; the section header carries it.
+assert.doesNotMatch(hostSource.slice(hostSource.indexOf('@Builder diagnosticSubRow'),
+  hostSource.indexOf('@Builder', hostSource.indexOf('@Builder diagnosticSubRow') + 10)), /ProBadge\(\)/);
+// The 诊断与 AI 帮助 header badge shows only while one of its AI sub-settings is visible.
+assert.match(hostSource, /section === SETTINGS_SECTION_DIAGNOSTICS && \(this\.diagnosticAiConfigVisible \|\| this\.diagnosticAiAssistantVisible\)/);
+// The host-page AI entry follows the 启动 AI 辅助 entitlement.
+// The AI entry shows on every tab, and only while the account may use the assistant.
+assert.match(hostSource, /hostAiOrbShown\(\): boolean \{\s*return this\.hostAiOrbAvailable\(\);/);
+// The AI entrance is always resident for Pro (f460f0faf): only the entitlement hides it.
+assert.match(hostSource, /hostAiOrbAvailable\(\): boolean \{[\s\S]{0,260}?return this\.diagnosticAiAssistantVisible;/);
+
+// 3. Regression: the settings app-icon row follows the entitlement.
+const host = sources.get('pages/HostListPage.ets');
+assert.match(host, /this\.appIconProVisible = ProEntries\.visible\(id\) \|\|\s*\(ProEntries\.shown\(id\) && icons\.loaded && icons\.currentName !== ''\)/);
+assert.match(host, /if \(this\.appIconProVisible && this\.appIconSupported\) \{[\s\S]{0,600}ProBadge\(\)/);
+assert.match(host, /this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO_FEATURE\)/);
+assert.equal(host.indexOf('ProFeatureDetailPanel({') > host.indexOf('SETTINGS_SHEET_PRO_FEATURE) {'), true);
+assert.match(host, /if \(this\.proManagerVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_PRO/);
+assert.match(host, /this\.proManagerVisible = ProEntries\.proActive\(\)/);
+assert.match(entries, /static proActive\(\): boolean \{\s*return ProAppRuntime\.getInstance\(\)\.runtime\.snapshot\(\)\.effectiveState === 'active';/);
+// Settings order: protocol sections, then remote AI and Pro management, then security.
+const order = ['SETTINGS_SECTION_VNC', 'SETTINGS_SECTION_MOONLIGHT', 'SETTINGS_SECTION_AI', 'SETTINGS_SECTION_PRO', 'SETTINGS_SECTION_SECURITY']
+  .map(name => host.indexOf('this.settingsAccordionHeader(' + name));
+assert.ok(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1])), 'settings section order changed');
+assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_AI/);
+// 4. The account card and sheet show the Pro marker only while the account's Pro is active.
+assert.equal(count(host, /if \(this\.proManagerVisible && !this\.appCloneLocalOnly\) \{\s*ProBadge\(/g), 2);
+// 5. Custom key combinations belong to Pro 个性化方案 in settings, the session panel and the editor.
+assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,500}SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM/);
+assert.match(host, /this\.personalizationProVisible = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
+const panel = sources.get('components/RemoteModifierPanel.ets');
+assert.match(panel, /if \(this\.proCustomShortcuts\) \{\s*this\.SectionChoice\('custom'/);
+assert.match(panel, /this\.proCustomShortcuts = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
+assert.match(sources.get('components/VirtualKeyboardSettingsSheet.ets'),
+  /requestedSection === 'custom'\) \{\s*if \(ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
+assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,500}SETTINGS_SHEET_SSH_SKIN/);
+assert.match(sources.get('services/ssh/skin/SshSkinStore.ets'),
+  /resolveSshSkin\(this\.settings, hostId, ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
+console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');
+
+// Pro surfaces stay entitlement-gated; in 1.2.0 workspaces and host management ship (open during the free trial).
+const vm = require('node:vm');
+const entryTs = require(process.env.PRO_TYPESCRIPT_PATH || 'typescript');
+const catalogPath = path.resolve(__dirname, '../../entry/src/main/ets/services/pro/ProFeatureCatalog.ets');
+const entryModule = { exports: {} };
+const catalogSource = entryTs.transpileModule(fs.readFileSync(catalogPath, 'utf8'), {
+  compilerOptions: { target: entryTs.ScriptTarget.ES2021, module: entryTs.ModuleKind.CommonJS }
+}).outputText;
+vm.runInNewContext(catalogSource, { module: entryModule, exports: entryModule.exports, require: () => ({}) }, { filename: catalogPath });
+const proCatalog = entryModule.exports.proFeatures();
+// Pro 反馈 is closed to users for now: out of the catalog (so its 反馈 tab is hidden) until the switch opens it.
+assert.equal(entryModule.exports.PRO_FEEDBACK_OPEN, false);
+assert.equal(proCatalog.some(item => item.id === 'pro.feedback'), false);
+assert.match(entryModule.exports.proFeatureProgress('pro.feedback'), /Pro.*畅联群.*QQ 群/);
+assert.match(fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/components/FeedbackSettingsSheet.ets'), 'utf8'),
+  /return PRO_FEEDBACK_OPEN && this\.proFeedbackVisible && ProEntries\.visible\(PRO_FEEDBACK_FEATURE\);/);
+for (const id of ['pro.workspaces', 'pro.hostManagement']) {
+  const item = proCatalog.find(item => item.id === id); assert.ok(item);
+  assert.equal(item.requiredEntitlementId, 'pro.lifetime');
+  assert.equal(item.availability, 'available');
+  assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
+}
+assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /已上线（试用）.*作者还没有鸿蒙 PC 真机/);
+assert.match(entryModule.exports.proFeatureProgress('pro.hostManagement'), /已上线（试用）.*验收通过/);
+// Every unfinished feature says why, and the AI knows each feature's state.
+for (const id of ['pro.file.knockTransfer', 'pro.connection.knockShare', 'pro.ai.rustdeskTransport',
+  'pro.security.webauthnRedirect', 'pro.security.phonePasskey']) {
+  assert.match(entryModule.exports.proFeatureProgress(id), /：/, id + ' gives its reason');
+}
+const knowledge = entryModule.exports.proFeatureStatusKnowledge();
+assert.equal(knowledge.split('\n').length, proCatalog.length - 1, 'one line per Pro feature');
+assert.ok(knowledge.includes('碰一碰传文件') && knowledge.includes('作者还没有真机'));
+const hostPage = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
+assert.equal(hostPage.includes('加入 ops 工作组'), false); assert.equal(hostPage.includes('移出工作组'), false);
+console.log('PASS Pro workspace/host-management entry gating');

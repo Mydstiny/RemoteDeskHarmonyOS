@@ -20,6 +20,7 @@
 #include "transfer_runtime_status.h"
 #include "rdp/rdp_gateway_policy.h"
 #include "ssh/ssh_route_policy.h"
+#include "render/phone_frame_receipt.h"
 
 // ============================================================
 // 枚举与常量
@@ -75,6 +76,16 @@ enum class RdpRestrictedAdminSecretSource {
 // 数据结构
 // ============================================================
 
+// A protocol event identity, not a hash of its payload. A text offer can be
+// observed before its data response is ready; consumers must not treat that
+// interval as an empty clipboard. Local publication never changes this record.
+struct ClipboardSnapshot {
+    uint64_t sequence = 0;
+    std::string kind = "none";
+    std::string text;
+    bool ready = false;
+};
+
 /** 连接配置 — 建立远程连接所需的全部参数 */
 struct ConnectionConfig {
     std::string host;            // 远程主机 IP 或域名
@@ -99,6 +110,8 @@ struct ConnectionConfig {
     int         monitorCount;    // 🆕 显示器数量
     int         colorDepth;      // 🆕 色深 (BPP)
     int         rdpDesktopScaleFactor = 100;
+    // Debug + Pro only: load the MS-RDPEWA channel backed by the session security-key broker.
+    bool        rdpSecurityKeyRedirect = false;
     int         rdpDeviceScaleFactor = 100;
     int         rdpDesktopPhysicalWidthMm = 0;
     int         rdpDesktopPhysicalHeightMm = 0;
@@ -138,6 +151,7 @@ struct ConnectionConfig {
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
     std::string sshJumpHostKeyRawBase64;
     std::string sshJumpHostKeyFingerprintSha256;
+    bool        rdExplicitPhone = false; // verified manual phone choice for this connection only
     int         rdImageQuality;    // RustDesk: 0=速度, 1=平衡, 2=画质
     bool        rdDirectIp;        // RustDesk: 直连 IP 模式
     std::string rdConnectionStrategy; // force_relay | direct_ip | auto (auto currently fail-closed)
@@ -153,7 +167,9 @@ struct ConnectionConfig {
     bool        rdpAllowUntrustedRoot; // RDP: 当前连接允许无法回溯根证书
     bool        rdpAllowHostMismatch;  // RDP: 当前连接允许证书名称不匹配
     bool        rdpCertificateAllowUnpinnedOnce; // RDP: 用户已明确允许本次未知证书
+    bool        rdpVerifyCertificateOnConnect; // direct RDP: strict live PKI when no saved pin
     bool        rdpAllowStandardSecurityOnce; // RDP: 用户已明确允许本次 Standard Security
+    bool        rdpAllowLegacyTls; // RDP: 用户已明确允许旧版 TLS（1.0/1.1、安全等级 0）
     bool        rdpTlsWithoutNla; // RDP: explicit direct TLS compatibility mode; not a host field
     bool        rdpCertificateAllowTimeAnomalyOnce; // RDP: 用户已明确允许本次时间异常
     bool        rdpGatewayAllowUntrustedRoot;
@@ -209,7 +225,9 @@ struct ConnectionConfig {
           rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
-          rdpCertificateAllowUnpinnedOnce(false), rdpAllowStandardSecurityOnce(false),
+          rdpCertificateAllowUnpinnedOnce(false), rdpVerifyCertificateOnConnect(false),
+          rdpAllowStandardSecurityOnce(false),
+          rdpAllowLegacyTls(false),
           rdpTlsWithoutNla(false),
           rdpCertificateAllowTimeAnomalyOnce(false),
           rdpGatewayAllowUntrustedRoot(false), rdpGatewayAllowHostMismatch(false),
@@ -243,6 +261,10 @@ struct VideoFrame {
     int            dirtyHeight;
     int            colorDepth;  // RAW_BGRA source's negotiated VNC color depth; otherwise 0
     int            sourceEncoding; // RFB encoding for RAW_BGRA; otherwise -1
+    // Only explicit RustDesk phone frames carry ingress geometry and a decoder receipt.
+    uint64_t phoneStreamEpoch = 0;
+    uint32_t phoneGeometryEpoch = 0;
+    Render::PhoneFrameReceiptPtr phonePresentation;
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),
@@ -283,6 +305,40 @@ struct RdpCertificateInfo {
     std::string errorMessage;
     std::string preflightStatus = "unavailable";
     std::vector<std::string> riskFlags;
+    /** The TLS version the probe negotiated (e.g. "TLSv1"), empty when no handshake completed. */
+    std::string tlsProtocol;
+    /** Numeric address the probe's TCP connection reached (runtime only; empty before a connection). */
+    std::string connectedAddress;
+};
+
+/**
+ * RDP graphics negotiation evidence. "Requested" fields are what the client
+ * advertised; caps/surface fields are observed from the RDPGFX channel. The
+ * wire codec is the dominant codec id actually carried by surface commands.
+ */
+struct RdpGfxEvidenceStats {
+    bool requestedApplied = false;
+    bool compiledGfx = false;
+    bool compiledH264 = false;
+    bool h264PathSafe = false;
+    bool supportGraphicsPipeline = false;
+    bool remoteFxCodec = false;
+    bool h264Advertised = false;
+    bool fallbackConsumed = false;
+    std::string fallbackReason;
+    uint32_t capsAdvertisedCount = 0;
+    std::string capsAdvertisedMaxVersion = "unknown";
+    bool capsAdvertisedAvc = false;
+    bool capsConfirmed = false;
+    std::string capsConfirmedVersion = "unknown";
+    uint32_t capsConfirmedFlags = 0;
+    bool capsConfirmedAvc = false;
+    uint64_t surfaceCommands = 0;
+    uint64_t surfaceCommandBytes = 0;
+    uint64_t avcSurfaceCommands = 0;
+    uint64_t unknownCodecCommands = 0;
+    uint32_t wireCodecMask = 0;
+    std::string wireCodec = "none";
 };
 
 /** RDP 原生渲染统计, 用于 ArkTS 侧识别已连接但未出画面的异常 */
@@ -372,6 +428,7 @@ struct RdpRenderStats {
     int64_t inputDroppedMouseMoves = 0;
     int64_t inputNonDisposableOverflow = 0;
     std::string graphicsMode;
+    RdpGfxEvidenceStats gfxEvidence;
 };
 
 struct RdpDisplayLayoutRequest {
@@ -551,6 +608,10 @@ public:
 
     /** 获取剪贴板文本（从远程同步到本地） */
     virtual std::string getClipboardText() { return ""; }
+    virtual ClipboardSnapshot getClipboardSnapshot() { return {}; }
+    // True means accepted by this live protocol's publication path. It does
+    // not prove the peer pasted or persisted the contents.
+    virtual bool publishClipboard(const uint8_t* /*data*/, uint32_t /*len*/) { return false; }
     virtual bool isClipboardReceiveReady() { return false; }
 
     /**

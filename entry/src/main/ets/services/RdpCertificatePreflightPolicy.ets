@@ -23,6 +23,56 @@ export const RDP_CERTIFICATE_LEGACY_IMPLICIT_TRUST_MODE: number = 1;
 export const RDP_CERTIFICATE_EXPLICIT_TRUST_MODE: number = 2;
 
 /**
+ * The diagnostic bypass is limited to direct TCP RDP routes. Gateway routes
+ * have two independently verified TLS identities and keep route preflight.
+ * The live FreeRDP certificate callback remains active when this is enabled;
+ * this helper only decides whether the ArkUI preflight sheet may be skipped.
+ */
+export function rdpCertificatePreflightSkipAllowed(
+  requested: boolean, endpointMode: string
+): boolean {
+  return requested && (endpointMode === 'direct_rdp' ||
+    endpointMode === 'transparent_tcp_rdp');
+}
+
+/**
+ * A direct route may offer a one-time preflight bypass when no target
+ * certificate was obtained. This is only a UX hint: the live FreeRDP
+ * certificate callback still decides whether the actual connection is safe.
+ * Gateway routes intentionally stay out of this path because they have a
+ * separate Gateway TLS identity and policy.
+ */
+export function rdpCertificatePreflightBypassHintAllowed(
+  requested: boolean,
+  endpointMode: string,
+  status: RdpPreflightStatus,
+  errorCode: string,
+  targetCertificatePresent: boolean
+): boolean {
+  if (requested || (endpointMode !== 'direct_rdp' &&
+    endpointMode !== 'transparent_tcp_rdp') || targetCertificatePresent) {
+    return false;
+  }
+  const normalizedErrorCode: string = errorCode.trim();
+  switch (normalizedErrorCode) {
+    case 'E-RDP-ENDPOINT':
+    case 'E-RDP-TARGET-DNS':
+    case 'E-RDP-TARGET-TCP':
+    case 'E-RDP-TARGET-TIMEOUT':
+    case 'E-RDP-TARGET-TLS':
+    case 'E-RDP-TARGET-CERT':
+    case 'E-RDP-NEGOTIATION':
+    case 'E-RDP-ADAPTER':
+    case 'E-RDP-FREERDP-NEGOTIATION':
+    case 'E-RDP-PREFLIGHT-NAPI':
+    case 'E-RDP-PREFLIGHT-EXCEPTION':
+      return true;
+    default:
+      return status === RDP_PREFLIGHT_TRANSPORT_FAILED && normalizedErrorCode === '';
+  }
+}
+
+/**
  * 证书预检使用独立 TLS probe，而真实 FreeRDP 连接有自己的 endpoint/resolver 路径。
  * 预检只报告观察结果。DNS/TCP/明确的连接超时仍然是传输失败；其余证书、TLS
  * 元数据或协议兼容性结果都交给真实连接和用户的明确选择处理。
@@ -223,6 +273,8 @@ export function rdpCertificateRiskLabel(flag: string): string {
       return '目标 RDP 证书存在风险';
     case 'UNKNOWN_GATEWAY_PROTOCOL':
       return '当前预检无法识别该网关协议';
+    case 'LEGACY_TLS':
+      return '这台电脑只支持旧版 TLS（1.0/1.1 或弱加密），加密强度较低';
     default:
       return flag;
   }
@@ -456,7 +508,24 @@ export function rdpCertificateWarningMessage(
   if (hostMismatch) {
     message += ' 证书名称与当前主机不匹配。';
   }
+  if (riskFlags.indexOf('LEGACY_TLS') >= 0) {
+    message += ' 这台电脑只支持旧版 TLS（常见于未更新的 Windows 7 / Server 2008 R2），连接的加密强度较低。' +
+      '选择继续或信任，表示你同意为这台电脑降低 TLS 安全要求。';
+  }
   return message;
+}
+
+/**
+ * Legacy TLS (TLS 1.0/1.1, security level 0) is used only after the user
+ * agreed: on the certificate sheet now, or earlier for this route.
+ */
+export function shouldAllowRdpLegacyTls(riskFlags: string[], userApproved: boolean, consentStored: boolean): boolean {
+  return riskFlags.indexOf('LEGACY_TLS') >= 0 && (userApproved || consentStored);
+}
+
+/** A trusted certificate still stops for the user when the host needs legacy TLS nobody agreed to. */
+export function rdpLegacyTlsNeedsDecision(riskFlags: string[], consentStored: boolean): boolean {
+  return riskFlags.indexOf('LEGACY_TLS') >= 0 && !consentStored;
 }
 
 export function shouldRequireRdpCertificateConfirmation(

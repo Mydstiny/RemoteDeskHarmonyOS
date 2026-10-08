@@ -8,6 +8,22 @@ export function remoteOrientationRequestIsCurrent(requestGeneration: number,
     requestGeneration === currentGeneration;
 }
 
+/**
+ * A window request belongs to one page/cleanup generation. Cleanup may still
+ * issue the restoring UNSPECIFIED request, but no stale orientation preference
+ * may run after teardown has started.
+ */
+export function remoteOrientationRequestIsActive(requestGeneration: number,
+  currentGeneration: number, requestLifecycleGeneration: number,
+  currentLifecycleGeneration: number, cleanupRequested: boolean,
+  allowDuringCleanup: boolean): boolean {
+  return remoteOrientationRequestIsCurrent(requestGeneration, currentGeneration) &&
+    Number.isSafeInteger(requestLifecycleGeneration) && requestLifecycleGeneration >= 0 &&
+    Number.isSafeInteger(currentLifecycleGeneration) &&
+    requestLifecycleGeneration === currentLifecycleGeneration &&
+    (!cleanupRequested || allowDuringCleanup);
+}
+
 export function normalizeRustDeskTargetDevice(value: string): RustDeskTargetDevice {
   return value === 'phone' ? 'phone' : 'computer';
 }

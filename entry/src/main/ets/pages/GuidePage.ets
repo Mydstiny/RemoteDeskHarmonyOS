@@ -3,7 +3,7 @@
  *
  * 内容与设置页「简单使用教程」共享功能介绍，仅收尾页按入口区分。
  */
-import { router } from '@kit.ArkUI';
+import { promptAction, router } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
@@ -12,7 +12,12 @@ import {
   shouldPresentGuideAsCenterSheet,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
-import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
+import {
+  CURRENT_RELEASE_VERSION, pagesForReleasedVersion, releaseHeadline, ReleaseNotePage
+} from '../services/ReleaseNotesRegistry';
+import { GuideShowcase, WhatsNewList } from '../components/guide/GuideShowcase';
+import { ProShowcase } from '../components/guide/ProShowcase';
+import { markProTrialStarted } from '../services/pro/ProTrialNotice';
 import {
   clampGuidePageIndex,
   ensureGuidePages,
@@ -26,6 +31,8 @@ const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
 const GUIDE_SHEET_ENTER_DELAY_MS = 120;
 const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
+/** A Pro 功能介绍 whose content has not shown by now is given up: the guide completes instead of leaving a blank sheet. */
+const PRO_INTRO_SHOW_DEADLINE_MS = 3000;
 // Set true only during explicit release acceptance to show the update Swiper
 // on every launch regardless of the persisted read marker.
 const FORCE_RELEASE_NOTES_REVIEW: boolean = false;
@@ -47,10 +54,19 @@ struct GuidePage {
   @State showGuideSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = firstInstallGuidePages();
+  @State releaseItems: ReleaseNotePage[] = [];
+  /** 'main' shows the guide or the 「新功能」 list; 'pro' shows the Pro 功能介绍 sheet that closes either flow. */
+  @State stage: string = 'main';
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
   private isFinishing: boolean = false;
+  /** The sheet is being closed only to reopen at a new breakpoint, not dismissed by the user. */
+  private reflowingSheet: boolean = false;
   private guideSheetEnterTimer: number = -1;
   private guideSheetReopenTimer: number = -1;
+  /** The Pro 功能介绍 content is on screen; until then the sheet may be dismissed, so it can never trap a new user. */
+  private proIntroShown: boolean = false;
+  private proIntroDeadlineTimer: number = -1;
+  private routedToLogin: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     this.refreshTutorialPages();
@@ -63,11 +79,11 @@ struct GuidePage {
       this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION,
         releasePages.length > 0, FORCE_RELEASE_NOTES_REVIEW);
       if (this.mode === StartupMode.LOGIN) {
-        router.replaceUrl({ url: 'pages/LoginPage' });
+        this.goToLogin();
         return;
       }
-      this.replaceActivePages(
-        this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages);
+      this.releaseItems = releasePages;
+      this.replaceActivePages(this.tutorialPages);
     } catch (_e) { /* 出错继续显示 */ }
     this.replaceActivePages(this.activePages);
     this.cancelGuideSheetEnter();
@@ -106,6 +122,7 @@ struct GuidePage {
     if (!this.usesGuideSheet() || !this.showGuideSheet) { return; }
     // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，
     // 折叠/展开或跨窗口断点时先完成原生退出，再按新断点重新打开。
+    this.reflowingSheet = true;
     this.showGuideSheet = false;
   }
 
@@ -119,7 +136,34 @@ struct GuidePage {
     // 首次安装引导必须先作为页面首屏渲染。冷启动时系统 bindSheet 可能
     // 尚未完成宿主挂载，若把首屏完全交给 Sheet，挂载竞态会再次呈现白屏。
     // 版本更新说明继续使用既有 Sheet，不改变更新弹窗的显示路径。
-    return this.mode === StartupMode.RELEASE_NOTES;
+    // 引导结束后的 Pro 功能介绍也用同一个 Sheet 弹出，此时页面已经有可见内容。
+    return this.mode === StartupMode.RELEASE_NOTES || this.stage === 'pro';
+  }
+
+  /** Both flows end with the Pro 功能介绍 sheet; its button or dismissal completes the startup guide. */
+  private showProIntro(): void {
+    if (this.isFinishing) { return; }
+    if (this.stage === 'pro') {
+      // 开始使用 tapped again: the sheet did not come up over the guide. Finish rather than leave the user stuck.
+      this.startProTrial();
+      return;
+    }
+    this.stage = 'pro';
+    this.showGuideSheet = true;
+    this.cancelProIntroDeadline();
+    this.proIntroDeadlineTimer = setTimeout((): void => {
+      this.proIntroDeadlineTimer = -1;
+      if (!this.proIntroShown && !this.isFinishing && !this.appInBackground) {
+        this.startProTrial();
+      }
+    }, PRO_INTRO_SHOW_DEADLINE_MS);
+  }
+
+  private cancelProIntroDeadline(): void {
+    if (this.proIntroDeadlineTimer !== -1) {
+      clearTimeout(this.proIntroDeadlineTimer);
+      this.proIntroDeadlineTimer = -1;
+    }
   }
 
   private onBackgroundFlagChange(): void {
@@ -171,129 +215,52 @@ struct GuidePage {
     // Keep the content below the usable window height on phones and small
     // freeform windows. The pages are intentionally short so the Sheet never
     // needs to grow beyond the viewport just to fit a paragraph.
-    if (this.presentGuideAsBottomSheet()) { return '82%'; }
-    return this.breakpoint === 'xl' ? 620 : 580;
+    if (this.presentGuideAsBottomSheet() || this.proIntroOnPhone()) { return '86%'; }
+    return this.breakpoint === 'xl' ? 680 : 620;
   }
 
+  /** The Pro sheet after the first-install guide follows the window size like the release sheet does. */
+  private proIntroOnPhone(): boolean {
+    return this.stage === 'pro' && this.mode === StartupMode.FIRST_INSTALL_GUIDE && this.breakpoint === 'sm';
+  }
+
+  /**
+   * First-install intro fills the page; the post-update 「新功能」 list lives in a sheet. Both continue into the
+   * Pro 功能介绍 sheet.
+   */
   @Builder guidePanel(isSheet: boolean) {
-    Column() {
-      if (this.activePages.length > 0) {
-        Swiper(this.swiperController) {
-          ForEach(this.activePages, (page: GuideContentPage, index: number) => {
-            Column() {
-              Column() {
-                Column() {
-                  Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
-                }
-                .width(this.currentIndex === index ? 104 : 92)
-                .height(this.currentIndex === index ? 104 : 92)
-                .borderRadius(28)
-                .backgroundColor(this.pal().card)
-                .justifyContent(FlexAlign.Center)
-                .margin({ bottom: 20 })
-                .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-                .scale({ x: this.currentIndex === index ? 1 : 0.8,
-                         y: this.currentIndex === index ? 1 : 0.8 })
-                .animation({ duration: 250, curve: Curve.EaseOut })
-
-                Text(page.title)
-                  .fontSize(24).fontWeight(FontWeight.Bold)
-                  .fontColor(this.pal().text).textAlign(TextAlign.Center)
-                  .margin({ bottom: 12 })
-                  .animation({ duration: 200, curve: Curve.EaseOut })
-
-                Text(page.desc)
-                  .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                  .lineHeight(22).width('88%')
-                  .animation({ duration: 200, curve: Curve.EaseOut })
-              }
-              .width('100%')
-            }
-            .width('100%').height('100%')
-            .justifyContent(FlexAlign.Center)
-          }, (page: GuideContentPage) => page.id)
-        }
-        .loop(false).indicator(false)
-        .duration(250).curve(Curve.EaseOut)
-        .onChange((i: number) => {
-          this.currentIndex = clampGuidePageIndex(i, this.activePages.length);
-        })
-        .layoutWeight(1)
-      } else {
-        // 理论上 ensureGuidePages 已阻止空数组；这里保留最终可见兜底，
-        // 即使未来注册表或框架状态异常，新用户也不会只看到白屏。
-        Column() {
-          Image($rawfile('icons/computer-desktop.svg'))
-            .width(50).height(50).fillColor(this.accentColor).margin({ bottom: 20 })
-          Text('欢迎使用 RemoteDesktop')
-            .fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .textAlign(TextAlign.Center).margin({ bottom: 12 })
-          Text('引导内容暂时无法载入，你仍可立即进入工作台，并从“设置 → 教程”重新打开。')
-            .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-            .lineHeight(22).width('88%')
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      }
-
-      Row() {
-        Text(this.currentIndex > 0 ? '上一步' :
-          (this.mode === StartupMode.FIRST_INSTALL_GUIDE ? '跳过' : ''))
-          .fontSize(15).fontColor(this.pal().text3)
-          .width(64).textAlign(TextAlign.Start)
-          .onClick(() => {
-            if (this.currentIndex > 0) { this.swiperController.showPrevious(); }
-            else if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) { this.finish(); }
-          })
-
-        Blank()
-
-        if (this.activePages.length <= 10) {
-          Row({ space: 8 }) {
-            ForEach(this.activePages, (_: GuideContentPage, i: number) => {
-              Column()
-                .width(this.currentIndex === i ? 24 : 8).height(8)
-                .borderRadius(4)
-                .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
-                .animation({ duration: 200, curve: Curve.EaseOut })
-            }, (page: GuideContentPage) => page.id)
-          }
-        } else {
-          Text((this.currentIndex + 1).toString() + ' / ' + this.activePages.length.toString())
-            .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-        }
-
-        Blank()
-
-        Row() {
-          Text(this.currentIndex < this.activePages.length - 1 ? '下一步' :
-            (this.mode === StartupMode.RELEASE_NOTES ? '继续' : '立即体验'))
-            .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          Text(' >').fontSize(14).fontColor(this.accentColor).margin({ left: 2 })
-        }
-        .width(64).justifyContent(FlexAlign.End)
-        .onClick(() => {
-          if (this.currentIndex < this.activePages.length - 1) {
-            this.swiperController.showNext();
-          } else { this.finish(); }
-        })
-        .opacity(this.showContent ? 1 : 0)
-        .animation({ duration: 200, curve: Curve.EaseOut })
-      }
-      .width('100%').padding({ left: 24, right: 24, bottom: 24, top: 8 })
-      }
-      // CENTER Sheet 的外框宽度由系统按窗口尺寸决定；这里只设置上限，
-      // 不让内部内容在 Pad/PC 小窗口中反向撑大 Sheet。
-      .width('100%')
-      .height('100%')
-      .constraintSize({ maxWidth: 640, maxHeight: 720 })
-      .clip(true)
+    if (isSheet && this.stage === 'pro') {
+      // 1.2.0: everyone has Pro free. The popup's one way out is 立即试用 (it cannot be swiped or backed away).
+      ProShowcase({
+        actionLabel: '立即试用',
+        onAction: (): void => { this.startProTrial(); }
+      })
+      .width('100%').height('100%')
+      .onAppear((): void => {
+        this.proIntroShown = true;
+        this.cancelProIntroDeadline();
+      })
+      .backgroundColor(this.pal().sheetBg)
+    } else if (this.mode === StartupMode.RELEASE_NOTES) {
+      WhatsNewList({
+        version: CURRENT_RELEASE_VERSION,
+        headline: releaseHeadline(CURRENT_RELEASE_VERSION),
+        items: this.releaseItems,
+        primaryLabel: '继续',
+        onPrimary: (): void => { this.showProIntro(); }
+      })
+      .width('100%').height('100%')
       .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
-      .borderRadius(this.presentGuideAsCenterSheet() ? 24 : 0)
-      .border(this.presentGuideAsCenterSheet() ?
-        { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
-        { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
-      .align(Alignment.Center)
+    } else {
+      GuideShowcase({
+        pages: this.activePages,
+        skipLabel: '跳过',
+        finishLabel: '开始使用',
+        onFinish: (): void => { this.showProIntro(); },
+        onSkip: (): void => { this.showProIntro(); }
+      })
+      .width('100%').height('100%')
+    }
   }
 
   @Builder guideSheet() {
@@ -302,7 +269,7 @@ struct GuidePage {
 
   build() {
     Stack() {
-      if (this.usesGuideSheet()) {
+      if (this.mode === StartupMode.RELEASE_NOTES) {
         // 更新说明由系统 Sheet 承载，底层只需要提供全屏宿主节点。
         Column().width('100%').height('100%').backgroundColor(this.pal().bg)
       } else {
@@ -312,15 +279,25 @@ struct GuidePage {
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    // The full-page intro keeps its buttons clear of the status and navigation bars.
+    .expandSafeArea(this.mode === StartupMode.RELEASE_NOTES ? [SafeAreaType.SYSTEM] : [],
+      this.mode === StartupMode.RELEASE_NOTES ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM] : [])
     .bindSheet($$this.showGuideSheet, this.guideSheet(), {
       height: this.guideSheetHeight(),
-      preferType: this.presentGuideAsBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.presentGuideAsBottomSheet(),
+      preferType: this.presentGuideAsBottomSheet() || this.proIntroOnPhone() ? SheetType.BOTTOM : SheetType.CENTER,
+      // No drag bar on the Pro 功能介绍: it is not dismissed by dragging.
+      dragBar: (this.presentGuideAsBottomSheet() || this.proIntroOnPhone()) && this.stage !== 'pro',
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.28)',
+      // The Pro 功能介绍 closes only through 立即试用; finishing, a reflow at a new breakpoint and going to the
+      // background still close it as before, and so does everything about the release notes.
+      onWillDismiss: (action: DismissSheetAction): void => {
+        if (this.stage === 'pro' && this.proIntroShown && !this.isFinishing && !this.reflowingSheet &&
+          !this.appInBackground) { return; }
+        action.dismiss();
+      },
       onDisappear: (): void => { this.handleGuideSheetDisappear(); }
     })
   }
@@ -328,6 +305,7 @@ struct GuidePage {
   aboutToDisappear(): void {
     this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
+    this.cancelProIntroDeadline();
   }
 
   private persistCompletion(): void {
@@ -341,12 +319,35 @@ struct GuidePage {
 
   private handleGuideSheetDisappear(): void {
     if (this.isFinishing) {
-      router.replaceUrl({ url: 'pages/LoginPage' });
+      this.goToLogin();
+      return;
+    }
+    if (this.stage === 'pro' && !this.appInBackground && !this.reflowingSheet) {
+      // Swiping the Pro 功能介绍 away is the same as tapping 开始使用.
+      this.finish();
+      this.goToLogin();
       return;
     }
     // 系统弹窗、后台切换或断点变化都可能让 Sheet 先消失；这不代表用户完成了引导。
+    this.reflowingSheet = false;
     this.showGuideSheet = false;
     this.scheduleGuideSheetReopen();
+  }
+
+  /** The one hand-off to the app: a sheet callback arriving after a direct route must not route a second time. */
+  private goToLogin(): void {
+    if (this.routedToLogin) { return; }
+    this.routedToLogin = true;
+    router.replaceUrl({ url: 'pages/LoginPage' });
+  }
+
+  /** 立即试用: the trial is on for everyone; record that the user was told, say so, and carry on. */
+  private startProTrial(): void {
+    markProTrialStarted(getContext(this));
+    try {
+      promptAction.showToast({ message: '已开启 Pro 免费试用，全部 Pro 功能可以直接使用', duration: 2600 });
+    } catch (_error) { /* no toast */ }
+    this.finish();
   }
 
   private finish(): void {
@@ -354,10 +355,13 @@ struct GuidePage {
     this.isFinishing = true;
     this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
+    this.cancelProIntroDeadline();
     this.persistCompletion();
-    if (!this.usesGuideSheet()) {
+    if (!this.usesGuideSheet() || (this.stage === 'pro' && !this.proIntroShown)) {
       // 首次引导不是 Sheet，没有 onDisappear 回调负责路由；完成后直接进入登录页。
-      router.replaceUrl({ url: 'pages/LoginPage' });
+      // A Pro 功能介绍 that never showed has no onDisappear to rely on either.
+      this.showGuideSheet = false;
+      this.goToLogin();
       return;
     }
     this.showGuideSheet = false;

@@ -1,0 +1,13 @@
+{
+  "name": "remotedesk-pro-agc-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test --test-force-exit ../../../scripts/tests/test_pro_cloud_sdk.mjs",
+    "inventory": "node dependency-inventory.mjs"
+  },
+  "dependencies": { "@hw-agconnect/cloud-server": "1.0.5" },
+  "overrides": { "axios": "1.20.0" }
+}

@@ -1,5 +1,9 @@
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { sshKeyTypeText } from '../../services/KeyVaultFormPolicy';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { RemoteHost } from '../../model/RemoteHost';
+import { SshAddBasicFields } from '../../common/SshAddBasicFields';
 import { SshKey } from '../../model/SshKey';
 import { KeyVaultService } from '../../services/KeyVaultService';
 import { ModernKeyVaultAddFlow } from '../resourceadd/modern/ModernKeyVaultAddFlow';
@@ -10,7 +14,8 @@ import {
   SshProxyEditorValue,
   applySshProxyProfileToLegacyHost,
   buildSshProxyProfile,
-  defaultSshProxyEditorValue
+  defaultSshProxyEditorValue,
+  sshProxyEditorInputKey
 } from '../../services/SshProxyEditorPolicy';
 import {
   EndpointAddressResult,
@@ -22,31 +27,75 @@ import {
 @Component
 export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
+  @Prop initialBasicFields: SshAddBasicFields | null = null;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1) => void =
     (_host: RemoteHost, _connectNow: boolean, _proxyProfile: SshProxyProfileV1): void => {};
   @State step: number = 1;
-  @State label: string = '';
-  @State address: string = '';
-  @State portText: string = '22';
-  @State username: string = '';
-  @State useKey: boolean = false;
-  @State password: string = '';
-  @State keyId: string = '';
-  @State passphrase: string = '';
-  @State proxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
+  @State @Watch('reportDirty') label: string = '';
+  @State @Watch('reportDirty') address: string = '';
+  @State @Watch('reportDirty') portText: string = '22';
+  @State @Watch('reportDirty') username: string = '';
+  @State @Watch('reportDirty') useKey: boolean = false;
+  @State @Watch('reportDirty') password: string = '';
+  @State @Watch('reportDirty') keyId: string = '';
+  @State @Watch('reportDirty') passphrase: string = '';
+  @State @Watch('reportDirty') proxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @State addingKey: boolean = false;
   @State newlyAddedKeys: SshKey[] = [];
   @State errorText: string = '';
+  /** A save the page could not complete: its reason shows in the form as well as in the toast. */
+  @Prop @Watch('onSaveError') saveError: string = '';
+  @Prop @Watch('onSaveError') saveErrorRevision: number = 0;
 
   private keyVault = KeyVaultService.getInstance();
   private pendingProxyProfile: SshProxyProfileV1 | null = null;
 
+  aboutToAppear(): void {
+    // Fields received from a Pro share are unsaved as well: closing would drop them.
+    this.draftBaseline = this.draftSnapshot();
+    const fields = this.initialBasicFields;
+    if (fields !== null) {
+      this.label = fields.label; this.address = fields.address;
+      this.portText = fields.port.toString(); this.username = fields.username;
+    }
+  }
+
   private onKeysChanged(): void {
     this.newlyAddedKeys = [];
+  }
+
+  private onSaveError(): void {
+    if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The fields as the flow opened; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.address, this.portText, this.username, this.useKey, this.password,
+      this.keyId, this.passphrase, sshProxyEditorInputKey(this.proxyEditorValue)]);
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -66,9 +115,9 @@ export struct SshAddFlow {
 
   private buildHost(): RemoteHost | null {
     const parsed: EndpointAddressResult = this.parsedEndpoint();
-    if (this.label.trim() === '' || this.username.trim() === '') {
-      this.errorText = '请完整填写名称、地址和用户名'; return null;
-    }
+    if (this.label.trim() === '') { this.errorText = '请填写名称'; return null; }
+    if (this.address.trim() === '') { this.errorText = '请填写主机地址'; return null; }
+    if (this.username.trim() === '') { this.errorText = '请填写 SSH 登录用户名'; return null; }
     if (!this.endpointIsAccepted(parsed)) { return null; }
     const port: number = parsed.endpoint.port;
     if (!this.useKey && this.password === '') { this.errorText = '请输入 SSH 密码'; return null; }
@@ -121,7 +170,8 @@ export struct SshAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText(this.step === 1 ? '返回协议选择' : '返回上一步')
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step = 1; } })
       Column() {
         Text('添加 SSH 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
@@ -130,7 +180,7 @@ export struct SshAddFlow {
       Button() {
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
       }.width(44).height(44).borderRadius(22).padding(0).backgroundColor(this.pal().surface)
-        .onClick((): void => { this.onClose(); })
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 
@@ -155,11 +205,11 @@ export struct SshAddFlow {
                 onChange: (value: SshProxyEditorValue): void => { this.proxyEditorValue = value; }
               })
               Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
-                .fontColor(Color.White).onClick((): void => {
+                .fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => {
                   const parsed: EndpointAddressResult = this.parsedEndpoint();
-                  if (this.label.trim() === '' || this.username.trim() === '') {
-                    this.errorText = '请完整填写基础信息和有效端口'; return;
-                  }
+                  if (this.label.trim() === '') { this.errorText = '请填写名称'; return; }
+                  if (this.address.trim() === '') { this.errorText = '请填写主机地址'; return; }
+                  if (this.username.trim() === '') { this.errorText = '请填写 SSH 登录用户名'; return; }
                   if (!this.endpointIsAccepted(parsed)) { return; }
                   const port: number = parsed.endpoint.port;
                   const proxy: SshProxyEditorBuildResult = buildSshProxyProfile(
@@ -171,11 +221,11 @@ export struct SshAddFlow {
               Row() {
                 Button('密码登录').layoutWeight(1).height(38).borderRadius(10)
                   .backgroundColor(!this.useKey ? this.accentColor : this.pal().surface)
-                  .fontColor(!this.useKey ? Color.White : this.pal().text2)
+                  .fontColor(!this.useKey ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                   .onClick((): void => { this.useKey = false; })
                 Button('密钥登录').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
                   .backgroundColor(this.useKey ? this.accentColor : this.pal().surface)
-                  .fontColor(this.useKey ? Color.White : this.pal().text2).onClick((): void => {
+                  .fontColor(this.useKey ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => {
                     const keys = this.availableKeys();
                     this.useKey = true;
                     if (this.keyId === '' && keys.length > 0) { this.keyId = keys[0].id; }
@@ -192,9 +242,11 @@ export struct SshAddFlow {
                   ForEach(this.availableKeys(), (key: SshKey) => {
                     Row() {
                       Column() {
-                        Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType))
+                        Text(key.label !== '' ? key.label :
+                          sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
                           .fontSize(14).fontColor(this.pal().text)
-                        Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
+                        Text(key.fingerprint !== '' ? key.fingerprint :
+                          sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
                           .fontSize(10).fontColor(this.pal().text3).maxLines(1)
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                       if (this.keyId === key.id) {
@@ -221,7 +273,7 @@ export struct SshAddFlow {
                     }
                   })
                 Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-                  .backgroundColor(this.accentColor).fontColor(Color.White)
+                  .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                   .onClick((): void => {
                     const host = this.buildHost();
                     if (host && this.pendingProxyProfile) {

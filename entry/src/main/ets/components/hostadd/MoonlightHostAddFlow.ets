@@ -1,4 +1,6 @@
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { accentSecondaryText, appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { MoonlightAddress } from '../../model/MoonlightModels';
 import {
   advanceMoonlightHostAddStep,
@@ -104,6 +106,7 @@ function unavailableLocalSave(): Promise<MoonlightLocalSaveResult> {
 @Component
 export struct MoonlightHostAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop ownerToken: number = 0;
@@ -113,6 +116,9 @@ export struct MoonlightHostAddFlow {
   @Prop discoveryResultGeneration: number = 0;
   @Prop initialDiscoveryEnabled: boolean = true;
   onBackToProtocols: () => void = (): void => {};
+  onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened (the page asks before throwing it away). */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onStartDiscovery: (key: MoonlightHostAddDiscoveryKey) => void =
     (_key: MoonlightHostAddDiscoveryKey): void => {};
   onPauseDiscovery: (key: MoonlightHostAddDiscoveryKey) => void =
@@ -169,7 +175,8 @@ export struct MoonlightHostAddFlow {
   ): void => {};
   onDiscardTemporaryState: () => Promise<void> = (): Promise<void> => Promise.resolve();
 
-  @State flow: MoonlightHostAddState = createMoonlightHostAddState(0);
+  @State @Watch('reportDirty') flow: MoonlightHostAddState = createMoonlightHostAddState(0);
+  private draftDirty: boolean = false;
   @State moonlightIconFailed: boolean = false;
   @State showAdvancedPort: boolean = false;
   @State showDiscardConfirmation: boolean = false;
@@ -190,6 +197,11 @@ export struct MoonlightHostAddFlow {
   aboutToDisappear(): void {
     this.pauseDiscovery();
     this.cancelActiveOperation();
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
   }
 
   private pal(): Palette {
@@ -223,6 +235,15 @@ export struct MoonlightHostAddFlow {
 
   private discoveryIsRunning(): boolean {
     return this.discoveryPayloadIsCurrent() && this.discoveryRunning;
+  }
+
+  /** The same rule as the in-flow 保留当前添加进度？ question. */
+  private reportDirty(): void {
+    const dirty: boolean = moonlightHostAddDraftIsDirty(this.flow);
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
   }
 
   private pauseDiscovery(): void {
@@ -571,7 +592,7 @@ export struct MoonlightHostAddFlow {
         SymbolGlyph($r('sys.symbol.chevron_left'))
           .fontSize(18).fontColor([this.pal().text2])
       }
-      .width(36).height(36).borderRadius(18).padding(0)
+      .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0)
       .backgroundColor(this.pal().surface)
       .accessibilityText(this.flow.step === 1 ? '返回协议选择' : '返回上一步')
       .onClick((): void => { this.requestBack(); })
@@ -590,6 +611,9 @@ export struct MoonlightHostAddFlow {
           .fontColor(this.pal().text)
         Text(this.stepLabel()).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 
@@ -597,10 +621,10 @@ export struct MoonlightHostAddFlow {
     enabled: boolean = true) {
     Column() {
       Text(title).fontSize(15).fontWeight(FontWeight.Medium)
-        .fontColor(this.modeIsSelected(automatic) ? Color.White :
+        .fontColor(this.modeIsSelected(automatic) ? appUiOnAccentText(this.accentColor) :
           (enabled ? this.pal().text : this.pal().text3))
       Text(subtitle).fontSize(11)
-        .fontColor(this.modeIsSelected(automatic) ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
+        .fontColor(this.modeIsSelected(automatic) ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
       .backgroundColor(this.modeIsSelected(automatic) ? this.accentColor : this.pal().surface)
       .opacity(enabled ? 1 : 0.58)
@@ -647,7 +671,7 @@ export struct MoonlightHostAddFlow {
   @Builder private primaryButton(title: string, action: () => void, enabled: boolean = true) {
     Button(title).width('100%').height(44).borderRadius(12)
       .backgroundColor(enabled ? this.accentColor : this.pal().surface)
-      .fontColor(enabled ? Color.White : this.pal().text3).enabled(enabled)
+      .fontColor(enabled ? appUiOnAccentText(this.accentColor) : this.pal().text3).enabled(enabled)
       .opacity(enabled ? 1 : 0.72).onClick(action)
   }
 
@@ -755,7 +779,7 @@ export struct MoonlightHostAddFlow {
       Button(this.flow.activeOperation === 'verify' ? '正在验证…' : '验证主机')
         .width('100%').height(44).borderRadius(12)
         .backgroundColor(this.canVerifyHost() ? this.accentColor : this.pal().surface)
-        .fontColor(this.canVerifyHost() ? Color.White : this.pal().text3)
+        .fontColor(this.canVerifyHost() ? appUiOnAccentText(this.accentColor) : this.pal().text3)
         .enabled(this.canVerifyHost())
         .opacity(this.canVerifyHost() ? 1 : 0.72)
         .onClick((): void => { this.verifyHost(); })
@@ -794,7 +818,7 @@ export struct MoonlightHostAddFlow {
         Text('这台主机已经保存在当前账号的本地数据中，不会创建重复记录。')
           .fontSize(12).fontColor(this.pal().editColor).width('100%').margin({ bottom: 10 })
         Button('查看已有主机').width('100%').height(44).borderRadius(12)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => {
             if (this.flow.verification !== null) {
               this.onOpenExistingHost(
@@ -844,7 +868,7 @@ export struct MoonlightHostAddFlow {
               void this.onDiscardTemporaryState();
             })
           Button('重新生成').layoutWeight(1).height(40).borderRadius(10).margin({ left: 8 })
-            .backgroundColor(this.accentColor).fontColor(Color.White)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
             .onClick((): void => { this.startPairing(); })
         }.width('100%').margin({ top: 12 })
       } else {
@@ -880,7 +904,7 @@ export struct MoonlightHostAddFlow {
           .onClick((): void => { this.rejectTrust(); })
         Button(this.flow.activeOperation === 'trust' ? '正在保存…' : '信任并继续')
           .layoutWeight(1).height(44).borderRadius(12).margin({ left: 12 })
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .enabled(this.flow.activeOperation === 'none')
           .onClick((): void => { this.trustAndContinue(); })
       }.width('100%')
@@ -942,7 +966,7 @@ export struct MoonlightHostAddFlow {
         .onClick((): void => { this.save(false); })
       Button(this.flow.activeOperation === 'save' ? '正在保存…' : '保存并打开应用目录')
         .layoutWeight(1).height(44).borderRadius(12)
-        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .enabled(this.flow.activeOperation === 'none' && !this.flow.saveRecoveryRequired)
         .onClick((): void => { this.save(true); })
     }.width('100%')
@@ -959,7 +983,7 @@ export struct MoonlightHostAddFlow {
           .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
           .onClick((): void => { void this.discardAndBack(); })
         Button('继续添加').layoutWeight(1).height(40).borderRadius(10).margin({ left: 12 })
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.showDiscardConfirmation = false; })
       }.width('100%')
     }.width('100%').padding(14).borderRadius(12).backgroundColor(this.pal().surface)

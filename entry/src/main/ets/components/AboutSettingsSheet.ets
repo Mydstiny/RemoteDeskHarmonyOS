@@ -4,7 +4,12 @@
  * 从 HostListPage.ets 提取。接收 aboutSheetMode 和关闭回调，
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
+import { SlidingSegment } from './SlidingSegment';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { common, Want } from '@kit.AbilityKit';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
@@ -19,6 +24,9 @@ import {
   GuideProtocol,
   GuideProtocolOption,
   guideProtocolOptions,
+  guideLessonCount,
+  guideLessonsMatching,
+  guideProtocolLabel,
   settingsUsageGuidePages
 } from '../services/GuideContentRegistry';
 import {
@@ -28,8 +36,14 @@ import {
 import {
   CURRENT_RELEASE_VERSION,
   pagesForReleasedVersion,
+  releaseHeadline,
   ReleaseNotePage
 } from '../services/ReleaseNotesRegistry';
+import { GuideShowcase, WhatsNewList } from './guide/GuideShowcase';
+import { ProShowcase } from './guide/ProShowcase';
+import { markProTrialStarted, proTrialStarted } from '../services/pro/ProTrialNotice';
+
+const GUIDE_DEVICES: GuideDevice[] = ['phone', 'tablet', 'desktop'];
 
 @Component
 export struct AboutSettingsSheet {
@@ -38,17 +52,25 @@ export struct AboutSettingsSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   onClose: () => void = (): void => {};
+  /** 「Pro 功能介绍 → 现在订购」: the host opens the RemoteDesk Pro page in place of this sheet. */
+  onOrderPro: () => void = (): void => {};
 
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
   @State guideDevice: GuideDevice = 'phone';
+  /** Which way the last device switch went (1 to the right, -1 to the left), for the lessons' slide. */
+  private guideSlide: number = 0;
   @State guideProtocol: GuideProtocol = 'all';
   @State expandedGuideLessonId: string = 'common-first-host';
   @State guideLessonContentHeight: number = 0;
+  @State guideQuery: string = '';
   @State releaseNotesIndex: number = 0;
   private releaseNotesController: SwiperController = new SwiperController();
   @State releaseNotesItems: ReleaseNotePage[] = [];
@@ -93,13 +115,15 @@ export struct AboutSettingsSheet {
   }
 
   private resetExpandedGuideLesson(): void {
-    const lessons: GuideLesson[] = guideLessonsFor(this.guideDevice, this.guideProtocol);
-    this.expandedGuideLessonId = lessons.length > 0 ? lessons[0].id : '';
+    const lessons: GuideLesson[] = this.operationGuideLessons();
+    this.expandedGuideLessonId = lessons.length > 0 && this.guideQuery.trim() === '' ? lessons[0].id : '';
     this.guideLessonContentHeight = 0;
   }
 
+  /** The chosen category's lessons, or every category's matches while searching. */
   private operationGuideLessons(): GuideLesson[] {
-    return guideLessonsFor(this.guideDevice, this.guideProtocol);
+    return this.guideQuery.trim() !== '' ? guideLessonsMatching(this.guideDevice, this.guideQuery) :
+      guideLessonsFor(this.guideDevice, this.guideProtocol);
   }
 
   private operationGuideLayout(): OperationGuideSheetLayout {
@@ -157,6 +181,8 @@ export struct AboutSettingsSheet {
       this.privacyPolicySheet();
     } else if (this.aboutSheetMode === 3) {
       this.preRequisiteSheet();
+    } else if (this.aboutSheetMode === 6) {
+      this.proIntroSheet();
     } else {
       this.releaseNotesSheet();
     }
@@ -164,252 +190,168 @@ export struct AboutSettingsSheet {
 
   @Builder releaseNotesSheet() {
     Column() {
-      Row() {
-        Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
-
-      Swiper(this.releaseNotesController) {
-        ForEach(this.releaseNotesItems, (item: ReleaseNotePage, index: number) => {
-          Column() {
-            Column() {
-              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
-            }
-            .width(96).height(96).borderRadius(26)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(this.pal().surface)
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .margin({ bottom: 18 })
-            .scale({
-              x: this.releaseNotesIndex === index ? 1 : 0.86,
-              y: this.releaseNotesIndex === index ? 1 : 0.86
-            })
-            .animation({ duration: 240, curve: Curve.EaseOut })
-
-            Text(item.title)
-              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
-
-            Text(item.desc)
-              .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-              .lineHeight(21).width('88%').fontFamily(this.font())
-          }
-          .width('100%').justifyContent(FlexAlign.Center)
-          .padding({ bottom: 40 })
-        }, (item: ReleaseNotePage) => item.id)
+      if (this.releaseNotesItems.length === 0) {
+        Column({ space: 10 }) {
+          Row() {
+            Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .layoutWeight(1)
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+              .width(36).height(36).accessibilityText('关闭')
+              .onClick((): void => { this.onClose(); })
+          }.width('100%')
+          Text(CURRENT_RELEASE_VERSION + ' 的更新说明正在整理，发布后会显示在这里。').fontSize(14)
+            .fontColor(this.pal().text2).textAlign(TextAlign.Center)
+        }.width('100%').padding(32)
+      } else {
+        WhatsNewList({
+          version: CURRENT_RELEASE_VERSION,
+          headline: releaseHeadline(CURRENT_RELEASE_VERSION),
+          items: this.releaseNotesItems,
+          primaryLabel: '完成',
+          showClose: true,
+          onPrimary: (): void => { this.onClose(); },
+          onClose: (): void => { this.onClose(); }
+        })
       }
-      .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
-      .onChange((i: number): void => { this.releaseNotesIndex = i; })
-      .height(this.usageGuideHeight())
-
-      Row() {
-        Text(this.releaseNotesIndex > 0 ? '上一步' : '关闭')
-          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
-          .onClick((): void => {
-            if (this.releaseNotesIndex > 0) {
-              this.releaseNotesController.showPrevious();
-            } else {
-              this.onClose();
-            }
-          })
-        Blank()
-        Text((this.releaseNotesIndex + 1).toString() + ' / ' +
-          this.releaseNotesItems.length.toString())
-          .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-        Blank()
-        Text(this.releaseNotesIndex < this.releaseNotesItems.length - 1 ? '下一步' : '完成')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .width(72).textAlign(TextAlign.End)
-          .onClick((): void => {
-            if (this.releaseNotesIndex < this.releaseNotesItems.length - 1) {
-              this.releaseNotesController.showNext();
-            } else {
-              this.onClose();
-            }
-          })
-      }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
     }
     .width('100%')
-    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    .height(this.releaseNotesItems.length === 0 ? 180 : (this.breakpoint === 'sm' ? 600 : this.centredSheetHeight(640)))
+    .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)
-    .backgroundBlurStyle(BlurStyle.Regular)
+    .borderRadius(this.breakpoint === 'sm' ?
+      { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
+  }
+
+  /** 「设置 → 教程 → Pro 功能介绍」: the same sheet the startup guide ends with. */
+  /**
+   * Phone sheet height that follows the window: a share of the usable height, within limits, so longer slides are
+   * not clipped on tall phones and the sheet still fits short ones.
+   */
+  private phoneSheetHeight(share: number, min: number, max: number): number {
+    const viewport: number = Number.isFinite(this.guideViewportHeight) && this.guideViewportHeight > 0 ?
+      this.guideViewportHeight : 720;
+    return Math.round(Math.max(min, Math.min(max, viewport * share)));
+  }
+
+  /**
+   * A centred sheet's height on Pad and PC: its preferred height, but never taller than the window (landscape Pad
+   * windows are shorter than 640vp, and the system clipped the bottom button off).
+   */
+  private centredSheetHeight(preferred: number): number {
+    const viewport: number = Number.isFinite(this.guideViewportHeight) && this.guideViewportHeight > 0 ?
+      this.guideViewportHeight : 720;
+    // The system keeps a centred sheet inside a margin of the window: stay below both a fixed and a relative one.
+    return Math.round(Math.max(320, Math.min(preferred, viewport - 80, viewport * 0.86)));
+  }
+
+  @Builder proIntroSheet() {
+    Column() {
+      // Opened from 设置 → 教程, so it can be closed; its one button starts the trial (or carries on with it).
+      ProShowcase({
+        actionLabel: proTrialStarted(getContext(this)) ? '继续使用 Pro' : '立即试用',
+        showClose: true,
+        onAction: (): void => { markProTrialStarted(getContext(this)); this.onClose(); },
+        onClose: (): void => { this.onClose(); }
+      })
+    }
+    .width('100%')
+    .height(this.breakpoint === 'sm' ? this.phoneSheetHeight(0.88, 640, 820) : this.centredSheetHeight(680))
+    .constraintSize({ maxWidth: 760 })
+    .clip(true)
+    .backgroundColor(this.pal().sheetBg)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
   @Builder usageGuideSheet() {
     Column() {
-      Row() {
-        Text('快速认识应用').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
-
-      Swiper(this.usageGuideController) {
-        ForEach(this.usageGuideItems(), (item: GuideContentPage, index: number) => {
-          Column() {
-            Column() {
-              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
-            }
-            .width(96).height(96).borderRadius(26)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(this.pal().surface)
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .margin({ bottom: 18 })
-            .scale({
-              x: this.usageGuideIndex === index ? 1 : 0.86,
-              y: this.usageGuideIndex === index ? 1 : 0.86
-            })
-            .animation({ duration: 240, curve: Curve.EaseOut })
-
-            Text(item.title)
-              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
-
-            Scroll() {
-              Text(item.desc)
-                .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                .lineHeight(21).width('100%').fontFamily(this.font())
-            }
-            .width('88%').layoutWeight(1).scrollBar(BarState.Off)
-          }
-          .width('100%').justifyContent(FlexAlign.Center)
-          .padding({ bottom: 40 })
-        }, (item: GuideContentPage) => item.id)
-      }
-      .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
-      .onChange((i: number): void => { this.usageGuideIndex = i; })
-      .height(this.usageGuideHeight())
-
-      Row() {
-        Text(this.usageGuideIndex > 0 ? '上一步' : '关闭')
-          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
-          .onClick((): void => {
-            if (this.usageGuideIndex > 0) {
-              this.usageGuideController.showPrevious();
-            } else {
-              this.onClose();
-            }
-          })
-        Blank()
-        Row({ space: 7 }) {
-          ForEach(this.usageGuideItems(), (_dot: GuideContentPage, i: number) => {
-            Column()
-              .width(this.usageGuideIndex === i ? 22 : 7).height(7).borderRadius(4)
-              .backgroundColor(this.usageGuideIndex === i ? this.accentColor : this.pal().divider)
-              .animation({ duration: 200, curve: Curve.EaseOut })
-          }, (_dot: GuideContentPage) => _dot.id)
-        }
-        Blank()
-        Text(this.usageGuideIndex < this.usageGuideItems().length - 1 ? '下一步' : '完成')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .width(72).textAlign(TextAlign.End)
-          .onClick((): void => {
-            if (this.usageGuideIndex < this.usageGuideItems().length - 1) {
-              this.usageGuideController.showNext();
-            } else {
-              this.onClose();
-            }
-          })
-      }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
+      GuideShowcase({
+        pages: this.usageGuideItems(),
+        heading: '快速认识应用',
+        skipLabel: '关闭',
+        finishLabel: '完成',
+        embedded: true,
+        onFinish: (): void => { this.onClose(); },
+        onSkip: (): void => { this.onClose(); }
+      })
     }
     .width('100%')
-    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    // Slides now carry up to four points; on phones the sheet follows the window instead of a fixed 600.
+    .height(this.breakpoint === 'sm' ? this.phoneSheetHeight(0.86, 600, 780) : 540)
+    .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)
-    .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
+  /** 设置 → 教程 → 操作引导中心: search, device, category chips, lessons with their entry path and steps. */
   @Builder handsOnGuideSheet() {
     Column() {
-      Row() {
-        Column() {
-          Text('操作引导中心').fontSize(20).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('按设备与协议定位，不必从头读完')
-            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({
-        left: 24, right: 20, top: this.operationGuideLayout().compact ? 12 : 20
-      }).margin({ bottom: this.operationGuideLayout().compact ? 8 : 12 })
-
-      Column() {
+      if (this.modern()) {
+        AppSheetHeader({ title: '操作引导中心', subtitle: '按设备和场景找到步骤，也可以直接搜索', whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
         Row() {
           Column() {
-            Text('当前按 ' + guideDeviceLabel(this.guideDevice) + ' 展示')
-              .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-              .fontFamily(this.font())
-            Text(guideDeviceSummary(this.guideDevice))
-              .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+            Text('操作引导中心').fontSize(20).fontWeight(FontWeight.Bold)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text('按设备和场景找到步骤，也可以直接搜索')
+              .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
-            .fontSize(22).fontColor([this.accentColor])
-        }.width('100%')
-
-        Row({ space: 8 }) {
-          this.guideDeviceChip('phone')
-          this.guideDeviceChip('tablet')
-          this.guideDeviceChip('desktop')
-        }.width('100%').margin({ top: this.operationGuideLayout().compact ? 8 : 12 })
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(44).height(44).accessibilityText('关闭').onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 12, top: this.operationGuideLayout().compact ? 8 : 14 })
+        .margin({ bottom: this.operationGuideLayout().compact ? 6 : 10 })
       }
-      .width('100%').padding(this.operationGuideLayout().compact ? 10 : 14).borderRadius(16)
-      .backgroundColor(this.pal().surface)
-      .margin({ left: 20, right: 20,
-        bottom: this.operationGuideLayout().compact ? 8 : 12 })
+
+      this.guideSearchBar()
+
+      Column({ space: 6 }) {
+        // The selected pill slides between 手机, Pad and PC; the lessons slide in from the side chosen.
+        SlidingSegment({ labels: ['手机', 'Pad', 'PC'], selected: GUIDE_DEVICES.indexOf(this.guideDevice),
+          onSelect: (index: number): void => { this.selectGuideDevice(GUIDE_DEVICES[index]); } })
+        Text(guideDeviceLabel(this.guideDevice) + ' · ' + guideDeviceSummary(this.guideDevice))
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').padding({ left: 20, right: 20 })
+      .margin({ bottom: this.operationGuideLayout().compact ? 6 : 10 })
+
+      if (this.guideQuery.trim() === '') {
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(guideProtocolOptions(), (option: GuideProtocolOption): void => {
+              this.guideProtocolChip(option)
+            }, (option: GuideProtocolOption): string => option.id + ':' + this.guideDevice)
+          }.padding({ left: 20, right: 20 })
+        }
+        .width('100%').height(44)
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off)
+        .margin({ bottom: 6 })
+      }
 
       Row() {
-        Column() {
-          Text('自动引导显示方式')
-            .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            .fontFamily(this.font()).width('100%')
-          Text(this.guideAlwaysVisible ?
-            '每次进入适用会话时显示一次；同一会话不会反复弹出' :
-            '默认每类自动引导只显示一次，教程中心仍可随时打开')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            .lineHeight(16).width('100%').margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Button(this.guideAlwaysVisible ? '始终显示：开' : '始终显示')
-          .height(34).fontSize(11).borderRadius(10).margin({ left: 12 })
-          .backgroundColor(this.guideAlwaysVisible ? this.accentColor : this.pal().card)
-          .fontColor(this.guideAlwaysVisible ? Color.White : this.accentColor)
-          .onClick((): void => { this.toggleGuideAlwaysVisible(); })
-          .accessibilityText(this.guideAlwaysVisible ? '关闭始终显示引导' : '开启始终显示引导')
-      }
-      .width('100%').padding(this.operationGuideLayout().compact ? 10 : 13).borderRadius(16)
-      .backgroundColor(this.pal().surface)
-      .margin({ left: 20, right: 20,
-        bottom: this.operationGuideLayout().compact ? 8 : 12 })
-
-      Scroll() {
-        Row({ space: 8 }) {
-          ForEach(guideProtocolOptions(), (option: GuideProtocolOption): void => {
-            this.guideProtocolChip(option)
-          }, (option: GuideProtocolOption): string => option.id)
-        }.padding({ left: 20, right: 20 })
-      }
-      .width('100%').height(this.operationGuideLayout().compact ? 62 : 72)
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
+        Text(this.guideListTitle()).fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.operationGuideLessons().length.toString() + ' 篇')
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').padding({ left: 24, right: 24, top: 4, bottom: 6 })
 
       Scroll() {
         Column() {
-          ForEach(this.operationGuideLessons(),
-            (lesson: GuideLesson): void => {
-              this.guideLessonCard(lesson)
-            }, (lesson: GuideLesson): string => lesson.id)
+          if (this.operationGuideLessons().length === 0) {
+            this.guideEmptyState()
+          } else {
+            ForEach(this.operationGuideLessons(),
+              (lesson: GuideLesson): void => {
+                Column() { this.guideLessonCard(lesson) }.width('100%').transition(this.guideCardEffect())
+              }, (lesson: GuideLesson): string => lesson.id + ':' + this.guideDevice)
+          }
         }
-        .width('100%').padding({ left: 20, right: 20, top: 4, bottom: 22 })
+        .width('100%').padding({ left: 20, right: 20, top: 2, bottom: 12 })
         .onAreaChange((_oldArea: Area, nextArea: Area): void => {
           const nextHeight: number = nextArea.height as number;
           if (Number.isFinite(nextHeight) && nextHeight > 0 &&
@@ -418,7 +360,9 @@ export struct AboutSettingsSheet {
           }
         })
       }
-      .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      .width('100%').layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+
+      this.guideAutoShowRow()
     }
     .width('100%').height(this.operationGuideLayout().height)
     .constraintSize({ maxWidth: 760, maxHeight: this.operationGuideLayout().height })
@@ -429,75 +373,149 @@ export struct AboutSettingsSheet {
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
-  @Builder guideDeviceChip(device: GuideDevice) {
-    Text(device === 'phone' ? '手机' : (device === 'tablet' ? 'Pad' : 'PC'))
-      .fontSize(12).fontWeight(this.guideDevice === device ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.guideDevice === device ? Color.White : this.pal().text2)
-      .textAlign(TextAlign.Center).layoutWeight(1)
-      .padding({ top: 8, bottom: 8 })
-      .backgroundColor(this.guideDevice === device ? this.accentColor : this.pal().card)
-      .borderRadius(10)
-      .onClick((): void => {
-        this.guideDevice = device;
-        this.resetExpandedGuideLesson();
-      })
+  private guideListTitle(): string {
+    if (this.guideQuery.trim() !== '') { return '搜索“' + this.guideQuery.trim() + '”'; }
+    const option: GuideProtocolOption | undefined = guideProtocolOptions().find(
+      (item: GuideProtocolOption): boolean => item.id === this.guideProtocol);
+    return option !== undefined ? option.label + ' · ' + option.summary : '';
+  }
+
+  private guideCategorySymbol(protocol: GuideProtocol): Resource {
+    switch (protocol) {
+      case 'rdp': return $r('sys.symbol.desktop_fill');
+      case 'rustdesk': return $r('sys.symbol.display');
+      case 'ssh': return $r('sys.symbol.code_square');
+      case 'vnc': return $r('sys.symbol.computer_host_fill');
+      case 'moonlight': return $r('sys.symbol.gamecontroller_fill');
+      case 'ai': return $r('sys.symbol.wand_and_stars');
+      case 'assistant': return $r('sys.symbol.ellipsis_bubble');
+      default: return $r('sys.symbol.house_fill');
+    }
+  }
+
+  private setGuideQuery(value: string): void {
+    this.guideQuery = value;
+    this.expandedGuideLessonId = '';
+    this.guideLessonContentHeight = 0;
+    if (value.trim() === '') { this.resetExpandedGuideLesson(); }
+  }
+
+  @Builder guideSearchBar() {
+    Row() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text3])
+        TextInput({ text: this.guideQuery, placeholder: '搜索操作，例如 配对、滚轮、SFTP' })
+          .layoutWeight(1).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT }).fontFamily(this.font()).fontColor(this.pal().text)
+          .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent).padding({ left: 8, right: 4 })
+          .enterKeyType(EnterKeyType.Search)
+          .onChange((value: string): void => { this.setGuideQuery(value); })
+        if (this.guideQuery !== '') {
+          SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(18).fontColor([this.pal().text3])
+            .width(44).height(44).accessibilityText('清除搜索')
+            .onClick((): void => { this.setGuideQuery(''); })
+        }
+      }
+      .layoutWeight(1).height(SEARCH_CAPSULE_HEIGHT).padding({ left: 14, right: 2 }).borderRadius(SEARCH_CAPSULE_RADIUS)
+      .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
+    }
+    // The inset is padding on the full-width row: width 100% plus a margin would overflow the sheet.
+    .width('100%').padding({ left: 20, right: 20 })
+    .margin({ bottom: this.operationGuideLayout().compact ? 8 : 10 })
+  }
+
+  /** Switches the device the lessons are for; the new lessons slide in from the side of the chosen tab. */
+  private selectGuideDevice(device: GuideDevice): void {
+    if (this.guideDevice === device) { return; }
+    this.guideSlide = GUIDE_DEVICES.indexOf(device) > GUIDE_DEVICES.indexOf(this.guideDevice) ? 1 : -1;
+    this.getUIContext().animateTo({ duration: 260, curve: Curve.FastOutSlowIn }, (): void => {
+      this.guideDevice = device;
+      this.resetExpandedGuideLesson();
+    });
+  }
+  /** A lesson card appearing after a device switch comes in from that side; leaving it just goes. */
+  private guideCardEffect(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: this.guideSlide * 28 }))
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.IDENTITY);
   }
 
   @Builder guideProtocolChip(option: GuideProtocolOption) {
-    Column() {
+    Row({ space: 6 }) {
+      SymbolGlyph(this.guideCategorySymbol(option.id)).fontSize(15)
+        .fontColor([this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.accentColor])
       Text(option.label)
-        .fontSize(13).fontWeight(FontWeight.Medium)
-        .fontColor(this.guideProtocol === option.id ? Color.White : this.pal().text)
-        .fontFamily(this.font())
-      Text(option.summary)
-        .fontSize(10).fontColor(this.guideProtocol === option.id ? '#EAF3FF' : this.pal().text3)
-        .fontFamily(this.font()).margin({ top: 2 })
+        .fontSize(13).fontWeight(FontWeight.Medium).fontFamily(this.font())
+        .fontColor(this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.pal().text)
+      Text(guideLessonCount(this.guideDevice, option.id).toString())
+        .fontSize(11).fontFamily(this.font())
+        .fontColor(this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+        .opacity(0.8)
     }
-    .constraintSize({ minWidth: option.id === 'ssh' || option.id === 'moonlight' ? 112 : 92 })
-    .height(58).justifyContent(FlexAlign.Center)
-    .padding({ left: 12, right: 12 }).borderRadius(14)
+    .height(40).padding({ left: 12, right: 14 }).borderRadius(20)
     .backgroundColor(this.guideProtocol === option.id ? this.accentColor : this.pal().surface)
     .border({ width: 0.5,
       color: this.guideProtocol === option.id ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
+    .animation({ duration: 180, curve: Curve.FastOutSlowIn })
+    .accessibilityText(option.label + '，' + option.summary + '，' +
+      guideLessonCount(this.guideDevice, option.id).toString() + ' 篇')
     .onClick((): void => {
+      if (this.guideProtocol === option.id) { return; }
       this.guideProtocol = option.id;
       this.resetExpandedGuideLesson();
     })
   }
 
+  private toggleGuideLesson(id: string): void {
+    const next: string = this.expandedGuideLessonId === id ? '' : id;
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      this.expandedGuideLessonId = next;
+      this.guideLessonContentHeight = 0;
+    });
+  }
+
   @Builder guideLessonCard(lesson: GuideLesson) {
     Column() {
-      Row() {
+      Row({ space: 12 }) {
+        Row() {
+          SymbolGlyph(this.guideCategorySymbol(lesson.protocol)).fontSize(18).fontColor([this.accentColor])
+        }.width(36).height(36).justifyContent(FlexAlign.Center).borderRadius(18)
+        .backgroundColor(this.pal().surface)
         Column() {
           Text(lesson.title).fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
-          Text(lesson.summary).fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).width('100%').margin({ top: 4 })
+          Text((this.guideQuery.trim() !== '' ? guideProtocolLabel(lesson.protocol) + ' · ' : '') + lesson.summary)
+            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        SymbolGlyph(this.expandedGuideLessonId === lesson.id ?
-          $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-          .fontSize(16).fontColor([this.pal().text3]).margin({ left: 10 })
+        Text(lesson.steps.length.toString() + ' 步').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+        SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(14).fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedGuideLessonId === lesson.id ? 180 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
       }
-      .width('100%').padding({ left: 16, right: 16, top: 15, bottom: 15 })
-      .onClick((): void => {
-        this.expandedGuideLessonId = this.expandedGuideLessonId === lesson.id ? '' : lesson.id;
-        this.guideLessonContentHeight = 0;
-      })
+      .width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
+      .accessibilityText(lesson.title + '，' + lesson.summary + '，' +
+        (this.expandedGuideLessonId === lesson.id ? '已展开' : '点按展开步骤'))
+      .onClick((): void => { this.toggleGuideLesson(lesson.id); })
 
       if (this.expandedGuideLessonId === lesson.id) {
-        Divider().strokeWidth(0.5).color(this.pal().divider)
-          .margin({ left: 16, right: 16 })
         Column() {
+          if (lesson.path.length > 0) {
+            Row({ space: 6 }) {
+              SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(13).fontColor([this.accentColor])
+              Text(lesson.path).fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+            }.width('100%').padding({ left: 10, right: 10, top: 7, bottom: 7 }).borderRadius(10)
+            .backgroundColor(this.pal().surface).margin({ bottom: 12 })
+          }
           ForEach(lesson.steps, (step: string, index: number): void => {
             Row() {
               Text((index + 1).toString())
-                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(Color.White)
+                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
                 .width(22).height(22).textAlign(TextAlign.Center)
                 .backgroundColor(this.accentColor).borderRadius(11)
-              Text(step).fontSize(13).fontColor(this.pal().text2).lineHeight(20)
+              Text(step).fontSize(13).fontColor(this.pal().text).lineHeight(20)
                 .fontFamily(this.font()).layoutWeight(1).margin({ left: 10 })
-            }.width('100%').alignItems(VerticalAlign.Top).margin({ bottom: 11 })
+            }.width('100%').alignItems(VerticalAlign.Top).margin({ bottom: 12 })
           }, (step: string, index: number): string => lesson.id + '-' + index.toString())
           if (lesson.note.length > 0) {
             Row() {
@@ -509,23 +527,67 @@ export struct AboutSettingsSheet {
             .width('100%').padding(11).borderRadius(12)
             .backgroundColor(this.pal().surface)
           }
-        }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 16 })
+        }
+        .width('100%').padding({ left: 14, right: 14, top: 2, bottom: 14 })
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -6 })))
       }
     }
     .width('100%').borderRadius(16).backgroundColor(this.pal().card)
-    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .border({ width: 0.5, color: this.expandedGuideLessonId === lesson.id ? this.accentColor : this.pal().cardBorder,
+      style: BorderStyle.Solid })
+    .clip(true)
     .margin({ bottom: 10 })
+  }
+
+  @Builder guideEmptyState() {
+    Column({ space: 8 }) {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(28).fontColor([this.pal().text3])
+      Text('没有找到“' + this.guideQuery.trim() + '”相关的操作').fontSize(14).fontColor(this.pal().text2)
+        .fontFamily(this.font()).textAlign(TextAlign.Center)
+      Text('换个关键词，或在 ' + guideDeviceLabel(this.guideDevice) + ' 以外的设备里找找；也可以直接问 AI 助理。')
+        .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).textAlign(TextAlign.Center)
+      Button('清除搜索').height(40).fontSize(13).borderRadius(12)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+        .onClick((): void => { this.setGuideQuery(''); })
+    }.width('100%').padding({ top: 28, bottom: 28, left: 12, right: 12 })
+  }
+
+  @Builder guideAutoShowRow() {
+    Row() {
+      Column() {
+        Text('自动引导').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(this.font()).width('100%')
+        Text(this.guideAlwaysVisible ?
+          '每次进入适用的会话都显示一次，同一会话不会反复弹出' :
+          '每类自动引导只显示一次；这里随时可以重新查看')
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+          .lineHeight(16).width('100%').margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.guideAlwaysVisible })
+        .selectedColor(this.accentColor).margin({ left: 12 })
+        .accessibilityText('始终显示自动引导')
+        .onChange((isOn: boolean): void => {
+          if (isOn !== this.guideAlwaysVisible) { this.toggleGuideAlwaysVisible(); }
+        })
+    }
+    .width('100%').padding({ left: 24, right: 20, top: 10, bottom: this.breakpoint === 'sm' ? 18 : 14 })
+    .border({ width: { top: 0.5 }, color: this.pal().divider })
   }
 
   @Builder aboutAppSheet() {
     Column() {
-      Row() {
-        Text('关于应用').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 14 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '关于应用', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } }).margin({ bottom: 8 })
+      } else {
+        Row() {
+          Text('关于应用').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').margin({ bottom: 14 })
+      }
 
       Scroll() {
         Column() {
@@ -560,13 +622,31 @@ export struct AboutSettingsSheet {
             this.openUrl('https://github.com/Mydstiny/RemoteDeskHarmonyOS');
           })
 
+          // Gitee 链接
+          Row() {
+            Text('Gitee 仓库')
+              .fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Medium)
+              .fontFamily(this.font())
+            Blank()
+            Text('在浏览器中打开 >')
+              .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
+          }
+          .width('100%')
+          .padding({ left: 14, right: 14, top: 14, bottom: 14 })
+          .borderRadius(16).backgroundColor(this.pal().surface)
+          .margin({ bottom: 12 })
+          .onClick((): void => {
+            this.openUrl('https://gitee.com/Lijiong_Space/RemoteDeskHarmonyOS');
+          })
+
           // 更新与联系
           Column() {
             Text('更新与联系')
               .fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Medium)
               .fontFamily(this.font()).width('100%').margin({ bottom: 6 })
-            Text('作者正在准备考研，回复和更新可能不及时，尽量半月更新一版。\n' +
-              '如有建议，可从设置中的“反馈”发送邮件或获取最新畅联群聊二维码。')
+            Text('作者为独立学生开发者，鞭策 AI 辅助开发，资金有限，测试条件不完善，测试设备不够全。' +
+              '如有问题请与作者联系，我会尽全力将问题修复。\n' +
+              '任何问题可以通过“反馈”里面的渠道向作者反映。')
               .fontSize(13).fontColor(this.pal().text2).lineHeight(22)
               .fontFamily(this.font()).width('100%')
           }
@@ -577,7 +657,7 @@ export struct AboutSettingsSheet {
       }.height(this.breakpoint === 'sm' ? 220 : 280)
 
       Button('我知道了').width('100%').height(44).fontSize(14)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }
@@ -592,13 +672,17 @@ export struct AboutSettingsSheet {
 
   @Builder privacyPolicySheet() {
     Column() {
-      Row() {
-        Text('隐私政策').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 8 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '隐私政策', whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+      } else {
+        Row() {
+          Text('隐私政策').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 8 })
+      }
 
       Scroll() {
         Column() {
@@ -649,13 +733,18 @@ export struct AboutSettingsSheet {
   /** 连接前准备 — 五协议服务端与网络检查 */
   @Builder preRequisiteSheet() {
     Column() {
-      Row() {
-        Text('连接前准备').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 8 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '连接前准备', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
+        Row() {
+          Text('连接前准备').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').margin({ bottom: 8 })
+      }
 
       Scroll() {
         Column() {
@@ -725,7 +814,7 @@ export struct AboutSettingsSheet {
       }.layoutWeight(1).scrollBar(BarState.Auto)
 
       Button('我知道了').width('100%').height(44).fontSize(14)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }

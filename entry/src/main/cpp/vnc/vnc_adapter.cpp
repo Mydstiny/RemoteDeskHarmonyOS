@@ -1380,6 +1380,13 @@ ConnectionState VncAdapter::getState() {
     return impl_->state;
 }
 
+std::string VncAdapter::getConnectionLastMessage() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    // Follow the same active engine as getState(), not the asynchronous
+    // external callback's cached message. Detached states use the NAPI cache.
+    return impl_->engine ? impl_->engine->lastStateMessage() : std::string();
+}
+
 void VncAdapter::sendKey(uint32_t scancode, bool pressed) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->engine) impl_->engine->sendKey(scancode, pressed);
@@ -1669,9 +1676,45 @@ void VncAdapter::requestFrameRefresh() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->engine) impl_->engine->requestFrameRefresh();
 }
+int VncAdapter::monitorCount() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->monitorCount() : 0;
+}
+int VncAdapter::currentMonitor() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->currentMonitor() : -1;
+}
+int VncAdapter::pendingMonitor() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->pendingMonitor() : -1;
+}
+uint64_t VncAdapter::monitorSwitchGeneration() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->monitorSwitchGeneration() : 0;
+}
+bool VncAdapter::monitorSwitchInputBlocked() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine && impl_->engine->monitorSwitchInputBlocked();
+}
+std::string VncAdapter::monitorSwitchLastResult() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->monitorSwitchLastResult() : "disconnected";
+}
+bool VncAdapter::requestMonitorSwitch(int monitor) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine && impl_->engine->requestMonitorSwitch(monitor);
+}
 std::string VncAdapter::getClipboardText() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->engine ? impl_->engine->clipboardText() : "";
+}
+ClipboardSnapshot VncAdapter::getClipboardSnapshot() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->clipboardSnapshot() : ClipboardSnapshot{};
+}
+bool VncAdapter::publishClipboard(const uint8_t* data, uint32_t len) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine && impl_->engine->sendClipboard(data, len);
 }
 bool VncAdapter::isClipboardReceiveReady() {
     std::lock_guard<std::mutex> lock(impl_->mutex);

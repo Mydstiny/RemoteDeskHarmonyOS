@@ -1,3 +1,5 @@
+import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
+import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 /**
  * KeyVaultPage.ets — 密钥保险库页面 v3 (官方图标按钮 + 滑动删除动画)
  *
@@ -5,16 +7,12 @@
  * 非 @Entry, 作为 HostListPage 的第三个 Tab 内容。
  */
 import { promptAction, curves } from '@kit.ArkUI';
-import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
-import { picker, fileIo } from '@kit.CoreFileKit';
-import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { util } from '@kit.ArkTS';
 import { SshKey, SshKeyType } from '../model/SshKey';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
-import { TotpEntry, TotpEntryJSON } from '../model/TotpEntry';
+import { TotpAlgorithm, TotpEntry } from '../model/TotpEntry';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
+import { SshKeyImportService, SshKeyImportResult, sshKeyTypeFromNative } from '../services/SshKeyImportService';
 import { TotpEngine } from '../services/TotpEngine';
 import { SshKeyCard } from '../components/SshKeyCard';
 import { SshKeyManagerSheet, SshKeyPassphraseSubSheet } from '../components/SshKeyManagerSheet';
@@ -22,29 +20,64 @@ import { SshKeyInstallSheet } from '../components/SshKeyInstallSheet';
 import { HostSyncService } from '../services/HostSyncService';
 import { RemoteHost } from '../model/RemoteHost';
 import { TotpCodeCard } from '../components/TotpCodeCard';
-import { TotpProgressBar } from '../components/TotpProgressBar';
 import { QrCodeScanner } from '../components/QrCodeScanner';
-import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
+import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSources';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKeyVaultAddFlow';
+import {
+  beginKeyVaultExternalPicker,
+  endKeyVaultExternalPicker,
+  keyVaultPickerExplainsBackground,
+  keyVaultPickerStaleOnReturn
+} from '../services/KeyVaultPickerGuard';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { TotpImportResult, TotpImportService } from '../services/TotpImportService';
+import {
+  keyVaultBatchDeleteMessage,
+  normalizeTotpSecret,
+  totpImportSummary,
+  totpSecretProblem
+} from '../services/KeyVaultFormPolicy';
 
+
+interface KvFormFieldArgs {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (v: string) => void;
+}
 @Component
 export struct KeyVaultPage {
+  /** The AI entry, the same on every tab: shown while the account may use the assistant; a tap asks the host page
+   * (which owns the AI island) to open it. */
+  @StorageProp('diagnosticAiOrbEnabled') aiEntryEnabled: boolean = false;
+  @StorageProp('aiEntryAssistantVisible') aiEntryAssistantVisible: boolean = false;
+  @StorageProp('aiEntryState') aiEntryState: string = 'idle';
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
-  @Link keyVaultInnerTab: number;
+  @Link @Watch('onInnerTabChange') keyVaultInnerTab: number;
   @Prop @Watch('onAddTrigger') addTrigger: number = 0;
   @Prop hideTabBar: boolean = false;
-  @StorageProp('totpLocked') totpPageLocked: boolean = false;
+  @StorageProp('totpLocked') @Watch('onTotpLockChange') totpPageLocked: boolean = false;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State showAddTab: number = 0;
-  @State totpUnlocked: boolean = false;
+  /** One unlock for this page, shared with 设置 (turning the protection on or off resets it). */
+  @StorageLink('totpUnlocked') @Watch('onTotpLockChange') totpUnlocked: boolean = false;
+  /** The 2FA page locks again as soon as the app goes to the background. */
+  @StorageProp('remoteDesktopBgFlag') @Watch('onAppBackground') appInBackground: boolean = false;
+  /** A save or a confirmed close is closing the sheet (onWillDismiss lets it through). */
+  private keyVaultSheetClosing: boolean = false;
+  /** The modern add flow and the passphrase sheet hold unsaved input (they report it). */
+  private modernFlowDirty: boolean = false;
+  private passphraseSheetDirty: boolean = false;
+  /** Counts sheet dismissals: a 放弃 question answered after its sheet went away does nothing. */
+  private keyVaultSheetDismissCount: number = 0;
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
@@ -74,11 +107,18 @@ export struct KeyVaultPage {
   @State formAccount: string = '';
   @State formSecret: string = '';
   @State formOtpAuthUri: string = '';
+  /** Kept from a parsed otpauth URI (SHA256/SHA512 accounts would get wrong codes as SHA1). */
+  @State formAlgorithm: number = TotpAlgorithm.SHA1;
+  @State formError: string = '';
+  @State savingKey: boolean = false;
+  @State passphraseRemoveMode: boolean = false;
+  @State pageViewportHeight: number = 0;
   @State formDigits: number = 6;
   @State formPeriod: number = 30;
   private kvs: KeyVaultService = KeyVaultService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
+  private totpImporter: TotpImportService = new TotpImportService();
   private dataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
@@ -111,6 +151,86 @@ export struct KeyVaultPage {
 
   onPageShow(): void { this.load(); }
 
+  private onInnerTabChange(): void {
+    // A selection belongs to one list: switching between SSH 密钥 and 2FA ends it.
+    if (this.selectionMode) {
+      this.selectionMode = false;
+      this.selectedIds = new Set<string>();
+    }
+  }
+
+  private onAppBackground(): void {
+    if (this.appInBackground) {
+      // A scan or a file picker sends the app to the background too: those keep the page unlocked (for a while).
+      if (!keyVaultPickerExplainsBackground()) { this.totpUnlocked = false; }
+    } else if (keyVaultPickerStaleOnReturn()) {
+      // Back with a picker that has been gone longer than the grace period: lock now, it may never return.
+      this.totpUnlocked = false;
+    }
+  }
+
+  /** Closes the sheet after a save or a confirmed question (onWillDismiss lets it through). */
+  private closeKeyVaultSheet(): void {
+    if (!this.showSheet) { return; }
+    this.keyVaultSheetClosing = true;
+    this.showSheet = false;
+  }
+
+  /** What closing the sheet now would throw away ('' when nothing). */
+  private keyVaultSheetUnsavedLabel(): string {
+    if (!this.showSheet || this.keyVaultSheetClosing) { return ''; }
+    if (this.sheetMode === 0) {
+      const ssh: boolean = this.formLabel.trim() !== '' || this.formComment.trim() !== '' ||
+        this.formPasteKey.trim() !== '' || this.formFileName !== '';
+      const totp: boolean = this.formIssuer.trim() !== '' || this.formAccount.trim() !== '' ||
+        this.formSecret.trim() !== '' || this.formOtpAuthUri.trim() !== '';
+      if (ssh) { return '密钥'; }
+      if (totp) { return '2FA 账户'; }
+      return '';
+    }
+    if (this.sheetMode === 6 && this.modernFlowDirty) { return '内容'; }
+    if (this.sheetMode === 4 && this.passphraseSheetDirty) { return '口令'; }
+    if (this.sheetMode === 7 && this.editingTotpName.trim() !== this.editingTotpEntry.displayName.trim()) { return '名称'; }
+    return '';
+  }
+
+  /** Asks before throwing away unsaved input; `proceed` runs when nothing is lost or the user agrees. */
+  private confirmDiscardKeyVaultSheet(proceed: () => void): void {
+    const label: string = this.keyVaultSheetUnsavedLabel();
+    if (label === '') { proceed(); return; }
+    const dismissCount: number = this.keyVaultSheetDismissCount;
+    promptAction.showDialog({
+      title: '放弃未保存的' + label + '？',
+      message: '填写的内容还没有保存，放弃后不会保留。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      // The sheet closed some other way meanwhile: nothing left to close.
+      if (this.keyVaultSheetDismissCount !== dismissCount || !this.showSheet) { return; }
+      this.modernFlowDirty = false;
+      this.passphraseSheetDirty = false;
+      proceed();
+    }).catch((): void => {});
+  }
+
+  /** ✕ / 取消: the same question as a swipe-down. */
+  private closeKeyVaultSheetByUser(): void {
+    this.confirmDiscardKeyVaultSheet((): void => { this.closeKeyVaultSheet(); });
+  }
+
+  /** The 2FA page locked again (background, or protection turned on): a selection made while unlocked ends. */
+  private onTotpLockChange(): void {
+    if (this.totpListLocked() && this.keyVaultInnerTab === 1 && this.selectionMode) {
+      this.selectionMode = false;
+      this.selectedIds = new Set<string>();
+    }
+  }
+
+  private totpListLocked(): boolean {
+    return this.totpPageLocked && !this.totpUnlocked;
+  }
+
   aboutToDisappear(): void {
     this.pageActive = false;
     if (this.dataUnsubscribe) {
@@ -135,12 +255,14 @@ export struct KeyVaultPage {
         this.showAddTab = 1;
         this.modernResourceKind = 'totp';
         this.sheetMode = modern ? 6 : 0;
+        this.keyVaultSheetClosing = false;
         this.showSheet = true;
       } else {
         this.resetSshForm();
         this.showAddTab = 0;
         this.modernResourceKind = 'ssh_key';
         this.sheetMode = modern ? 6 : 0;
+        this.keyVaultSheetClosing = false;
         this.showSheet = true;
       }
     }
@@ -148,17 +270,26 @@ export struct KeyVaultPage {
 
   // ==================== SSH 锁操作 (单对象绑定) ====================
   private async toggleSshLock(key: SshKey): Promise<void> {
-    const r = await showLockGate(key.label, 'biometric');
-    if (r.ok) {
+    // Locking protects the key, so it needs no verification; unlocking does.
+    if (key.locked) {
+      const r: LockGateResult = await showLockGate(key.label, 'biometric');
+      if (!r.ok) {
+        const msg: string = lockGateErrorMessage(r);
+        if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+        return;
+      }
+    }
+    key.locked = !key.locked;
+    key.lockType = key.locked ? 2 : 0;
+    if (!this.kvs.updateSshKey(key)) {
       key.locked = !key.locked;
       key.lockType = key.locked ? 2 : 0;
-      this.kvs.updateSshKey(key);
       this.load();
-      promptAction.showToast({ message: key.locked ? '已锁定' : '已解锁', duration: 1500 });
-    } else {
-      const msg: string = lockGateErrorMessage(r);
-      if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+      promptAction.showToast({ message: '没有保存，请重试', duration: 2000 });
+      return;
     }
+    this.load();
+    promptAction.showToast({ message: key.locked ? '已锁定' : '已解锁', duration: 1500 });
   }
 
   private async handleSshEdit(key: SshKey): Promise<void> {
@@ -173,6 +304,7 @@ export struct KeyVaultPage {
     // 打开管理 Sheet (统一Sheet模式)
     this.sheetKey = key;
     this.sheetMode = 2;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -185,6 +317,7 @@ export struct KeyVaultPage {
     this.editingTotpEntry = TotpEntry.fromJSON(entry.toJSON());
     this.editingTotpName = entry.displayName;
     this.sheetMode = 7;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -195,37 +328,46 @@ export struct KeyVaultPage {
       promptAction.showToast({ message: '2FA 名称保存失败', duration: 1800 });
       return;
     }
-    this.showSheet = false;
+    this.closeKeyVaultSheet();
     this.editingTotpEntry = new TotpEntry();
     this.editingTotpName = '';
     this.load();
     promptAction.showToast({ message: '2FA 名称已保存', duration: 1500 });
   }
 
-  // SshKeyManagerSheet 回调: 保存更新
-  private onKeyManagerChange(updated: SshKey): void {
-    this.kvs.updateSshKey(updated);
+  // SshKeyManagerSheet 回调: 保存更新；false 时面板提示没有保存
+  private onKeyManagerChange(updated: SshKey): boolean {
+    if (!this.kvs.updateSshKey(updated)) { return false; }
     this.load();
     // 同步当前 Sheet 显示的密钥，让公钥/指纹/类型立即刷新
     this.sheetKey = updated;
+    return true;
   }
 
   // SshKeyManagerSheet 回调: 删除
   private onKeyManagerDelete(keyId: string): void {
-    this.showSheet = false;
-    if (this.kvs.removeSshKey(keyId)) { this.load(); }
+    this.closeKeyVaultSheet();
+    this.reportDeleted(this.kvs.removeSshKey(keyId), '已删除密钥');
+  }
+
+  private reportDeleted(ok: boolean, message: string): void {
+    if (ok) { this.load(); }
+    promptAction.showToast({ message: ok ? message : '没有删除，请重试', duration: ok ? 1500 : 2000 });
   }
 
   // SshKeyManagerSheet 回调: 安装到主机
   private onKeyManagerInstall(key: SshKey): void {
     this.sheetKey = key;
     this.sheetMode = 3;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
-  private onKeyManagerPassphrase(key: SshKey): void {
+  private onKeyManagerPassphrase(key: SshKey, remove: boolean): void {
     this.sheetKey = key;
+    this.passphraseRemoveMode = remove;
     this.sheetMode = 4;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -239,10 +381,8 @@ export struct KeyVaultPage {
       buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
-      if (r['index'] === 1) {
-        if (this.kvs.removeSshKey(key.id)) { this.load(); }
-      }
-    });
+      if (r['index'] === 1) { this.reportDeleted(this.kvs.removeSshKey(key.id), '已删除密钥'); }
+    }).catch((): void => {});
   }
 
   // ==================== 滑动操作 Builder ====================
@@ -326,10 +466,8 @@ export struct KeyVaultPage {
         ]
       }).then((result: Object): void => {
         const r: Record<string, number> = result as Record<string, number>;
-        if (r['index'] === 1) {
-          if (this.kvs.removeSshKey(key.id)) { this.load(); }
-        }
-      });
+        if (r['index'] === 1) { this.reportDeleted(this.kvs.removeSshKey(key.id), '已删除密钥'); }
+      }).catch((): void => {});
     })
   }
 
@@ -349,10 +487,21 @@ export struct KeyVaultPage {
     .justifyContent(FlexAlign.Center)
     .borderRadius(14)
     .backgroundColor(this.pal().danger)
-    .onClick(() => {
+    .onClick(() => { void this.deleteTotpItem(entry); })
+  }
+
+  private async deleteTotpItem(entry: TotpEntry): Promise<void> {
       if (this.totpPageLocked && !this.totpUnlocked) {
         promptAction.showToast({ message: '请先验证身份', duration: 1500 });
         return;
+      }
+      if (entry.locked) {
+        const gate: LockGateResult = await showLockGate(entry.displayLabel() || '2FA', 'biometric');
+        if (!gate.ok) {
+          const msg: string = lockGateErrorMessage(gate);
+          if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+          return;
+        }
       }
       const label: string = entry.displayLabel() || '2FA';
       promptAction.showDialog({
@@ -364,11 +513,25 @@ export struct KeyVaultPage {
         ]
       }).then((result: Object): void => {
         const r: Record<string, number> = result as Record<string, number>;
-        if (r['index'] === 1) {
-          if (this.kvs.removeTotpEntry(entry.id)) { this.load(); }
-        }
-      });
-    })
+        if (r['index'] === 1) { this.reportDeleted(this.kvs.removeTotpEntry(entry.id), '已删除 2FA 账户'); }
+      }).catch((): void => {});
+  }
+
+  /** An entry locked on its own (it can arrive locked through sync): the card verified, this unlocks it. */
+  private unlockTotpEntry(entry: TotpEntry): void {
+    const updated: TotpEntry = TotpEntry.fromJSON(entry.toJSON());
+    updated.locked = false;
+    if (!this.kvs.updateTotpEntry(updated)) {
+      promptAction.showToast({ message: '没有解锁，请重试', duration: 2000 });
+      return;
+    }
+    this.load();
+    promptAction.showToast({ message: '已解锁', duration: 1500 });
+  }
+
+  private beginSelection(id: string): void {
+    this.selectionMode = true;
+    this.selectedIds = new Set<string>([id]);
   }
 
   private load(): void {
@@ -425,68 +588,62 @@ export struct KeyVaultPage {
     )
   }
 
+  /** Selected entries that are locked on their own, read now (a sync can lock one while the dialog is open). */
+  private lockedSelectionCount(ids: string[], ssh: boolean): number {
+    return ssh ? this.kvs.getAllSshKeys().filter((key: SshKey): boolean => ids.indexOf(key.id) >= 0 && key.locked).length :
+      this.kvs.getAllTotpEntries().filter((entry: TotpEntry): boolean => ids.indexOf(entry.id) >= 0 && entry.locked).length;
+  }
+
   private doBatchDelete(): void {
+    const ids: string[] = Array.from(this.selectedIds);
+    if (ids.length === 0) { return; }
+    const ssh: boolean = this.keyVaultInnerTab === 0;
+    if (!ssh && this.totpListLocked()) {
+      promptAction.showToast({ message: '请先验证身份', duration: 1500 });
+      return;
+    }
     promptAction.showDialog({
       title: '批量删除',
-      message: '确定要删除选中的 ' + this.selectedIds.size + ' 个对象吗？',
+      message: keyVaultBatchDeleteMessage(ids.length, this.lockedSelectionCount(ids, ssh), ssh),
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
       ]
-    }).then((result: Object): void => {
+    }).then(async (result: Object): Promise<void> => {
       const r: Record<string, number> = result as Record<string, number>;
-      if (r['index'] === 1) {
-        const ids: string[] = [];
-        this.selectedIds.forEach((id: string) => {
-          ids.push(id);
-        });
-        if (this.keyVaultInnerTab === 0) {
-          this.kvs.removeSshKeys(ids);
-        } else {
-          this.kvs.removeTotpEntries(ids);
-        }
-        this.selectionMode = false;
-        this.selectedIds = new Set<string>();
-        this.load();
+      if (r['index'] !== 1) { return; }
+      // Locked keys and entries are protected as they are when deleted one by one: one verification covers them.
+      const lockedNow: number = this.lockedSelectionCount(ids, ssh);
+      if (!ssh && this.totpListLocked()) {
+        promptAction.showToast({ message: '请先验证身份', duration: 1500 });
+        return;
       }
-    });
-  }
-
-  @Builder selectionDeleteBtn() {
-    Row() {
-      Button('删除已选 (' + this.selectedIds.size + ')').width('100%').height(40).fontSize(14)
-        .backgroundColor('#FF3B30').fontColor('#FFFFFF').borderRadius(10)
-        .onClick(() => {
-          promptAction.showDialog({
-            title: '批量删除',
-            message: '确定要删除选中的 ' + this.selectedIds.size + ' 个对象吗？此操作不可恢复。',
-            buttons: [
-              { text: '取消', color: this.pal().text2 },
-              { text: '删除', color: this.pal().danger }
-            ]
-          }).then((result: Object): void => {
-            const r: Record<string, number> = result as Record<string, number>;
-            if (r['index'] === 1) {
-              const ids: string[] = [];
-              this.selectedIds.forEach((id: string) => {
-                ids.push(id);
-              });
-              if (this.keyVaultInnerTab === 0) {
-                this.kvs.removeSshKeys(ids);
-              } else {
-                this.kvs.removeTotpEntries(ids);
-              }
-              this.selectionMode = false;
-              this.selectedIds = new Set<string>();
-              this.load();
-            }
-          });
-        })
-    }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 12 })
+      if (lockedNow > 0) {
+        const gate: LockGateResult = await showLockGate('删除 ' + lockedNow.toString() + (ssh ? ' 把已锁定的密钥' : ' 个已锁定的 2FA 账户'), 'biometric');
+        if (!gate.ok) {
+          const msg: string = lockGateErrorMessage(gate);
+          if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+          return;
+        }
+      }
+      const before: number = ssh ? this.kvs.getAllSshKeys().length : this.kvs.getAllTotpEntries().length;
+      if (ssh) { this.kvs.removeSshKeys(ids); } else { this.kvs.removeTotpEntries(ids); }
+      const after: number = ssh ? this.kvs.getAllSshKeys().length : this.kvs.getAllTotpEntries().length;
+      const removed: number = Math.max(0, before - after);
+      this.selectionMode = false;
+      this.selectedIds = new Set<string>();
+      this.load();
+      promptAction.showToast({
+        message: removed === ids.length ? '已删除 ' + removed.toString() + ' 项' :
+          '已删除 ' + removed.toString() + ' 项，' + (ids.length - removed).toString() + ' 项没有删除',
+        duration: 1800
+      });
+    }).catch((): void => {});
   }
 
   // ==================== SSH 表单 ====================
   private resetSshForm(): void {
+    this.formError = '';
     this.editingSshKey = new SshKey();
     this.formLabel = ''; this.formKeyType = SshKeyType.ED25519;
     this.formComment = ''; this.formPasteKey = ''; this.formFileName = ''; this.formMode = 0;
@@ -509,6 +666,16 @@ export struct KeyVaultPage {
   }
 
   private async doAddSshKey(): Promise<void> {
+    if (this.savingKey) { return; }
+    this.savingKey = true;
+    try {
+      await this.saveSshKeyForm();
+    } finally {
+      this.savingKey = false;
+    }
+  }
+
+  private async saveSshKeyForm(): Promise<void> {
     if (this.formLabel.trim() === '') {
       promptAction.showToast({ message: '请输入密钥名称', duration: 1500 });
       return;
@@ -552,10 +719,14 @@ export struct KeyVaultPage {
           key.fingerprint = '';
           key.privateKeyEncrypted = true;
           key.formatVersion = 1;
+          // Encrypted PEM: the type is read from its header. An encrypted PKCS#8 key hides it until the passphrase
+          // is entered in 密钥管理 (that save inspects it again); the cards show 类型待识别 until then.
+          if (key.privateKey.indexOf('BEGIN RSA PRIVATE KEY') >= 0) { key.keyType = SshKeyType.RSA; }
+          else if (key.privateKey.indexOf('BEGIN EC PRIVATE KEY') >= 0) { key.keyType = SshKeyType.ECDSA; }
         } else {
           promptAction.showToast({
-            message: '[CC-SSHKEY-02] 私钥解析失败: ' + (info['error'] || '未知错误'),
-            duration: 2500
+            message: '私钥无法识别：' + (info['error'] || '请确认粘贴的是完整的 OpenSSH 私钥'),
+            duration: 2600
           });
           return;
         }
@@ -565,9 +736,12 @@ export struct KeyVaultPage {
         key.fingerprint = info['fingerprintSha256'];
         key.privateKeyEncrypted = info['encrypted'];
         key.formatVersion = 1;
+        // The detected type, not the chip's default.
+        key.keyType = info['keyType'] !== '' ? sshKeyTypeFromNative(info['keyType']) : key.keyType;
       }
     } else if (!isEdit) {
-      // 生成模式 — 使用 native OpenSSL EVP_PKEY 生成标准 OpenSSH 密钥对
+      // 生成模式 — 使用 native OpenSSL EVP_PKEY 生成标准 OpenSSH 密钥对；先让「生成中…」画出来
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 32); });
       const keyTypeStr: string =
         this.formKeyType === SshKeyType.RSA ? 'rsa' : 'ed25519';
       const bits: number = this.formKeyType === SshKeyType.RSA ? 4096 : 256;
@@ -575,8 +749,8 @@ export struct KeyVaultPage {
         this.loader.generateSshKeyPair(keyTypeStr, bits, this.formComment.trim(), '');
       if (!result['ok']) {
         promptAction.showToast({
-          message: '[CC-SSHKEY-03] 密钥生成失败: ' + (result['error'] || '未知错误'),
-          duration: 2500
+          message: '密钥没有生成：' + (result['error'] || '请重试'),
+          duration: 2600
         });
         return;
       }
@@ -588,94 +762,107 @@ export struct KeyVaultPage {
     }
 
     const ok: boolean = isEdit ? this.kvs.updateSshKey(key) : this.kvs.addSshKey(key);
-    if (ok) {
-      this.showSheet = false;
-      this.editingSshKey = new SshKey();
-      this.resetSshForm();
-      this.load();
-      promptAction.showToast({ message: isEdit ? '密钥已更新' : '密钥已保存', duration: 1500 });
+    if (!ok) {
+      promptAction.showToast({ message: '密钥没有保存，请重试', duration: 2000 });
+      return;
     }
+    this.closeKeyVaultSheet();
+    this.editingSshKey = new SshKey();
+    this.resetSshForm();
+    this.load();
+    promptAction.showToast({ message: isEdit ? '密钥已更新' : '密钥已保存', duration: 1500 });
   }
 
   // ==================== TOTP 表单 ====================
   private resetTotpForm(): void {
     this.formIssuer = ''; this.formAccount = ''; this.formSecret = ''; this.formOtpAuthUri = '';
-    this.formDigits = 6; this.formPeriod = 30;
+    this.formDigits = 6; this.formPeriod = 30; this.formAlgorithm = TotpAlgorithm.SHA1; this.formError = '';
+  }
+
+  private existingTotpSecrets(): string[] {
+    return this.kvs.getAllTotpEntries().map((entry: TotpEntry): string => normalizeTotpSecret(entry.secret));
   }
 
   private doAddTotp(): void {
-    if (this.formIssuer.trim() === '' || this.formSecret.trim() === '') {
-      promptAction.showToast({ message: 'Issuer 和 Secret 不能为空', duration: 1500 });
+    if (this.formIssuer.trim() === '') {
+      this.formError = '请填写发行方，例如 GitHub';
+      return;
+    }
+    const secret: string = normalizeTotpSecret(this.formSecret);
+    const problem: string = totpSecretProblem(secret, this.existingTotpSecrets());
+    if (problem !== '') {
+      this.formError = problem;
       return;
     }
     const entry: TotpEntry = new TotpEntry();
     entry.id = TotpEntry.generateId();
     entry.issuer = this.formIssuer.trim();
     entry.account = this.formAccount.trim();
-    entry.secret = this.formSecret.trim().replace(/\s+/g, '');
+    entry.secret = secret;
     entry.digits = this.formDigits;
     entry.period = this.formPeriod;
-    entry.algorithm = 0; // SHA1 default
+    // The algorithm a parsed otpauth URI asked for; SHA1 when typed in by hand.
+    entry.algorithm = this.formAlgorithm as TotpAlgorithm;
 
-    if (this.kvs.addTotpEntry(entry)) {
-      this.showSheet = false;
-      this.resetTotpForm();
-      this.load();
-      promptAction.showToast({ message: '2FA 已添加', duration: 1500 });
+    if (!this.kvs.addTotpEntry(entry)) {
+      this.formError = '2FA 没有保存，请重试';
+      return;
     }
+    this.closeKeyVaultSheet();
+    this.resetTotpForm();
+    this.load();
+    promptAction.showToast({ message: '2FA 已添加', duration: 1500 });
   }
 
-  // TOTP 导入
+  // TOTP 导入：与全新添加流程同一个解析器（ATSF、TXT、JSON、CSV，按 UTF-8 读取）
   private async importTotpFile(): Promise<void> {
+    beginKeyVaultExternalPicker();
+    let result: TotpImportResult | null = null;
     try {
-      const selectOptions = new picker.DocumentSelectOptions();
-      const viewPicker = new picker.DocumentViewPicker();
-      const uris: string[] = await viewPicker.select(selectOptions);
-      if (uris.length === 0) { return; }
-      const file = fileIo.openSync(uris[0], fileIo.OpenMode.READ_ONLY);
-      const stat = fileIo.statSync(file.fd);
-      const buf = new ArrayBuffer(stat.size);
-      fileIo.readSync(file.fd, buf);
-      fileIo.closeSync(file);
-      const view = new Uint8Array(buf);
-      let jsonStr = '';
-      for (let i = 0; i < view.length; i++) {
-        jsonStr += String.fromCharCode(view[i]);
-      }
-      const parsed: Object = JSON.parse(jsonStr);
-      let entriesArr: TotpEntryJSON[];
-      if (parsed instanceof Array) {
-        entriesArr = parsed as TotpEntryJSON[];
-      } else {
-        const data: Record<string, Object> = parsed as Record<string, Object>;
-        entriesArr = data['entries'] as TotpEntryJSON[];
-      }
-      if (!entriesArr || entriesArr.length === 0) {
-        promptAction.showToast({ message: '[importTotp] 无有效条目', duration: 2000 });
-        return;
-      }
-      let imported = 0;
-      for (let i = 0; i < entriesArr.length; i++) {
-        const entry: TotpEntry = TotpEntry.fromJSON(entriesArr[i]);
-        entry.id = TotpEntry.generateId();
-        if (this.kvs.addTotpEntry(entry)) { imported++; }
-      }
-      this.load();
-      promptAction.showToast({ message: '已导入 ' + imported + ' 个条目', duration: 1500 });
-    } catch (err) {
-      const be: BusinessError = err as BusinessError;
-      if (be.code !== 0) {
-        promptAction.showToast({ message: '[importTotp] 导入失败: code=' + be.code, duration: 2000 });
+      result = await this.totpImporter.pickAndParse();
+    } finally {
+      endKeyVaultExternalPicker();
+    }
+    if (result === null) { return; }
+    if (!result.ok) {
+      promptAction.showToast({ message: result.error || '文件无法导入', duration: 2400 });
+      return;
+    }
+    const known: string[] = this.existingTotpSecrets();
+    let imported: number = 0;
+    for (let i = 0; i < result.entries.length; i++) {
+      const entry: TotpEntry = result.entries[i];
+      const secret: string = normalizeTotpSecret(entry.secret);
+      if (totpSecretProblem(secret, known) !== '') { continue; }
+      entry.secret = secret;
+      if (this.kvs.addTotpEntry(entry)) {
+        imported++;
+        known.push(secret);
       }
     }
+    this.load();
+    promptAction.showToast({ message: totpImportSummary(imported, result.entries.length - imported), duration: 2200 });
+    if (imported > 0) { this.closeKeyVaultSheet(); }
   }
 
   private onQrScanned(entry: TotpEntry): void {
     this.showQrScan = false;
-    if (this.kvs.addTotpEntry(entry)) {
-      this.load();
-      promptAction.showToast({ message: '2FA 已添加', duration: 1500 });
+    const secret: string = normalizeTotpSecret(entry.secret);
+    const problem: string = totpSecretProblem(secret, this.existingTotpSecrets());
+    if (problem !== '') {
+      promptAction.showToast({ message: problem, duration: 2200 });
+      return;
     }
+    entry.secret = secret;
+    if (!this.kvs.addTotpEntry(entry)) {
+      promptAction.showToast({ message: '2FA 没有保存，请重试', duration: 2000 });
+      return;
+    }
+    // The form the scan was started from is done too.
+    this.closeKeyVaultSheet();
+    this.resetTotpForm();
+    this.load();
+    promptAction.showToast({ message: '2FA 已添加', duration: 1500 });
   }
 
   build() {
@@ -685,8 +872,8 @@ export struct KeyVaultPage {
         // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致
         ListItem() { Column().height(this.titleBarHeight() + 8) }
 
-        // 选择工具栏
-        if (this.selectionMode) {
+        // 选择工具栏 (never over a locked 2FA page)
+        if (this.selectionMode && !(this.keyVaultInnerTab === 1 && this.totpListLocked())) {
           ListItem() {
             if (this.keyVaultInnerTab === 0) {
               this.selectionToolbar(this.sshKeys.map((k: SshKey) => k.id))
@@ -706,7 +893,7 @@ export struct KeyVaultPage {
                 Text('还没有 SSH 密钥')
                   .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                   .margin({ top: 16 })
-                Text('点击底部 + 添加 SSH 密钥')
+                Text('点击 + 添加 SSH 密钥')
                   .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                   .margin({ top: 6 }).lineHeight(20)
               }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
@@ -722,7 +909,7 @@ export struct KeyVaultPage {
                   onCheckChange: (v: boolean) => { this.toggleSelect(key.id, v); },
                   onEdit: () => { this.handleSshEdit(key); },
                   onToggleLock: () => { this.toggleSshLock(key); },
-                  onSelect: () => { this.selectionMode = true; this.selectedIds = new Set(); this.selectedIds.add(key.id); },
+                  onSelect: () => { this.beginSelection(key.id); },
                   onDelete: () => { this.deleteSshKeyItem(key); }
                 })
               }
@@ -770,7 +957,7 @@ export struct KeyVaultPage {
                   .fontSize(13).fontColor(this.pal().text2).textAlign(TextAlign.Center)
                   .padding({ left: 24, right: 24 }).margin({ bottom: 20 })
                 Button('验证身份').width('60%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-                  .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+                  .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
                   .onClick(async () => {
                     const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
                     if (r.ok) { this.totpUnlocked = true; }
@@ -789,7 +976,7 @@ export struct KeyVaultPage {
                 Text('还没有 2FA 验证器')
                   .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                   .margin({ top: 16 })
-                Text('点击底部 + 添加 2FA 验证器')
+                Text('点击 + 添加 2FA 验证器')
                   .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                   .margin({ top: 6 }).lineHeight(20)
               }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
@@ -803,7 +990,11 @@ export struct KeyVaultPage {
                   pageLocked: this.totpPageLocked && !this.totpUnlocked,
                   showCheckbox: this.selectionMode,
                   checkboxSelected: this.selectedIds.has(entry.id),
-                  onCheckChange: (v: boolean) => { this.toggleSelect(entry.id, v); }
+                  onCheckChange: (v: boolean) => { this.toggleSelect(entry.id, v); },
+                  onUnlock: () => { this.unlockTotpEntry(entry); },
+                  onRename: () => { this.handleTotpEdit(entry); },
+                  onSelect: () => { this.beginSelection(entry.id); },
+                  onDelete: () => { void this.deleteTotpItem(entry); }
                 })
               }
               .gesture(
@@ -849,13 +1040,36 @@ export struct KeyVaultPage {
       .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
     }
     .width('100%').height('100%')
+    .onAreaChange((_old: Area, next: Area): void => {
+      const height: number = next.height as number;
+      if (Number.isFinite(height) && height > 0 && Math.abs(height - this.pageViewportHeight) >= 1) {
+        this.pageViewportHeight = height;
+      }
+    })
     // KeyVaultPage 非 @Entry — 单 bindSheet + sheetMode 切换 (参考 HostListPage @Entry 的 settings Builder 内多子 Sheet 模式)
     .bindSheet($$this.showSheet, this.unifiedSheet(), {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: this.sheetMode !== 1 && this.sheetMode !== 5 && this.sheetMode !== 6,
       backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
+      onWillDismiss: (action: DismissSheetAction): void => {
+        // closeKeyVaultSheet (a save, or a close already confirmed) also arrives here: it goes straight through.
+        if (this.keyVaultSheetClosing || this.keyVaultSheetUnsavedLabel() === '') {
+          this.keyVaultSheetClosing = true;
+          action.dismiss();
+          return;
+        }
+        this.confirmDiscardKeyVaultSheet((): void => { this.keyVaultSheetClosing = true; action.dismiss(); });
+      },
+      onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+        // Stay up while the question is asked; otherwise no bounce before the one exit animation.
+        if (!this.keyVaultSheetClosing && this.keyVaultSheetUnsavedLabel() !== '') { action.springBack(); }
+      },
       onDisappear: () => {
+        this.keyVaultSheetClosing = false;
+        this.keyVaultSheetDismissCount++;
+        this.modernFlowDirty = false;
+        this.passphraseSheetDirty = false;
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
         else { this.load(); }
       }
@@ -879,8 +1093,11 @@ export struct KeyVaultPage {
     } else if (this.sheetMode === 6) {
       ModernKeyVaultAddFlow({
         resourceKind: this.modernResourceKind,
-        onClose: (): void => { this.showSheet = false; },
-        onSaved: (_resourceId: string): void => { this.load(); }
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeKeyVaultSheetByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.modernFlowDirty = dirty; },
+        // Saved: the flow closes right after, with nothing left to lose.
+        onSaved: (_resourceId: string): void => { this.modernFlowDirty = false; this.load(); }
       })
     } else if (this.sheetMode === 7) {
       this.totpNameEditWrapper()
@@ -919,7 +1136,7 @@ export struct KeyVaultPage {
           if (option === 'file') { void this.importSshKeyFile(); }
         }
       },
-      onClose: (): void => { this.showSheet = false; }
+      onClose: (): void => { this.closeKeyVaultSheetByUser(); }
     })
   }
 
@@ -934,6 +1151,8 @@ export struct KeyVaultPage {
     this.formSecret = parsed.secret;
     this.formDigits = parsed.digits;
     this.formPeriod = parsed.period;
+    this.formAlgorithm = parsed.algorithm;
+    this.formError = '';
     promptAction.showToast({ message: '配置已解析，请确认后保存', duration: 1500 });
   }
 
@@ -942,10 +1161,10 @@ export struct KeyVaultPage {
       kind: 'totp',
       onSelect: (option: string): void => {
         this.resetTotpForm(); this.showAddTab = 1;
-        if (option === 'scan') { this.showSheet = false; this.showQrScan = true; }
+        if (option === 'scan') { this.closeKeyVaultSheet(); this.showQrScan = true; }
         else { this.sheetMode = 0; }
       },
-      onClose: (): void => { this.showSheet = false; }
+      onClose: (): void => { this.closeKeyVaultSheetByUser(); }
     })
   }
 
@@ -968,16 +1187,21 @@ export struct KeyVaultPage {
   @Builder passphraseWrapper() {
     Column() {
       Row() {
-        Text(this.sheetKey.privateKeyEncrypted ? '修改密钥密码' : '设置密钥密码')
+        Text(this.passphraseRemoveMode ? '移除密钥密码' : this.sheetKey.privateKeyEncrypted ? '修改密钥密码' : '设置密钥密码')
           .fontSize(16).fontWeight(FontWeight.Bold)
           .fontColor(this.pal().text).fontFamily(this.font())
           .layoutWeight(1)
         Text('返回').fontSize(13).fontColor(this.accentColor)
-          .fontFamily(this.font()).onClick(() => { this.sheetMode = 2; })
+          .fontFamily(this.font()).onClick(() => {
+            // Typed passphrases are dropped on the way back: the same question as closing.
+            this.confirmDiscardKeyVaultSheet((): void => { this.passphraseSheetDirty = false; this.sheetMode = 2; });
+          })
       }.width('100%').margin({ bottom: 14 })
 
       SshKeyPassphraseSubSheet({
         sshKey: this.sheetKey,
+        removeMode: this.passphraseRemoveMode,
+        onDirtyChange: (dirty: boolean): void => { this.passphraseSheetDirty = dirty; },
         onComplete: (newPrivateKey: string, newEncrypted: boolean) => {
           const updated: SshKey = new SshKey();
           updated.id = this.sheetKey.id;
@@ -994,9 +1218,15 @@ export struct KeyVaultPage {
           updated.userId = this.sheetKey.userId;
           updated.formatVersion = this.sheetKey.formatVersion;
           updated.privateKeyEncrypted = newEncrypted;
-          this.onKeyManagerChange(updated);
+          if (!this.onKeyManagerChange(updated)) {
+            promptAction.showToast({ message: '密码没有保存，请重试', duration: 2000 });
+            return;
+          }
+          // Saved: the typed passphrases are no longer at stake.
+          this.passphraseSheetDirty = false;
           this.sheetKey = updated;
           this.sheetMode = 2;
+          promptAction.showToast({ message: this.passphraseChangedMessage(updated, newEncrypted), duration: 3200 });
         }
       })
     }
@@ -1017,11 +1247,10 @@ export struct KeyVaultPage {
           .fontColor(this.pal().text).fontFamily(this.font())
           .layoutWeight(1)
         Text('取消').fontSize(13).fontColor(this.accentColor)
-          .fontFamily(this.font()).onClick(() => { this.showSheet = false; })
+          .fontFamily(this.font()).onClick(() => { this.closeKeyVaultSheetByUser(); })
       }.width('100%').margin({ bottom: 14 })
 
-      this._f('显示名称（可选）', '例如：公司 GitHub', this.editingTotpName,
-        (v: string) => { this.editingTotpName = v; })
+      this._f({ label: '显示名称（可选）', hint: '例如：公司 GitHub', value: this.editingTotpName, onChange: (v: string) => { this.editingTotpName = v; } })
 
       Column() {
         if (this.editingTotpEntry.issuer !== '') {
@@ -1041,13 +1270,21 @@ export struct KeyVaultPage {
 
       Button('保存名称')
         .width('100%').height(42).fontSize(14).fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
         .onClick(() => { this.saveTotpName(); })
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .constraintSize({ maxWidth: 760 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
+  }
+
+  /** After a passphrase change: hosts that saved the old passphrase for this key need the new one. */
+  private passphraseChangedMessage(key: SshKey, encrypted: boolean): string {
+    const done: string = this.passphraseRemoveMode ? '已移除密码' : encrypted ? '密码已更新' : '密码已设置';
+    const stale: number = HostSyncService.getInstance().getAllHosts().filter((host: RemoteHost): boolean =>
+      host.sshKeyId === key.id && host.sshKeyPassphraseConfigured).length;
+    return stale > 0 ? done + '。有 ' + stale.toString() + ' 台主机保存了旧密码，请在主机编辑里更新' : done;
   }
 
   /** 沉浸顶栏 (参照设置页: 常驻透明overlay, 无模糊切换) */
@@ -1057,7 +1294,11 @@ export struct KeyVaultPage {
         Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
         Row() {
           Text('密钥保险库').fontSize(27).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
+            .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+          if (this.aiEntryEnabled && this.aiEntryAssistantVisible) {
+            DiagnosticAiOrb({ visible: true, state: this.aiEntryState as DiagnosticAiOrbState,
+              onOpen: (): void => { AppStorage.setOrCreate('aiEntryOpenRequest', Date.now()); } })
+          }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
 
         // 居中悬浮 Tab 栏 (xl 由侧边栏控制, 隐藏此栏)
@@ -1072,27 +1313,27 @@ export struct KeyVaultPage {
               Row() {
                 Column() {
                   Text('SSH 密钥').fontSize(13)
-                    .fontColor(this.keyVaultInnerTab === 0 ? '#FFFFFF' : this.pal().text2)
+                    .fontColor(this.keyVaultInnerTab === 0 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .fontWeight(this.keyVaultInnerTab === 0 ? FontWeight.Medium : FontWeight.Normal)
                 }.width(80).height(32).borderRadius(16).justifyContent(FlexAlign.Center)
-                .onClick(() => { this.showSheet = false; this.showSheet = false; this.keyVaultInnerTab = 0; })
+                .onClick(() => { this.closeKeyVaultSheet(); this.keyVaultInnerTab = 0; })
                 Blank().width(2)
                 Column() {
                   Text('2FA 验证器').fontSize(13)
-                    .fontColor(this.keyVaultInnerTab === 1 ? '#FFFFFF' : this.pal().text2)
+                    .fontColor(this.keyVaultInnerTab === 1 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .fontWeight(this.keyVaultInnerTab === 1 ? FontWeight.Medium : FontWeight.Normal)
                 }.width(80).height(32).borderRadius(16).justifyContent(FlexAlign.Center)
                 .onClick(async () => {
                   if (this.totpPageLocked && !this.totpUnlocked) {
                     const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
-                    if (r.ok) { this.showSheet = false; this.showSheet = false; this.totpUnlocked = true; this.keyVaultInnerTab = 1; }
+                    if (r.ok) { this.closeKeyVaultSheet(); this.totpUnlocked = true; this.keyVaultInnerTab = 1; }
                     else {
                       const msg: string = lockGateErrorMessage(r);
                       if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
                       this.keyVaultInnerTab = 0;
                     }
                   } else {
-                    this.showSheet = false; this.showSheet = false; this.keyVaultInnerTab = 1;
+                    this.closeKeyVaultSheet(); this.keyVaultInnerTab = 1;
                   }
                 })
               }
@@ -1114,181 +1355,6 @@ export struct KeyVaultPage {
 
   // addFormWrapper() 已替换 keyVaultAddSheet() — 见统一 Sheet Builder 区域
 
-  // ==================== SSH 密钥列表 ====================
-  @Builder sshKeyContent() {
-    Stack() {
-      Column() {
-        // 选择工具栏
-        if (this.selectionMode && this.sshKeys.length > 0 && this.keyVaultInnerTab === 0) {
-          this.selectionToolbar(this.sshKeys.map((k: SshKey) => k.id))
-        }
-        if (this.sshKeys.length === 0) {
-          Column() {
-            SymbolGlyph($r('sys.symbol.key_fill'))
-              .fontSize(48).fontColor([this.pal().text3])
-            Text('还没有 SSH 密钥')
-              .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .margin({ top: 16 })
-            Text('点击底部 + 添加 SSH 密钥')
-              .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
-              .margin({ top: 6 }).lineHeight(20)
-          }
-          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-        } else {
-          List({ space: 8 }) {
-            LazyForEach(this.sshKeyDataSource, (key: SshKey) => {
-              ListItem() {
-                SshKeyCard({
-                  sshKey: key,
-                  showCheckbox: this.selectionMode,
-                  checkboxSelected: this.selectedIds.has(key.id),
-                  onCheckChange: (v: boolean) => { this.toggleSelect(key.id, v); },
-                  onEdit: () => { this.handleSshEdit(key); },
-                  onToggleLock: () => { this.toggleSshLock(key); },
-                  onSelect: () => { this.selectionMode = true; this.selectedIds = new Set(); this.selectedIds.add(key.id); },
-                  onDelete: () => { this.deleteSshKeyItem(key); }
-                })
-              }
-              .gesture(
-                LongPressGesture().onAction(() => {
-                  if (!this.selectionMode) {
-                    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-                      this.selectionMode = true; this.selectedIds = new Set(); this.selectedIds.add(key.id);
-                    });
-                  }
-                })
-              )
-              .onClick(() => {
-                if (this.selectionMode) { this.toggleSelect(key.id, !this.selectedIds.has(key.id)); }
-              })
-              .swipeAction((this.selectionMode || this.isDesktopDevice) ? {
-                start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
-              } : {
-                start: { builder: () => { this.editLockRow(key); } },
-                end: { builder: () => { this.deleteBtnSsh(key); } },
-                edgeEffect: SwipeEdgeEffect.Spring
-              })
-              .transition(
-                TransitionEffect.asymmetric(
-                  TransitionEffect.translate({ x: -200 })
-                    .animation({ duration: 250, curve: Curve.FastOutSlowIn }),
-                  TransitionEffect.translate({ x: -200, y: -10 })
-                    .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 }))
-                    .combine(TransitionEffect.OPACITY)
-                    .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
-                )
-              )
-            }, (key: SshKey) => key.id + ':' + this.keyViewRevision.toString())
-          }
-          .layoutWeight(1).padding({ left: 16, right: 16, top: 4, bottom: 140 })
-        }
-      }.width('100%').height('100%')
-    }.width('100%').height('100%')
-  }
-
-  // ==================== TOTP 列表 ====================
-  @Builder totpContent() {
-    Stack() {
-      Column() {
-        if (this.totpEntries.length === 0) {
-          Column() {
-            SymbolGlyph($r('sys.symbol.checkmark_shield'))
-              .fontSize(48).fontColor([this.pal().text3])
-            Text('还没有 2FA 验证器')
-              .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .margin({ top: 16 })
-            Text('点击底部 + 添加 2FA 验证器')
-              .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
-              .margin({ top: 6 }).lineHeight(20)
-          }
-          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-        } else {
-          // 选择工具栏
-          if (this.selectionMode && this.keyVaultInnerTab === 1) {
-            this.selectionToolbar(this.totpEntries.map((e: TotpEntry) => e.id))
-          }
-          List({ space: 8 }) {
-            LazyForEach(this.totpEntryDataSource, (entry: TotpEntry) => {
-              ListItem() {
-                TotpCodeCard({
-                  entry: entry,
-                  pageLocked: this.totpPageLocked && !this.totpUnlocked,
-                  showCheckbox: this.selectionMode,
-                  checkboxSelected: this.selectedIds.has(entry.id),
-                  onCheckChange: (v: boolean) => { this.toggleSelect(entry.id, v); }
-                })
-              }
-              .gesture(
-                LongPressGesture().onAction(() => {
-                  if (!this.selectionMode) {
-                    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-                      this.selectionMode = true; this.selectedIds = new Set(); this.selectedIds.add(entry.id);
-                    });
-                  }
-                })
-              )
-              .onClick(() => {
-                if (this.selectionMode) { this.toggleSelect(entry.id, !this.selectedIds.has(entry.id)); }
-              })
-              .swipeAction((this.selectionMode || this.isDesktopDevice) ? {
-                start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
-              } : {
-                start: { builder: () => { this.totpEditLockRow(entry); } },
-                end: { builder: () => { this.deleteBtnTotp(entry); } },
-                edgeEffect: SwipeEdgeEffect.Spring
-              })
-              .transition(
-                TransitionEffect.asymmetric(
-                  TransitionEffect.translate({ x: -200 })
-                    .animation({ duration: 250, curve: Curve.FastOutSlowIn }),
-                  TransitionEffect.translate({ x: -200, y: -10 })
-                    .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 }))
-                    .combine(TransitionEffect.OPACITY)
-                    .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
-                )
-              )
-            }, (entry: TotpEntry) => entry.id + ':' + this.totpViewRevision.toString())
-          }
-          .layoutWeight(1).padding({ left: 16, right: 16, top: 4, bottom: 140 })
-        }
-      }.width('100%').height('100%')
-
-      // 2FA 隐私遮盖层 (官方风格)
-      if (this.totpPageLocked && !this.totpUnlocked) {
-        Column() {
-          Column() {
-            Text('需要验证身份')
-              .fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text).margin({ bottom: 6 })
-            Text('此内容已通过 TOTP 隐私保护加密')
-              .fontSize(13).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-              .padding({ left: 24, right: 24 }).margin({ bottom: 20 })
-            Button('验证身份').width('60%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
-              .shadow({ radius: 10, color: this.pal().fabGlow, offsetY: 2 })
-              .onClick(async () => {
-                const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
-                if (r.ok) { this.totpUnlocked = true; }
-                else {
-                  const msg: string = lockGateErrorMessage(r);
-                  if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
-                }
-              })
-          }
-          .width('86%').padding(28).borderRadius(20)
-          .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
-          .shadow({ radius: 32, color: 'rgba(0,0,0,0.15)', offsetY: 8 })
-          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-        }
-        .width('100%').height('100%')
-        .backgroundColor(this.pal().lockOverlay)
-        .backdropBlur(20)
-        .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-      }
-    }.width('100%').height('100%')
-  }
-
   // ==================== SSH 添加表单 Sheet ====================
   @Builder sshFormSheet() {
     Column() {
@@ -1300,24 +1366,25 @@ export struct KeyVaultPage {
         }.margin({ bottom: 14 })
       }
 
-      this._f('名称', '如 myserver-key', this.formLabel,
-        (v: string) => { this.formLabel = v; })
+      this._f({ label: '名称', hint: '如 myserver-key', value: this.formLabel, onChange: (v: string) => { this.formLabel = v; } })
 
-      // 密钥类型
-      Row() {
-        Text('密钥类型').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        Text('ED25519').fontSize(12)
-          .fontColor(this.formKeyType === SshKeyType.ED25519 ? '#FFFFFF' : this.pal().text2)
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
-          .backgroundColor(this.formKeyType === SshKeyType.ED25519 ? this.accentColor : this.pal().surface)
-          .onClick(() => { this.formKeyType = SshKeyType.ED25519; })
-        Text('RSA').fontSize(12).margin({ left: 8 })
-          .fontColor(this.formKeyType === SshKeyType.RSA ? '#FFFFFF' : this.pal().text2)
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
-          .backgroundColor(this.formKeyType === SshKeyType.RSA ? this.accentColor : this.pal().surface)
-          .onClick(() => { this.formKeyType = SshKeyType.RSA; })
-      }.width('100%').height(44).margin({ bottom: 10 })
+      // 密钥类型: chosen when generating; a pasted key's type is read from the key itself
+      if (this.formMode === 1 && this.editingSshKey.id === '') {
+        Row() {
+          Text('密钥类型').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Text('ED25519').fontSize(12)
+            .fontColor(this.formKeyType === SshKeyType.ED25519 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
+            .backgroundColor(this.formKeyType === SshKeyType.ED25519 ? this.accentColor : this.pal().surface)
+            .onClick(() => { this.formKeyType = SshKeyType.ED25519; })
+          Text('RSA').fontSize(12).margin({ left: 8 })
+            .fontColor(this.formKeyType === SshKeyType.RSA ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
+            .backgroundColor(this.formKeyType === SshKeyType.RSA ? this.accentColor : this.pal().surface)
+            .onClick(() => { this.formKeyType = SshKeyType.RSA; })
+        }.width('100%').height(44).margin({ bottom: 10 })
+      }
 
       // 私钥内容 (仅粘贴模式 formMode=0 或编辑模式显示)
       if (this.formMode === 0 || this.editingSshKey.id !== '') {
@@ -1334,7 +1401,8 @@ export struct KeyVaultPage {
             }
           }
           Text('私钥内容').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
-          TextInput({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.formPasteKey })
+          // Several lines: a single-line field would drop the PEM line breaks.
+          TextArea({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.formPasteKey })
             .height(100).backgroundColor(this.pal().surface).borderRadius(8)
             .fontColor(this.pal().text).placeholderColor(this.pal().text3)
             .fontFamily('monospace').fontSize(12)
@@ -1364,42 +1432,45 @@ export struct KeyVaultPage {
         }.width('100%').margin({ bottom: 10 })
       }
 
-      this._f('备注', '如 server@example.com', this.formComment,
-        (v: string) => { this.formComment = v; })
+      this._f({ label: '备注', hint: '如 server@example.com', value: this.formComment, onChange: (v: string) => { this.formComment = v; } })
 
-      Button(this.editingSshKey.id !== '' ? '保存修改' : '保存').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10).margin({ top: 12 })
-        .onClick(() => { this.doAddSshKey(); })
+      Button(this.savingKey ? (this.formMode === 1 && this.editingSshKey.id === '' ? '生成中…' : '保存中…') :
+        (this.editingSshKey.id !== '' ? '保存修改' : '保存')).width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10).margin({ top: 12 })
+        .enabled(!this.savingKey)
+        .onClick(() => { void this.doAddSshKey(); })
     }
   }
 
   // ==================== TOTP 添加表单 Sheet ====================
   @Builder totpFormSheet() {
     Column() {
-      // 扫码按钮 (相机图标)
-      Button() {
-        Row() {
-          SymbolGlyph($r('sys.symbol.camera_fill'))
-            .fontSize(16)
-            .fontColor([this.accentColor])
-          Text('导入 otpauth URI').fontSize(13)
-            .fontColor(this.accentColor)
-            .margin({ left: 6 })
+      // 扫码按钮 (相机图标). PC has no camera scanner.
+      if (!this.isDesktopDevice) {
+        Button() {
+          Row() {
+            SymbolGlyph($r('sys.symbol.camera_fill'))
+              .fontSize(16)
+              .fontColor([this.accentColor])
+            Text('扫描二维码').fontSize(13)
+              .fontColor(this.accentColor)
+              .margin({ left: 6 })
+          }
         }
+        .width('100%').height(40)
+        .backgroundColor(this.pal().surface)
+        .borderRadius(10).margin({ bottom: 12 })
+        .onClick(() => { this.showQrScan = true; })
+        .bindSheet($$this.showQrScan, this.qrScanSheet(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: false,
+          backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false
+        })
       }
-      .width('100%').height(40)
-      .backgroundColor(this.pal().surface)
-      .borderRadius(10).margin({ bottom: 12 })
-      .onClick(() => { this.showQrScan = true; })
-      .bindSheet($$this.showQrScan, this.qrScanSheet(), {
-        height: SheetSize.FIT_CONTENT,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: false,
-        backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false
-      })
 
-      // 导入 .atsf 文件
-      Button('导入 .atsf 文件').width('100%').height(40).fontSize(13)
+      // 导入文件
+      Button('导入文件（ATSF、TXT、JSON、CSV）').width('100%').height(40).fontSize(13)
         .backgroundColor(this.pal().surface).fontColor(this.accentColor)
         .borderRadius(10).margin({ bottom: 12 })
         .onClick(() => { this.importTotpFile(); })
@@ -1407,30 +1478,26 @@ export struct KeyVaultPage {
       Text('— 或手动输入 —').fontSize(11).fontColor(this.pal().text3)
         .width('100%').textAlign(TextAlign.Center).margin({ bottom: 12 })
 
-      this._f('otpauth URI（可选）', 'otpauth://totp/…', this.formOtpAuthUri,
-        (v: string) => { this.formOtpAuthUri = v; })
+      this._f({ label: 'otpauth URI（可选）', hint: 'otpauth://totp/…', value: this.formOtpAuthUri, onChange: (v: string) => { this.formOtpAuthUri = v; } })
       Button('解析 otpauth URI').width('100%').height(36).fontSize(12)
         .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
         .margin({ bottom: 12 }).onClick(() => { this.parseOtpAuthInput(); })
 
-      this._f('发行方 (Issuer)', '如 GitHub', this.formIssuer,
-        (v: string) => { this.formIssuer = v; })
-      this._f('账户名 (可选)', '如 user@example.com', this.formAccount,
-        (v: string) => { this.formAccount = v; })
-      this._f('密钥 (Secret)', 'Base32 字符串', this.formSecret,
-        (v: string) => { this.formSecret = v; })
+      this._f({ label: '发行方 (Issuer)', hint: '如 GitHub', value: this.formIssuer, onChange: (v: string) => { this.formIssuer = v; this.formError = ''; } })
+      this._f({ label: '账户名 (可选)', hint: '如 user@example.com', value: this.formAccount, onChange: (v: string) => { this.formAccount = v; } })
+      this._f({ label: '密钥 (Secret)', hint: 'Base32 字符串', value: this.formSecret, onChange: (v: string) => { this.formSecret = v; this.formError = ''; } })
 
       Row() {
         Column() {
           Text('验证码位数').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
           Row() {
             Text('6 位').fontSize(12)
-              .fontColor(this.formDigits === 6 ? '#FFFFFF' : this.pal().text2)
+              .fontColor(this.formDigits === 6 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .padding({ left: 10, right: 10, top: 6, bottom: 6 }).borderRadius(8)
               .backgroundColor(this.formDigits === 6 ? this.accentColor : this.pal().surface)
               .onClick(() => { this.formDigits = 6; })
             Text('8 位').fontSize(12).margin({ left: 8 })
-              .fontColor(this.formDigits === 8 ? '#FFFFFF' : this.pal().text2)
+              .fontColor(this.formDigits === 8 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .padding({ left: 10, right: 10, top: 6, bottom: 6 }).borderRadius(8)
               .backgroundColor(this.formDigits === 8 ? this.accentColor : this.pal().surface)
               .onClick(() => { this.formDigits = 8; })
@@ -1440,12 +1507,12 @@ export struct KeyVaultPage {
           Text('时间间隔').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
           Row() {
             Text('30s').fontSize(12)
-              .fontColor(this.formPeriod === 30 ? '#FFFFFF' : this.pal().text2)
+              .fontColor(this.formPeriod === 30 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .padding({ left: 10, right: 10, top: 6, bottom: 6 }).borderRadius(8)
               .backgroundColor(this.formPeriod === 30 ? this.accentColor : this.pal().surface)
               .onClick(() => { this.formPeriod = 30; })
             Text('60s').fontSize(12).margin({ left: 8 })
-              .fontColor(this.formPeriod === 60 ? '#FFFFFF' : this.pal().text2)
+              .fontColor(this.formPeriod === 60 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .padding({ left: 10, right: 10, top: 6, bottom: 6 }).borderRadius(8)
               .backgroundColor(this.formPeriod === 60 ? this.accentColor : this.pal().surface)
               .onClick(() => { this.formPeriod = 60; })
@@ -1453,8 +1520,15 @@ export struct KeyVaultPage {
         }.width('44%').margin({ left: 12 })
       }.width('100%').margin({ bottom: 12 })
 
+      if (this.formAlgorithm !== TotpAlgorithm.SHA1) {
+        Text('算法：' + TotpEntry.algoLabel(this.formAlgorithm as TotpAlgorithm) + '（来自 otpauth 配置）')
+          .fontSize(12).fontColor(this.pal().text2).width('100%')
+      }
+      if (this.formError !== '') {
+        Text(this.formError).fontSize(12).fontColor(this.pal().danger).width('100%').margin({ top: 6 })
+      }
       Button('添加').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10).margin({ top: 12 })
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10).margin({ top: 12 })
         .onClick(() => { this.doAddTotp(); })
     }
   }
@@ -1467,7 +1541,7 @@ export struct KeyVaultPage {
         .margin({ bottom: 10 }).width('100%').fontFamily(this.font())
       Scroll() {
         Column() {
-          QrCodeScanner({ onScanned: (entry: TotpEntry) => { this.onQrScanned(entry); } })
+          QrCodeScanner({ showTitle: false, onScanned: (entry: TotpEntry) => { this.onQrScanned(entry); } })
           Blank().height(16)
         }.width('100%')
       }
@@ -1498,7 +1572,7 @@ export struct KeyVaultPage {
         .margin({ bottom: 14 }).width('100%')
       SshKeyInstallSheet({
         targetKeyId: this.sheetKey.id,
-        onComplete: () => { this.showSheet = false; this.load(); }
+        onComplete: () => { this.closeKeyVaultSheet(); this.load(); }
       })
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
@@ -1518,13 +1592,14 @@ export struct KeyVaultPage {
         .margin({ bottom: 14 }).width('100%')
       SshKeyManagerSheet({
         sshKey: this.sheetKey,
-        onChange: (updated: SshKey) => { this.onKeyManagerChange(updated); },
+        viewportHeight: this.pageViewportHeight,
+        onChange: (updated: SshKey): boolean => this.onKeyManagerChange(updated),
         onDelete: (keyId: string) => { this.onKeyManagerDelete(keyId); },
         onInstallToHost: (key: SshKey) => {
           this.sheetKey = key; this.sheetMode = 3;
         },
-        onManagePassphrase: (key: SshKey) => {
-          this.onKeyManagerPassphrase(key);
+        onManagePassphrase: (key: SshKey, remove: boolean) => {
+          this.onKeyManagerPassphrase(key, remove);
         }
       })
     }
@@ -1539,7 +1614,7 @@ export struct KeyVaultPage {
   // ==================== 表单辅助 ====================
   @Builder _tabBtn(label: string, mode: number) {
     Text(label).fontSize(13)
-      .fontColor(this.formMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.formMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontWeight(this.formMode === mode ? FontWeight.Medium : FontWeight.Normal)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
       .borderRadius(8).backgroundColor(this.formMode === mode ? this.accentColor : this.pal().surface)
@@ -1547,12 +1622,13 @@ export struct KeyVaultPage {
       .onClick(() => { this.formMode = mode; })
   }
 
-  @Builder _f(l: string, h: string, v: string, cb: (v: string) => void) {
+  /** One object argument: a @Builder refreshes it when the value changes in code (plain values do not). */
+  @Builder _f(args: KvFormFieldArgs) {
     Column() {
-      Text(l).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
-      TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+      Text(args.label).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
+      TextInput({ placeholder: args.hint, text: args.value }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
-        .fontSize(13).padding({ left: 10, right: 10 }).onChange(cb)
+        .fontSize(13).padding({ left: 10, right: 10 }).onChange(args.onChange)
     }.width('100%').margin({ bottom: 10 })
   }
 }

@@ -34,3 +34,12 @@ GPL-3.0-only 许可、原始 SVG 哈希
 
 签名证书、口令、AGConnect secret 与用户数据不是对应源码的一部分；
 非秘密配置结构和构建说明必须包含在源码归档中。
+
+Debug USB FIDO 能力探测使用 libfido2 1.17.0 与 libcbor 0.14.0。
+分发包含此探测的 Debug 包时，同时提供
+`docs/compliance/FIDO2_DEPENDENCIES.lock.json`、其中校验过的两个上游源码归档、
+`patches/libfido2-ohos/`、`scripts/build_fido2_ohos.py`、
+`docs/compliance/FIDO2_OHOS_PROVENANCE.md` 及
+`libs/fido2-ohos/*/licenses/` 中的完整版权/许可文本。
+源码下载地址与 SHA-256 以 lock 为准，不把上游原版当作已应用补丁的构建源码。
+Release 不链接这两个库，仍需保留仓库所分发静态库的来源、许可和哈希。

@@ -67,14 +67,14 @@ function hostRecord(
     fieldVersions: { 'displayName': syncVersion }
   };
   value.payload = moonlightPayloadWithMeta({
-    schemaVersion: 1,
-    serverUuid: 'server-' + id,
-    displayName: 'Gaming PC',
-    addresses: [{ host: '192.0.2.30', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.30|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1,
+    'serverUuid': 'server-' + id,
+    'displayName': 'Gaming PC',
+    'addresses': [{ 'host': '192.0.2.30', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.30|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, meta, 'host').canonical;
   value.syncVersion = syncVersion;
   value.resetEpoch = resetEpoch;
@@ -92,12 +92,12 @@ function trustRecord(): MoonlightRecord {
   value.ownerId = 'host-a';
   value.ownerType = 'host';
   value.payload = moonlightPayloadWithMeta({
-    schemaVersion: 1,
-    hostId: 'host-a',
-    serverUuid: 'server-host-a',
-    serverCertificateSha256: 'a'.repeat(64),
-    pairingGeneration: 1,
-    candidateObservedAt: 101
+    'schemaVersion': 1,
+    'hostId': 'host-a',
+    'serverUuid': 'server-host-a',
+    'serverCertificateSha256': 'a'.repeat(64),
+    'pairingGeneration': 1,
+    'candidateObservedAt': 101
   }, {
     mutationId: 'mutation-trust-a',
     originId: 'origin-owner-a',

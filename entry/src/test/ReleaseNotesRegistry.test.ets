@@ -12,10 +12,38 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('describes_the_current_1_1_5_1_release_in_exactly_fourteen_pages', 0, (): void => {
+    it('lists_the_1_2_0_changes_led_by_the_free_pro_trial', 0, (): void => {
+      expect(CURRENT_RELEASE_VERSION).assertEqual('1.2.0');
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      expect(pages.length).assertEqual(8);
+      expect(currentReleasePageCount()).assertEqual(8);
+      expect(pages[0].id).assertEqual('release-pro-trial');
+      expect(pages[0].tag).assertEqual('免费试用');
+      expect(containsPage(pages, 'release-ai-assistant')).assertTrue();
+      expect(containsPage(pages, 'release-ai-voice')).assertTrue();
+      expect(containsPage(pages, 'release-ai-session')).assertTrue();
+      expect(containsPage(pages, 'release-ai-feedback')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('release-1-1-6-summary');
+      pages.forEach((page: ReleaseNotePage): void => { expect((page.tag ?? '').length > 0).assertTrue(); });
+    });
+
+    it('keeps_the_1_1_6_changes_with_pro_only_as_a_preview', 0, (): void => {
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion('1.1.6');
       expect(pages.length).assertEqual(14);
-      expect(currentReleasePageCount()).assertEqual(pages.length);
+      expect(containsPage(pages, 'release-portrait-sidebar')).assertTrue();
+      expect(containsPage(pages, 'release-tap-keyboard')).assertTrue();
+      expect(containsPage(pages, 'release-rdp-cert-preflight')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('release-pro-preview');
+      expect(containsPage(pages, 'release-rdp-file-transfer')).assertTrue();
+      expect(containsPage(pages, 'release-vnc-monitors')).assertTrue();
+      const pro: ReleaseNotePage | undefined = pages.find((page: ReleaseNotePage): boolean => page.id === 'release-pro-preview');
+      expect(pro !== undefined && pro.tag === '即将推出').assertTrue();
+      pages.forEach((page: ReleaseNotePage): void => { expect((page.tag ?? '').length > 0).assertTrue(); });
+    });
+
+    it('keeps_the_1_1_5_1_release_in_exactly_fourteen_pages', 0, (): void => {
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion('1.1.5.1');
+      expect(pages.length).assertEqual(14);
       expect(pages.length <= 14).assertTrue();
       expect(containsPage(pages, 'release-1-1-5-1')).assertTrue();
       expect(containsPage(pages, 'release-flip-fallback-diagnostics')).assertTrue();
@@ -40,7 +68,7 @@ export default function releaseNotesRegistryTest(): void {
       let currentVersionPages: number = 0;
       pages.forEach((page: ReleaseNotePage): void => {
         const content: string = page.title + page.desc;
-        if (content.indexOf(CURRENT_RELEASE_VERSION) >= 0) { currentVersionPages += 1; }
+        if (content.indexOf('1.1.5.1') >= 0) { currentVersionPages += 1; }
       });
       expect(currentVersionPages).assertEqual(1);
     });
@@ -77,7 +105,7 @@ export default function releaseNotesRegistryTest(): void {
     });
 
     it('does_not_advertise_unverified_or_removed_features', 0, (): void => {
-      const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion('1.1.5.1');
       pages.forEach((page: ReleaseNotePage): void => {
         const content = page.title + page.desc;
         expect(content.indexOf('收藏')).assertEqual(-1);

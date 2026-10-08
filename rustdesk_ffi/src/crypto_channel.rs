@@ -69,12 +69,44 @@ impl CryptoChannel {
         }
     }
 
+    /// Streaming send() confirms queue admission, not a completed socket write.
+    pub(crate) fn sends_are_queued(&self) -> bool {
+        self.streaming_writer.is_some()
+    }
+
+    /// A timed-out receive may have consumed only part of a wire frame. File
+    /// uploads must drain that frame before sending more data or claiming the
+    /// sender has completed; the next bytes may be a revocation/error.
+    pub(crate) fn buffered_receive_bytes(&self) -> usize {
+        self.rx_buffer.len()
+    }
+
     /// 发送加密帧。nonce 仅在 TCP 写入成功后递增。
     pub fn send(&mut self, plaintext: &[u8]) -> io::Result<()> {
         if let Some(writer) = self.streaming_writer.as_ref() {
             return writer.enqueue_control(plaintext);
         }
         self.send_direct(plaintext)
+    }
+
+    /// Carry the receipt into the actual single socket writer; enqueue is not written.
+    pub(crate) fn send_with_publication(
+        &mut self,
+        plaintext: &[u8],
+        receipt: crate::clipboard_publication::PublicationToken,
+    ) -> io::Result<()> {
+        if let Some(writer) = self.streaming_writer.as_ref() {
+            return writer.enqueue_control_with_receipt(plaintext, Some(receipt));
+        }
+        if !receipt.begin_write() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "clipboard publication expired",
+            ));
+        }
+        self.send_direct(plaintext)?;
+        receipt.written();
+        Ok(())
     }
 
     /// Send a streaming acknowledgement without allowing it to delay input.
@@ -338,8 +370,13 @@ impl CryptoWriter {
     }
 }
 
+struct QueuedWrite {
+    bytes: Vec<u8>,
+    publication: Option<crate::clipboard_publication::PublicationToken>,
+}
+impl QueuedWrite { fn plain(bytes: Vec<u8>) -> Self { Self { bytes, publication: None } } }
 struct StreamingWriterState {
-    control: VecDeque<Vec<u8>>,
+    control: VecDeque<QueuedWrite>,
     ack_payload: Option<Vec<u8>>,
     pending_acks: u64,
     controls_since_ack: usize,
@@ -371,11 +408,12 @@ impl StreamingWriterShared {
         if let Ok(mut state) = self.state.lock() {
             state.error = Some(error.to_string());
             state.closed = true;
+            state.control.clear();
         }
         self.wake.notify_all();
     }
 
-    fn take_next(&self) -> Option<Vec<u8>> {
+    fn take_next(&self) -> Option<QueuedWrite> {
         let mut state = self.state.lock().ok()?;
         loop {
             // Every video_received message returns one encoder credit to the
@@ -386,7 +424,7 @@ impl StreamingWriterShared {
                 let payload = take_ack(&mut state)?;
                 drop(state);
                 self.wake.notify_all();
-                return Some(payload);
+                return Some(QueuedWrite::plain(payload));
             }
             if let Some(payload) = state.control.pop_front() {
                 state.controls_since_ack = state.controls_since_ack.saturating_add(1);
@@ -398,7 +436,7 @@ impl StreamingWriterShared {
                 let payload = take_ack(&mut state)?;
                 drop(state);
                 self.wake.notify_all();
-                return Some(payload);
+                return Some(QueuedWrite::plain(payload));
             }
             if state.closed {
                 return None;
@@ -463,10 +501,12 @@ impl StreamingWriter {
                 tx_nonce,
             };
             while let Some(payload) = thread_shared.take_next() {
-                if let Err(error) = writer.send(&payload) {
+                if payload.publication.as_ref().is_some_and(|receipt| !receipt.begin_write()) { continue; }
+                if let Err(error) = writer.send(&payload.bytes) {
                     thread_shared.set_error(error);
                     break;
                 }
+                if let Some(receipt) = &payload.publication { receipt.written(); }
             }
         });
         Ok(Self {
@@ -477,12 +517,16 @@ impl StreamingWriter {
     }
 
     fn enqueue_control(&self, plaintext: &[u8]) -> io::Result<()> {
+        self.enqueue_control_with_receipt(plaintext, None)
+    }
+    fn enqueue_control_with_receipt(&self, plaintext: &[u8], receipt: Option<crate::clipboard_publication::PublicationToken>) -> io::Result<()> {
         let mut state = self
             .shared
             .state
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "streaming writer poisoned"))?;
         loop {
+            if receipt.as_ref().is_some_and(|r| !r.pending()) { return Err(io::Error::new(io::ErrorKind::Interrupted, "clipboard publication expired")); }
             if let Some(error) = state.error.as_ref() {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, error.clone()));
             }
@@ -493,7 +537,8 @@ impl StreamingWriter {
                 ));
             }
             if state.control.len() < STREAMING_CONTROL_QUEUE_CAPACITY {
-                state.control.push_back(plaintext.to_vec());
+                if receipt.as_ref().is_some_and(|r| !r.pending()) { return Err(io::Error::new(io::ErrorKind::Interrupted, "clipboard publication expired")); }
+                state.control.push_back(QueuedWrite { bytes: plaintext.to_vec(), publication: receipt });
                 drop(state);
                 self.shared.wake.notify_one();
                 return Ok(());
@@ -818,16 +863,16 @@ mod tests {
         {
             let state = shared.state.lock().unwrap();
             assert_eq!(
-                state.control.front().map(Vec::as_slice),
+                state.control.front().map(|p| p.bytes.as_slice()),
                 Some(b"mouse-control".as_slice())
             );
             assert_eq!(state.ack_payload.as_deref(), Some(b"video-ack".as_slice()));
             assert_eq!(state.pending_acks, 5);
         }
 
-        assert_eq!(shared.take_next().unwrap(), b"mouse-control");
+        assert_eq!(shared.take_next().unwrap().bytes, b"mouse-control");
         for _ in 0..5 {
-            assert_eq!(shared.take_next().unwrap(), b"video-ack");
+            assert_eq!(shared.take_next().unwrap().bytes, b"video-ack");
         }
         let state = shared.state.lock().unwrap();
         assert_eq!(state.pending_acks, 0);
@@ -852,7 +897,7 @@ mod tests {
 
         let mut emitted = Vec::new();
         for _ in 0..=STREAMING_ACK_AFTER_CONTROLS {
-            emitted.push(shared.take_next().expect("queued payload"));
+            emitted.push(shared.take_next().expect("queued payload").bytes);
         }
         assert!(emitted[..STREAMING_ACK_AFTER_CONTROLS]
             .iter()
@@ -872,7 +917,7 @@ mod tests {
             let mut state = shared.state.lock().unwrap();
             state
                 .control
-                .extend((0..STREAMING_CONTROL_QUEUE_CAPACITY).map(|index| vec![index as u8]));
+                .extend((0..STREAMING_CONTROL_QUEUE_CAPACITY).map(|index| QueuedWrite::plain(vec![index as u8])));
         }
 
         let consumer_shared = Arc::clone(&shared);
@@ -884,6 +929,52 @@ mod tests {
             .enqueue_control(b"after-transient-pressure")
             .expect("writer should wait for one queue slot");
         consumer.join().unwrap();
+    }
+
+    #[test]
+    fn clipboard_publication_single_writer_records_actual_socket_write() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            assert_eq!(wire::read_frame(&mut socket).unwrap(), b"clipboard-frame");
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        let mut channel = CryptoChannel::new_plain(socket);
+        channel.start_streaming_writer().unwrap();
+        let mut publications = crate::clipboard_publication::Publications::default();
+        let (id, receipt) = publications.reserve().unwrap();
+        assert_eq!(publications.state(id, false), 1);
+        channel
+            .send_with_publication(b"clipboard-frame", receipt)
+            .unwrap();
+        peer.join().unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(1);
+        while publications.state(id, false) == 1 && std::time::Instant::now() < until {
+            thread::yield_now();
+        }
+        assert_eq!(publications.state(id, false), 2);
+    }
+
+    #[test]
+    fn clipboard_publication_crypto_enqueue_does_not_claim_written() {
+        let shared = Arc::new(StreamingWriterShared::new());
+        let writer = StreamingWriter {
+            shared: shared.clone(),
+            stop_stream: None,
+            join: None,
+        };
+        let mut publications = crate::clipboard_publication::Publications::default();
+        let (id, receipt) = publications.reserve().unwrap();
+        writer
+            .enqueue_control_with_receipt(b"clipboard", Some(receipt))
+            .unwrap();
+        assert_eq!(publications.state(id, false), 1);
+        shared.set_error(io::Error::new(io::ErrorKind::BrokenPipe, "fixture"));
+        assert_eq!(publications.state(id, false), 3);
     }
 
     fn encode_frame(payload: &[u8]) -> Vec<u8> {

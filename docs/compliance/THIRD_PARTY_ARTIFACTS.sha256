@@ -443,3 +443,7 @@ c0ef395dd701b9f30defc9ae94ba2333c0cf7cdaa7108f7fb1b9300241f1a6aa *entry/src/main
 3a71fa2dc671bb41caa96a25c12f7201fd5224727b173ee77de69592a39521db *entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Video.h
 8c84109789896a34934f7a775bfbc0023c21e027a0f919c2c3d3e0b88f7442c4 *entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/VideoDepacketizer.c
 7e1e3170ace7a96d9e61743dde9b8a60dc72c1fb2ffda8ba79f9fd505743d498 *entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/VideoStream.c
+aa052467bc785e35bfcb637c0f8b406f5a770661627e81eb8926d37f6d9dd6a3 *libs/fido2-ohos/arm64-v8a/lib/libcbor.a
+97e4a07f8b4bec26aca25290df654dadc2c9b4ec7520e80f7bd893003a8db194 *libs/fido2-ohos/arm64-v8a/lib/libfido2.a
+6c30e99c846951cc8e211a20a124d7a9d8a7e06a3f762eef494d8301fadf20d1 *libs/fido2-ohos/x86_64/lib/libcbor.a
+3d6631f8bcf28917c675d589b04f745b98115e6b04a6b13472de24b82bcc4303 *libs/fido2-ohos/x86_64/lib/libfido2.a

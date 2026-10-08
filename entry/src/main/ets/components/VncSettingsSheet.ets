@@ -1,4 +1,6 @@
 import { Binding, promptAction, UIUtils } from '@kit.ArkUI';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { DataCrypto } from '../services/DataCrypto';
 import { VncSettingsService } from '../services/VncSettingsService';
@@ -44,6 +46,8 @@ import { VNC_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 export struct VncSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** 设置 → 个性化 → 全新视觉: plain wording, 44vp choices and fields, 12vp descriptions. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheelPreference: boolean = false;
   @Prop mode: number = SETTINGS_SHEET_VNC_CONNECTION;
   onClose: () => void = (): void => {};
@@ -252,11 +256,11 @@ export struct VncSettingsSheet {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.needsDangerousConfirmation(needsPlaintextConfirmation) ? this.pal().danger : this.accentColor }]
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
+        // 取消 keeps every edit in the draft so the user can change the risky one and save again.
         if (dialogResult['index'] === 1) {
           void this.persistSettings();
         }
-        else { this.load(); }
-      });
+      }).catch((_err: Error): void => { });
       return;
     }
     void this.persistSettings();
@@ -313,6 +317,24 @@ export struct VncSettingsSheet {
   }
 
   private subtitle(): string {
+    return settingsVisualIsModern(this.visualStyle) ? this.plainSubtitle() : this.classicSubtitle();
+  }
+
+  /** 全新视觉: what each sheet is for, without internal names (owner, remotehosts, native). */
+  private plainSubtitle(): string {
+    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '连接 VNC 主机时默认使用的方式和端口'; }
+    if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '连接、认证和等待第一帧画面的时间上限'; }
+    if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '远程画面在本机的缩放方式和画质'; }
+    if (this.mode === SETTINGS_SHEET_VNC_INPUT) { return '鼠标与键盘默认可用，可按需切换只读'; }
+    if (this.mode === SETTINGS_SHEET_VNC_PERFORMANCE) { return '连接时显示帧率、送显和卡顿情况'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) { return '只控制 VNC 的文本剪贴板'; }
+    if (this.mode === SETTINGS_SHEET_VNC_SECURITY) { return '连接时对加密的要求'; }
+    if (this.mode === SETTINGS_SHEET_VNC_TRUST) { return '已信任的 VNC 服务器证书和指纹'; }
+    if (this.mode === SETTINGS_SHEET_VNC_HOSTS) { return '管理保存的 VNC 主机'; }
+    return '管理 VNC 网关（Repeater）';
+  }
+
+  private classicSubtitle(): string {
     if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return 'VNC 独立传输与默认端口'; }
     if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '只影响 VNC 会话，不读取其他协议的超时'; }
     if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '本地缩放与 native 实际画面能力'; }
@@ -325,21 +347,39 @@ export struct VncSettingsSheet {
     return 'VNC Gateway 与 RustDesk 中继分属不同 owner';
   }
 
-  @Builder private field(label: string, placeholder: string, value: string, onChange: (value: string) => void) {
+  /** `problem` is read while rendering, so its hint follows the typed text. */
+  @Builder private field(label: string, placeholder: string, value: string, onChange: (value: string) => void,
+    numeric: boolean = false, problem: () => string = (): string => '') {
     Column() {
       Text(label).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
-      TextInput({ placeholder, text: value }).height(40).fontSize(13)
+      TextInput({ placeholder, text: value }).height(settingsVisualIsModern(this.visualStyle) ? 44 : 40).fontSize(13)
+        .type(numeric ? InputType.Number : InputType.Normal)
         .backgroundColor(this.pal().surface).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).borderRadius(9).padding({ left: 11, right: 11 })
         .onChange(onChange)
+      if (problem() !== '') {
+        Text(problem()).fontSize(11).fontColor(this.pal().danger).margin({ top: 4 }).width('100%')
+      }
     }.width('100%').margin({ bottom: 10 })
+  }
+
+  private portProblem(): string {
+    const value: number = Number(this.defaultPortText);
+    return this.defaultPortText.trim() === '' || !Number.isInteger(value) || value < 1 || value > 65535 ?
+      '端口需在 1–65535 之间' : '';
+  }
+
+  private timeoutProblem(text: string): string {
+    const value: number = Number(text);
+    return text.trim() === '' || !Number.isFinite(value) || value < 1000 ? '不能小于 1000 毫秒' : '';
   }
 
   @Builder private choice(title: string, selected: Binding<boolean>, onClick: () => void,
     marginLeft: number = 0) {
-    Button(title).layoutWeight(1).height(36).fontSize(12).borderRadius(9)
+    Button(title).layoutWeight(1).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
+      .fontSize(settingsVisualIsModern(this.visualStyle) ? 13 : 12).borderRadius(9)
       .backgroundColor(selected.value ? this.accentColor : this.pal().surface)
-      .fontColor(selected.value ? Color.White : this.pal().text2)
+      .fontColor(selected.value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .margin({ left: marginLeft }).onClick(onClick)
   }
 
@@ -347,10 +387,11 @@ export struct VncSettingsSheet {
     Row() {
       Column() {
         Text(title).fontSize(14).fontColor(this.pal().text)
-        Text(detail).fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
+        Text(detail).fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: value }).selectedColor(this.accentColor)
-        .onChange(onChange).scale({ x: 0.86, y: 0.86 })
+        .onChange(onChange)
+        .scale({ x: settingsVisualIsModern(this.visualStyle) ? 1 : 0.86, y: settingsVisualIsModern(this.visualStyle) ? 1 : 0.86 })
     }.width('100%').padding({ top: 8, bottom: 8 })
   }
 
@@ -362,29 +403,33 @@ export struct VncSettingsSheet {
           (): boolean => this.defaultTransport === 'direct_tcp'), (): void => {
           this.defaultTransport = 'direct_tcp'; this.markDirty();
         })
-        this.choice('Repeater mode12', UIUtils.makeBinding<boolean>(
+        this.choice(settingsVisualIsModern(this.visualStyle) ? 'Repeater' : 'Repeater mode12', UIUtils.makeBinding<boolean>(
           (): boolean => this.defaultTransport === 'ultravnc_repeater'), (): void => {
           this.defaultTransport = 'ultravnc_repeater'; this.markDirty();
         }, 8)
       }.width('100%').margin({ bottom: 12 })
       this.field('默认端口', '5900', this.defaultPortText, (value: string): void => {
         this.defaultPortText = value; this.markDirty();
-      })
+      }, true, (): string => this.portProblem())
       if (this.defaultTransport === 'ultravnc_repeater') {
         this.defaultGatewayChoices()
       }
-      Text('WebSocket Gateway 和 SSH tunnel 仍处于 fail-closed，部署并验证服务端契约后才会开放。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 2 })
+      Text(settingsVisualIsModern(this.visualStyle) ? 'WebSocket 网关和 SSH 隧道暂未开放，服务端就绪后会提供。' :
+        'WebSocket Gateway 和 SSH tunnel 仍处于 fail-closed，部署并验证服务端契约后才会开放。')
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ top: 2 })
     }.width('100%')
   }
 
   @Builder private defaultGatewayChoices() {
     Column() {
-      Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 7 })
+      Text(settingsVisualIsModern(this.visualStyle) ? '默认网关' : '默认 Gateway').fontSize(12).fontColor(this.pal().text3)
+        .margin({ top: 2, bottom: 7 })
       if (this.selectableGateways().length === 0) {
-        Text('当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
-          .fontSize(11).fontColor(this.pal().danger).lineHeight(17).margin({ bottom: 8 })
-        Button('打开 Gateway 管理').width('100%').height(38).borderRadius(9)
+        Text(settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的网关，请先添加并启用。' :
+          '当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
+          .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(this.pal().danger).lineHeight(17)
+          .margin({ bottom: 8 })
+        Button(settingsVisualIsModern(this.visualStyle) ? '打开网关管理' : '打开 Gateway 管理').width('100%').height(settingsVisualIsModern(this.visualStyle) ? 44 : 38).borderRadius(9)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .onClick((): void => { this.onOpenGatewayManager(); })
       } else {
@@ -393,8 +438,8 @@ export struct VncSettingsSheet {
             Column() {
               Text(gateway.label === '' ? gateway.host : gateway.label)
                 .fontSize(13).fontColor(this.pal().text)
-              Text(gateway.host + ':' + gateway.port.toString() + ' · mode12')
-                .fontSize(10).fontColor(this.pal().text3).margin({ top: 2 })
+              Text(gateway.host + ':' + gateway.port.toString() + (settingsVisualIsModern(this.visualStyle) ? '' : ' · mode12'))
+                .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 10).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).margin({ top: 2 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             if (this.defaultGatewayId === gateway.id) {
               SymbolGlyph($r('sys.symbol.checkmark')).fontSize(17).fontColor([this.accentColor])
@@ -415,15 +460,15 @@ export struct VncSettingsSheet {
     Column() {
       this.field('连接超时（ms）', '10000', this.connectTimeoutText, (value: string): void => {
         this.connectTimeoutText = value; this.markDirty();
-      })
+      }, true, (): string => this.timeoutProblem(this.connectTimeoutText))
       this.field('认证超时（ms）', '15000', this.authTimeoutText, (value: string): void => {
         this.authTimeoutText = value; this.markDirty();
-      })
+      }, true, (): string => this.timeoutProblem(this.authTimeoutText))
       this.field('首帧超时（ms）', '15000', this.firstFrameTimeoutText, (value: string): void => {
         this.firstFrameTimeoutText = value; this.markDirty();
-      })
+      }, true, (): string => this.timeoutProblem(this.firstFrameTimeoutText))
       Text('最小值为 1000ms。连接失败只结束当前 VNC 会话，不改变其他协议的重试策略。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).margin({ bottom: 12 })
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).margin({ bottom: 12 })
     }.width('100%')
   }
 
@@ -466,14 +511,14 @@ export struct VncSettingsSheet {
         Column() {
           Text('远端分辨率').fontSize(13).fontColor(this.pal().text2)
           Text('连接后由 VNC 服务器报告，实际值显示在性能看板')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+            .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 10).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Text('自动').fontSize(12).fontColor(this.pal().text3)
           .padding({ left: 12, right: 12, top: 7, bottom: 7 })
           .borderRadius(8).backgroundColor(this.pal().surface)
       }.width('100%').margin({ bottom: 8 })
       Text('macOS 标准 VNC 会报告当前远端分辨率，但不能由 Viewer 强制改变。请在 Mac“系统设置 → 显示器”中调整远端分辨率。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
 
       Text('画质预设').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
@@ -490,8 +535,12 @@ export struct VncSettingsSheet {
           this.imageQualityPreset = 'quality'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
-      Text('色深为“自动”时，极速和 Retina 级均衡会优先使用 8 位色；自动或显式 8 位连接 RFB 3.3 服务端（包括 macOS 屏幕共享）时会回退到兼容的 16 位色，避免首帧断连。质量或显式 16/32 位保持原画质。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 10 })
+      Text(settingsVisualIsModern(this.visualStyle) ?
+        '色深选「自动」时，极速和均衡档优先用 8 位色；连接较老的服务端（包括 macOS 屏幕共享）会自动改用 16 位色，避免连不上。画质档和手动选的 16/32 位保持原样。' :
+        '色深为“自动”时，极速和 Retina 级均衡会优先使用 8 位色；自动或显式 8 位连接 RFB 3.3 服务端（包括 macOS 屏幕共享）时会回退到兼容的 16 位色，避免首帧断连。质量或显式 16/32 位保持原画质。')
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11)
+        .fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3)
+        .lineHeight(18).width('100%').margin({ bottom: 10 })
 
       Text('编码偏好').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
@@ -509,7 +558,7 @@ export struct VncSettingsSheet {
         }, 6)
       }.width('100%').margin({ bottom: 10 })
       Text('自动模式优先请求 ZRLE，并在服务器不支持时自动回退 RAW/CopyRect；RAW 适合诊断兼容问题。Tight 尚未开放。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
 
       Text('色深').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
@@ -593,7 +642,7 @@ export struct VncSettingsSheet {
         }, 6)
       }.width('100%').margin({ bottom: 10 })
       Text('服务器没有下发光标形状时，“隐藏”会安全回退为圆点，避免鼠标位置完全不可见。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 10 })
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 10 })
 
       Row() {
         Text('触控板速度').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
@@ -605,7 +654,7 @@ export struct VncSettingsSheet {
           this.touchpadSpeed = Math.round(value); this.markDirty();
         })
         .width('100%').margin({ bottom: 8 })
-      this.toggle('反转滚轮方向', '与“显示与交互 > 远程滚轮方向”中的 VNC 共用', this.reverseWheel,
+      this.toggle('反转滚轮方向', '与“显示与交互 > 远程滚轮”中的 VNC 共用；滚轮速度也在那里调', this.reverseWheel,
         (value: boolean): void => { this.reverseWheel = value; this.markDirty(); })
       this.toggle('交换左右键', '左键与右键互换，只作用于 VNC', this.swapMouseButtons,
         (value: boolean): void => { this.swapMouseButtons = value; this.markDirty(); })
@@ -645,16 +694,17 @@ export struct VncSettingsSheet {
         }, 6)
       }.width('100%').margin({ bottom: 10 })
       Text('性能看板使用 VNC 独立开关和采样频率，不读取 RustDesk Pro 看板设置。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
     }.width('100%')
   }
 
   @Builder private clipboardContent() {
     Column() {
-      this.toggle('文本剪贴板', '在 RFB 剪贴板能力可用时同步纯文本，默认关闭', this.clipboardEnabled,
+      this.toggle('文本剪贴板', settingsVisualIsModern(this.visualStyle) ? '服务器支持剪贴板时同步纯文本，默认关闭' :
+        '在 RFB 剪贴板能力可用时同步纯文本，默认关闭', this.clipboardEnabled,
         (value: boolean): void => { this.clipboardEnabled = value; this.markDirty(); })
       Text('该开关不启用文件粘贴，不读取 RustDesk 或 RDP 的剪贴板设置。服务器不支持剪贴板时会保持关闭。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 8, bottom: 14 })
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ top: 8, bottom: 14 })
     }.width('100%')
   }
 
@@ -690,23 +740,28 @@ export struct VncSettingsSheet {
       Text('VNC TLS 证书信任由“数据安全”中的统一管理器维护。云恢复记录不会自动转为本机信任。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
       Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { this.onOpenTrustManager(); })
-      Text('同一管理器也可从主设置“数据安全”进入；不会创建第二份可变 trust 列表。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 10 })
+      Text(settingsVisualIsModern(this.visualStyle) ? '也可以从设置里的“数据安全”打开同一个管理器。' :
+        '同一管理器也可从主设置“数据安全”进入；不会创建第二份可变 trust 列表。')
+        .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ top: 10 })
     }.width('100%')
   }
 
   @Builder private directoryContent(hosts: boolean) {
     Column() {
-      Text(hosts ? '主机编辑、删除和连接仍由 VNC host owner 管理。' :
-        'Gateway 编辑、删除和连通性测试统一放在第三页中继服务器目录。')
+      Text(settingsVisualIsModern(this.visualStyle) ?
+        (hosts ? '在 VNC 主机目录里添加、编辑、删除和连接主机。' : '在「中继服务器」页添加、编辑网关并测试连通性。') :
+        (hosts ? '主机编辑、删除和连接仍由 VNC host owner 管理。' :
+          'Gateway 编辑、删除和连通性测试统一放在第三页中继服务器目录。'))
         .fontSize(13).fontColor(this.pal().text2).lineHeight(20).width('100%').margin({ bottom: 14 })
       Button(hosts ? '打开 VNC 主机目录' : '打开中继服务器目录').width('100%').height(44)
-        .borderRadius(11).backgroundColor(this.accentColor).fontColor(Color.White)
+        .borderRadius(11).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { if (hosts) { this.onOpenHostManager(); } else { this.onOpenGatewayManager(); } })
-      Text(hosts ? '不会写入 remotehosts' : '不会写入 rustdeskrelays；卡片会标出 VNC Gateway')
-        .fontSize(11).fontColor(this.pal().text3).margin({ top: 10 })
+      if (!settingsVisualIsModern(this.visualStyle)) {
+        Text(hosts ? '不会写入 remotehosts' : '不会写入 rustdeskrelays；卡片会标出 VNC Gateway')
+          .fontSize(11).fontColor(this.pal().text3).margin({ top: 10 })
+      }
     }.width('100%')
   }
 
@@ -754,7 +809,7 @@ export struct VncSettingsSheet {
     Button(this.saving ? '保存中…' : '保存')
       .width('100%').height(44).borderRadius(11)
       .backgroundColor(this.dirty && !this.saving ? this.accentColor : this.pal().surface)
-      .fontColor(this.dirty && !this.saving ? Color.White : this.pal().text3)
+      .fontColor(this.dirty && !this.saving ? appUiOnAccentText(this.accentColor) : this.pal().text3)
       .enabled(this.dirty && !this.saving)
       .onClick((): void => { this.save(); })
   }

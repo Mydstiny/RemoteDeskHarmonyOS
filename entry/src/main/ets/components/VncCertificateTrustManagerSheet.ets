@@ -1,4 +1,5 @@
 import { promptAction } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { VncTrustEndpoint, VncTrustService, VncTrustView } from '../services/VncTrustService';
 import { VncGatewayService } from '../services/VncGatewayService';
@@ -86,11 +87,11 @@ export struct VncCertificateTrustManagerSheet {
   }
 
   private endpointStatusLabel(item: VncTrustDirectoryItem): string {
-    if (item.status === 'orphaned') { return 'owner 已删除/孤立记录'; }
-    if (item.status === 'target_missing') { return 'Gateway 存在 · 无当前 target'; }
-    if (item.status === 'changed') { return 'endpoint 已变化'; }
-    if (item.status === 'ambiguous') { return '多个 target · 请从主机重查'; }
-    return '当前 endpoint 存在';
+    if (item.status === 'orphaned') { return '所属的主机或网关已删除'; }
+    if (item.status === 'target_missing') { return '网关还在，但没有对应的目标电脑'; }
+    if (item.status === 'changed') { return '地址已变化'; }
+    if (item.status === 'ambiguous') { return '对应多台目标电脑 · 请从主机重新检查'; }
+    return '地址未变化';
   }
 
   private transportLabel(value: string): string {
@@ -219,11 +220,11 @@ export struct VncCertificateTrustManagerSheet {
             .fontColor(this.pal().text2).width('100%').margin({ top: 4 })
           Text('Issuer: ' + (item.trust.issuer === '' ? '未知' : item.trust.issuer)).fontSize(11)
             .fontColor(this.pal().text2).width('100%').margin({ top: 4 })
-          Text('Probe 元数据 · CN=' + (item.trust.commonName === '' ? '未知' : item.trust.commonName) +
+          Text('证书信息 · CN=' + (item.trust.commonName === '' ? '未知' : item.trust.commonName) +
             ' · 根信任=' + (item.trust.rootTrusted ? '是' : '否') +
             ' · 名称匹配=' + (item.trust.hostMismatch ? '否' : '是')).fontSize(11)
             .fontColor(this.pal().text2).width('100%').lineHeight(16).margin({ top: 4 })
-          Text('endpoint binding ' + this.redactedFingerprint(item.trust.endpointBindingFingerprint)).fontSize(10)
+          Text('地址绑定 ' + this.redactedFingerprint(item.trust.endpointBindingFingerprint)).fontSize(10)
             .fontColor(this.pal().text3).fontFamily('monospace').width('100%').margin({ top: 4 })
         }.width('100%').padding(10).margin({ top: 8 }).backgroundColor(this.pal().surface).borderRadius(8)
       }
@@ -243,7 +244,7 @@ export struct VncCertificateTrustManagerSheet {
           Text('SHA-256 ' + this.pendingFingerprintSha256).fontSize(10).fontFamily('monospace')
             .fontColor(this.pal().text2).width('100%').lineHeight(16).margin({ top: 6 })
           Button('确认此证书').height(34).fontSize(12).padding({ left: 12, right: 12 })
-            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8)
             .margin({ top: 10 }).onClick((): void => { void this.confirmPendingTrust(); })
         }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
           .margin({ bottom: 10 })
@@ -269,7 +270,7 @@ export struct VncCertificateTrustManagerSheet {
   build() {
     VncSheetScaffold({
       title: 'VNC TLS 证书信任',
-      subtitle: '主机与 Gateway 使用 endpoint-bound 信任记录',
+      subtitle: '每条信任只对确认时的地址有效，地址变了需要重新确认',
       showFooter: false,
       onLeadingAction: (): void => { this.onClose(); },
       contentBuilder: (): void => { this.body(); }

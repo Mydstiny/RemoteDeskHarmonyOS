@@ -8,7 +8,10 @@ source and license files before redistribution.
 |---|---|---|---|
 | RustDesk protocol definitions | rustdesk/rustdesk commit `93d064a9b0eb58ab94db88ff727a877ef773c0d8`, hbb_common gitlink `387603f47cbb15c0d3dc3d67ae3396d3eb707daf`; trailing whitespace removed locally | AGPL-3.0 | `rustdesk_vendor/.../protos` code generation |
 | FreeRDP / WinPR | `freerdp-ohos` public-base gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e` plus the ordered local patch series in `patches/freerdp-ohos/`; effective tree `24a880d801892e3d6f1b8c78534e51eaeca8b0d8`; upstream FreeRDP | Apache-2.0 | RDP protocol/static libraries |
+| FreeRDP MS-RDPEWA client channel | `channels/rdpewa/client` and `channels/rdpewa/common/rdpewa-common.h` copied from the FreeRDP public base `dae8276ac7361b8d14f7b87d41163fe03dbb944e` into `entry/src/main/cpp/rdp/rdpewa/` with RemoteDesk modifications marked in each file header | Apache-2.0 | Debug-only RDP security-key redirection through the session broker |
 | OpenSSL | bundled build inputs/artifacts under `libs/openssl` | Apache-2.0 | TLS and cryptography |
+| libfido2 | Yubico 1.17.0, pinned archive and custom-I/O patch in `docs/compliance/FIDO2_DEPENDENCIES.lock.json` | BSD-2-Clause, ISC, and upstream public-domain compatibility routines; full notices in `libs/fido2-ohos/*/licenses/` | Debug-only USB INIT/GetInfo capability probe and RDP security-key redirection; devices come only from the authorized USBManager owner, never from default HID, NFC, PCSC or Windows Hello access; see `docs/compliance/FIDO2_OHOS_PROVENANCE.md` |
+| libcbor | PJK 0.14.0, pinned archive in `docs/compliance/FIDO2_DEPENDENCIES.lock.json` | MIT; full upstream notice in `libs/fido2-ohos/*/licenses/libcbor-LICENSE.txt` | Debug-only libfido2 CBOR parsing |
 | FFmpeg | 8.1.2 source archive and bundled OHOS artifacts; see `docs/compliance/FFMPEG_OHOS_PROVENANCE.md` | LGPL-2.1-or-later; GPL/non-free components disabled | VP8/VP9/AV1 software decode fallback |
 | libssh2 | bundled source/artifacts; upstream COPYING retained | BSD-3-Clause | SSH/SFTP |
 | Mbed TLS | bundled artifacts under `libs/mbedtls` | Apache-2.0 | cryptography support |
@@ -34,5 +37,29 @@ source and license files before redistribution.
 | TOTP reviewed supplier/logo overrides | Reviewed local assets listed in `officialOverrides` within `totp_brand_manifest.json`; per-asset source, SHA-256 and trademark guidance are authoritative there | 29 reviewed override assets; catalog vectors are labeled separately from official assets; use is limited to supplier identification and remains subject to each brand's trademark rules. |
 <!-- TOTP_BRAND_NOTICE_END -->
 
+<!-- SSH_TERMINAL_FONTS_NOTICE_BEGIN -->
+| SSH terminal fonts | JetBrains Mono, Fira Code, Source Code Pro, IBM Plex Mono, Cascadia Code, Roboto Mono, Inconsolata, Victor Mono, Fira Mono, Geist Mono, Space Mono, Red Hat Mono, Martian Mono, Anonymous Pro, Commit Mono via `@fontsource/*@5.3.0` (Latin, 400/700 woff2, unmodified); see `docs/compliance/SSH_TERMINAL_FONTS_PROVENANCE.md` | OFL-1.1; per-family copyright notices in `entry/src/main/resources/rawfile/ssh-terminal/fonts/*-LICENSE.txt` | Pro SSH terminal skins in the local xterm WebView |
+<!-- SSH_TERMINAL_FONTS_NOTICE_END -->
+
 Artifact hashes are generated in `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`.
 A component with an unknown source, license, or hash is a release blocker.
+
+The independent Pro entitlement server source uses external Node.js/OpenSSL
+host runtimes without redistributing them. Its runtime verification snapshot,
+upstream licenses and deployment boundaries are tracked separately in
+`server/pro-entitlement/SBOM.spdx.json` and `server/pro-entitlement/PROVENANCE.md`;
+these are not additional HAP components.
+
+The AGC server adapter separately locks Huawei Cloud Server SDK 1.0.5 (ISC)
+and its npm dependencies. Per-package versions, archive SHA-512 hashes and
+license notices are in `server/pro-entitlement/agc/SBOM.spdx.json` and
+`server/pro-entitlement/agc/THIRD_PARTY_NOTICES.md`. Installation scripts are
+disabled; the HAP dependency set is unchanged.
+
+The private AGC ZIP separately carries OpenSSL 3.5.8 (Apache-2.0), statically
+linked with musl 1.2.6 (MIT) and the GCC 15.2 runtime (GPL-3.0-or-later WITH
+GCC-exception-3.1). Its binary hash, source archive hash, build image digest,
+build package list and complete notices are in `server/pro-entitlement/agc/pkix/`.
+The build-time fortify-headers 3.0.1 notice (0BSD) is retained there as well.
+Only the manifest and notices are committed; the executable is verified while
+preparing the private deployment package and never added to the HAP.

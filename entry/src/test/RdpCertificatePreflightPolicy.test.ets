@@ -22,13 +22,18 @@ import {
   rdpCertificateLegacyProbeStage,
   rdpCertificatePreflightAllowsRealConnection,
   rdpCertificateRoutePreflightAllowsRealConnection,
+  rdpCertificatePreflightSkipAllowed,
+  rdpCertificatePreflightBypassHintAllowed,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldEnableStandardRdpSecurityOnce,
   shouldUseRdpTlsWithoutNla,
   shouldPersistRdpCertificateTrust,
   shouldRequireRdpCertificateConfirmation,
-  shouldFallbackToNativeRdpConnectionAfterResolverFailure
+  shouldFallbackToNativeRdpConnectionAfterResolverFailure,
+  RDP_CERTIFICATE_UNKNOWN_TRUST_MODE,
+  shouldAllowRdpLegacyTls,
+  rdpLegacyTlsNeedsDecision
 } from '../main/ets/services/RdpCertificatePreflightPolicy';
 
 export default function rdpCertificatePreflightPolicyTest() {
@@ -334,6 +339,28 @@ export default function rdpCertificatePreflightPolicyTest() {
         ['TARGET_CERTIFICATE_RISK'], ['UNTRUSTED_ROOT']).length).assertEqual(2);
     });
 
+    it('limits_preflight_skip_to_direct_rdp_routes', 0, (): void => {
+      expect(rdpCertificatePreflightSkipAllowed(true, 'direct_rdp')).assertTrue();
+      expect(rdpCertificatePreflightSkipAllowed(true, 'transparent_tcp_rdp')).assertTrue();
+      expect(rdpCertificatePreflightSkipAllowed(true, 'microsoft_rd_gateway')).assertFalse();
+      expect(rdpCertificatePreflightSkipAllowed(false, 'direct_rdp')).assertFalse();
+    });
+
+    it('offers_direct_bypass_hint_only_when_target_certificate_is_unavailable', 0, (): void => {
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'direct_rdp', 'transportFailed', 'E-RDP-TARGET-DNS', false)).assertTrue();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'transparent_tcp_rdp', 'unavailable', 'E-RDP-PREFLIGHT-EXCEPTION', false))
+        .assertTrue();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'direct_rdp', 'unavailable', 'E-RDP-TARGET-CERT', true)).assertFalse();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'microsoft_rd_gateway', 'transportFailed', 'E-RDP-TARGET-DNS', false))
+        .assertFalse();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        true, 'direct_rdp', 'transportFailed', 'E-RDP-TARGET-DNS', false)).assertFalse();
+    });
+
     it('standard_security_requires_an_explicit_continue_once', 0, (): void => {
       expect(shouldEnableStandardRdpSecurityOnce(
         false, ['STANDARD_RDP_SECURITY'])).assertFalse();
@@ -411,6 +438,19 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
         -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same',
         'route-old', 'route-current')).assertFalse();
+    });
+
+    it('legacy_tls_needs_the_users_consent', 0, (): void => {
+      const legacy: string[] = ['UNTRUSTED_ROOT', 'LEGACY_TLS'];
+      expect(shouldAllowRdpLegacyTls(legacy, false, false)).assertFalse();
+      expect(shouldAllowRdpLegacyTls(legacy, true, false)).assertTrue();
+      expect(shouldAllowRdpLegacyTls(legacy, false, true)).assertTrue();
+      expect(shouldAllowRdpLegacyTls(['UNTRUSTED_ROOT'], true, true)).assertFalse();
+      expect(rdpLegacyTlsNeedsDecision(legacy, false)).assertTrue();
+      expect(rdpLegacyTlsNeedsDecision(legacy, true)).assertFalse();
+      expect(rdpLegacyTlsNeedsDecision(['UNTRUSTED_ROOT'], false)).assertFalse();
+      expect(rdpCertificateRiskSummary(['LEGACY_TLS']).indexOf('旧版 TLS') >= 0).assertTrue();
+      expect(rdpCertificateWarningMessage('pc', false, false, legacy).indexOf('降低 TLS 安全要求') >= 0).assertTrue();
     });
   });
 }

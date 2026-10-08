@@ -85,14 +85,16 @@ inline const char* PeerPlatformCategoryName(PeerPlatformCategory category) {
  * behavior, not remote operating-system orientation. Our device evidence also
  * shows the same Windows peer label and FlipY producer class can require
  * different treatment on different HarmonyOS PC graphics stacks. Therefore a
- * peer-platform switch is unsafe. Keep the producer contract restricted to
- * identity or a vertical texture-origin correction, then apply explicit local
- * visual/control axes in the renderer. Phone and Pad viewers never sample this
- * desktop compatibility policy.
+ * peer-platform switch is unsafe. Convert NativeImage's GL input basis to the
+ * renderer's top-left coordinate contract, preserving crop and producer axes.
+ * Explicit local visual/control overrides remain separate. Phone and Pad
+ * viewers never sample this desktop compatibility policy. Different producer
+ * implementations can still require the existing user override; a matrix
+ * class alone is not proof of the orientation of its actual pixels.
  */
 inline Render::NativeImagePresentationMode NativeImageModeForPeerPlatform(
     std::string_view /* platform */) {
-    return Render::NativeImagePresentationMode::VerticalFlipProducerTransform;
+    return Render::NativeImagePresentationMode::TopLeftProducerTransform;
 }
 
 } // namespace RustDeskPresentation

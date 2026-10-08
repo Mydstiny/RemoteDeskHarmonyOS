@@ -11,6 +11,7 @@ import {
   SshCommandHostRef,
   SshCommandSessionRef
 } from '../main/ets/services/ssh/command/SshCommandPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 function capabilities(): SshCommandCapabilities {
   return {
@@ -120,15 +121,15 @@ export default function sshCommandPolicyTest(): void {
         pageGeneration: 7, bindingGeneration: 11, hostId: 'host-prod',
         sessionGeneration: 3, workbenchEnabled: true, modalActive: false
       };
-      expect(matchesSshCommandExecutionFence(expected, { ...expected })).assertTrue();
+      expect(matchesSshCommandExecutionFence(expected, withOverrides(expected, {}))).assertTrue();
       expect(matchesSshCommandExecutionFence(expected,
-        { ...expected, hostId: 'host-stage' })).assertFalse();
+        withOverrides(expected, { 'hostId': 'host-stage' }))).assertFalse();
       expect(matchesSshCommandExecutionFence(expected,
-        { ...expected, sessionGeneration: 4 })).assertFalse();
+        withOverrides(expected, { 'sessionGeneration': 4 }))).assertFalse();
       expect(matchesSshCommandExecutionFence(expected,
-        { ...expected, workbenchEnabled: false })).assertFalse();
+        withOverrides(expected, { 'workbenchEnabled': false }))).assertFalse();
       expect(matchesSshCommandExecutionFence(expected,
-        { ...expected, modalActive: true })).assertFalse();
+        withOverrides(expected, { 'modalActive': true }))).assertFalse();
     });
   });
 }

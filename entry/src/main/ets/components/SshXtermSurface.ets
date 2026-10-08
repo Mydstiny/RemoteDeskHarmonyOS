@@ -362,6 +362,9 @@ export struct SshXtermSurface {
   @Prop @Watch('onAppearanceChange') profileBackgroundColor: string = '#0D0D0D';
   @Prop @Watch('onAppearanceChange') profilePalette: string[] = [];
   @Prop @Watch('onAppearanceChange') profileFontFamily: string = 'monospace';
+  // Pro skin colors; empty keeps the terminal defaults (cursor follows the foreground).
+  @Prop @Watch('onAppearanceChange') profileCursorColor: string = '';
+  @Prop @Watch('onAppearanceChange') profileSelectionColor: string = '';
   @Prop @Watch('onAppearanceChange') profileFontWeight: string = 'normal';
   @Prop @Watch('onAppearanceChange') profileCursorStyle: string = 'bar';
   @Prop @Watch('onAppearanceChange') profileCursorBlink: boolean = true;
@@ -370,6 +373,8 @@ export struct SshXtermSurface {
   @Prop profileCopyOnSelect: boolean = false;
   /** Reverse only remote-terminal wheel input; touch dragging remains natural. */
   @Prop @Watch('onAppearanceChange') reverseWheel: boolean = false;
+  /** 设置 › 远程滚轮 › SSH 速度 (percent): xterm's rows per wheel notch. */
+  @Prop @Watch('onAppearanceChange') wheelSpeed: number = 100;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
   /** Low-frequency lifecycle wake; live output is delivered by outputBuffer. */
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
@@ -874,7 +879,10 @@ export struct SshXtermSurface {
       fontSize: normalizedFontSize,
       lineHeight: normalizedLineSpacing,
       fontFamily: this.profileEnabled && this.profileFontFamily !== 'monospace' ?
-        this.profileFontFamily + ', monospace' : 'monospace',
+        (this.profileFontFamily.endsWith('monospace') ? this.profileFontFamily : this.profileFontFamily + ', monospace') :
+        'monospace',
+      cursor: this.profileEnabled ? this.profileCursorColor : '',
+      selection: this.profileEnabled ? this.profileSelectionColor : '',
       fontWeight: this.profileEnabled ? this.profileFontWeight : 'normal',
       foreground: this.profileEnabled ? this.profileForegroundColor : this.terminalFgColor,
       background: this.profileEnabled ? this.profileBackgroundColor : '#0D0D0D',
@@ -884,6 +892,7 @@ export struct SshXtermSurface {
       scrollback: this.profileEnabled ? this.profileScrollback : 10000,
       bellStyle: this.profileEnabled ? this.profileBellStyle : 'none',
       reverseWheel: this.reverseWheel,
+      wheelSpeed: Math.max(0.25, Math.min(4, this.wheelSpeed / 100)),
       bottomAlignSparseContent: this.bottomAlignSparseContent,
       bottomAlignSafeRows: Math.max(0, Math.min(6, Math.floor(this.bottomAlignSafeRows))),
       bottomInsetPx: Math.max(0, Math.min(20, Math.floor(this.bottomInsetPx)))

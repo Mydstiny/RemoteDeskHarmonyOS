@@ -1,3 +1,6 @@
+/** After the app returns to the front or a PiP cycle ends, wait this long before arming the next PiP. */
+export const SSH_PIP_REARM_DELAY_MS: number = 400;
+
 /** Maximum time an explicit page exit waits for the PiP stop callback. */
 export const SSH_PIP_EXIT_GRACE_MS: number = 800;
 

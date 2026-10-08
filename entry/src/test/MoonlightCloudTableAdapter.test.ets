@@ -13,6 +13,7 @@ import {
   normalizeMoonlightCloudRowExact,
   projectMoonlightLocalRowForCloud
 } from '../main/ets/services/CloudTableAdapter';
+import { withoutKey } from './helpers/RecordTestUtils';
 
 function exactCloudRow(): Record<string, string> {
   const row: Record<string, string> = {};
@@ -50,8 +51,7 @@ export default function moonlightCloudTableAdapterTest(): void {
     });
 
     it('rejects_missing_and_unknown_cloud_columns', 0, (): void => {
-      const missing: Record<string, string> = exactCloudRow();
-      delete missing['deletedat'];
+      const missing: Record<string, string> = withoutKey(exactCloudRow(), 'deletedat');
       expect(moonlightCloudRowHasExactColumns(missing)).assertFalse();
       expect(normalizeMoonlightCloudRowExact(missing) === null).assertTrue();
       const extra: Record<string, string> = exactCloudRow();

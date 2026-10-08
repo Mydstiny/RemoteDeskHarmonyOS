@@ -8,7 +8,6 @@
  * make an actual mouse or touchpad unusably slow.
  */
 
-export const VNC_PHYSICAL_MOUSE_MAX_DELTA: number = 8;
 export const VNC_PHYSICAL_TOUCHPAD_SAMPLES_PER_TICK: number = 2;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_DELTA: number = 4;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_NORMALIZED_SAMPLE: number = 4;
@@ -87,21 +86,17 @@ export function shouldTreatPhysicalAxisAsContinuous(sourceIsTouchpad: boolean,
 }
 
 /**
- * Preserve the HarmonyOS user-configured mouse scroll coefficient. The raw
- * degree value already includes `scrollStep`, so multiplying both would apply
- * the preference twice. RFB has no magnitude field: express the coefficient
- * as a bounded number of button-4/5 ticks instead.
+ * One physical mouse notch is one RFB button-4/5 tick (the wire gain and the user's 远程滚轮 speed scale it later).
+ * RFB has no magnitude field, and the server applies its own rows per click.
  */
 export function vncPhysicalMouseWheelDelta(rawDelta: number,
-  scrollStep: number | undefined = undefined): number {
+  _scrollStep: number | undefined = undefined): number {
   if (!Number.isFinite(rawDelta) || rawDelta === 0) {
     return 0;
   }
-  const scrollStepValue: number = scrollStep === undefined ? 0 : scrollStep;
-  const configuredSteps: number = hasPhysicalMouseScrollStep(scrollStep) ?
-    Math.max(1, Math.round(Math.abs(scrollStepValue))) : 1;
-  const steps: number = Math.min(VNC_PHYSICAL_MOUSE_MAX_DELTA, configuredSteps);
-  return rawDelta > 0 ? steps : -steps;
+  // 2026-10-07: one tick per notch. The local scroll step (rows per notch, often 3) multiplied by the VNC wire gain
+  // sent dozens of clicks a notch; the server applies its own rows per click, and 设置 › 远程滚轮 sets the speed.
+  return rawDelta > 0 ? 1 : -1;
 }
 
 /**

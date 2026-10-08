@@ -1,6 +1,7 @@
 /**
  * HostSyncService.ets — 远程主机配置管理 (CloudStore RDB + 端云自动同步)
  */
+import { relayEndpointSignature } from './RelayDirectoryPolicy';
 import { ConnectionHealth, RemoteHost } from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RdpCredential } from '../model/RdpCredential';
@@ -43,6 +44,7 @@ import {
 } from './LanHostAddressPolicy';
 import { KeyVaultService } from './KeyVaultService';
 import { AccountSessionCoordinator } from './AccountSessionCoordinator';
+import { ConnectionJournal } from './ConnectionJournal';
 import {
   hydrateRustDeskPeerTwoFactorHost,
   RUSTDESK_PEER_2FA_BINDING_VERSION,
@@ -715,6 +717,19 @@ export class HostSyncService {
     return this.hosts.get(id);
   }
 
+  /**
+   * The persisted copy of a host for write verification. Device-local LAN
+   * records and a store that is not ready yet have no separate persisted row,
+   * so the in-memory record is returned for them.
+   */
+  readBackHost(id: string): RemoteHost | undefined {
+    const current: RemoteHost | undefined = this.hosts.get(id);
+    if (current === undefined || !this.ready || lanHostUsesLocalOnlyStorage(current)) {
+      return current;
+    }
+    return this.cloud.readBackHostRaw(id);
+  }
+
   addHost(host: RemoteHost): boolean {
     if (!host.id) { host.id = RemoteHost.generateId(); }
     if (!this.prepareHostNetworkEndpoints(host)) { return false; }
@@ -962,6 +977,7 @@ export class HostSyncService {
     if (!host) { return; }
     const next: RemoteHost = host.runtimeClone();
     next.lastConnected = Date.now();
+    ConnectionJournal.connected(hostId, host.label, host.protocol);
     this.persistLocalHostObservation(hostId, next, true);
   }
 
@@ -984,7 +1000,10 @@ export class HostSyncService {
     } else {
       next.lastHealth = ConnectionHealth.BAD;
     }
-    if (markConnected) { next.lastConnected = Date.now(); }
+    if (markConnected) {
+      next.lastConnected = Date.now();
+      ConnectionJournal.connected(hostId, host.label, host.protocol);
+    }
     if (!markConnected && next.lastHealth === host.lastHealth && next.lastLatency === host.lastLatency) {
       return;
     }
@@ -1464,6 +1483,24 @@ export class HostSyncService {
       this.updateRelayResult(relay);
     this.observeRelayCloudSync(result);
     return result.ok;
+  }
+
+  /**
+   * A connection test's result. Only the health fields change, merged into the record as it is now, so an edit
+   * saved while the test ran (a new key, a removed account) is kept.
+   */
+  updateRelayHealth(id: string, status: string, latency: number, checkedAt: number,
+    testedEndpoints: string = ''): boolean {
+    const current: RustDeskRelayConfig | undefined = this.relays.get(id);
+    if (current === undefined) { return false; }
+    // An address saved while the test ran: this result is for the old one.
+    if (testedEndpoints !== '' && testedEndpoints !== relayEndpointSignature(current.idServer, current.idServerPort,
+      current.relayServer, current.relayPort)) { return false; }
+    const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(current.toJSON());
+    next.healthStatus = status;
+    next.healthLatency = latency;
+    next.healthCheckedAt = checkedAt;
+    return this.updateRelay(next);
   }
 
   async updateRelayResultAsync(

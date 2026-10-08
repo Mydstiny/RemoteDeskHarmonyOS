@@ -16,7 +16,7 @@ import {
   moonlightRuntimeReadinessEvents
 } from '../main/ets/services/MoonlightSessionCoordinator';
 import { RemoteProtocol } from '../main/ets/services/RemoteSessionState';
-import { MoonlightSessionStateSnapshot } from '../main/ets/services/MoonlightSessionState';
+import { MoonlightSessionStateSnapshot, MoonlightSessionEventType } from '../main/ets/services/MoonlightSessionState';
 import { defaultMoonlightSettings } from '../main/ets/model/MoonlightModels';
 import {
   encodeMoonlightEffectiveSettings,
@@ -145,7 +145,7 @@ function productRequest(includeSurface: boolean): MoonlightSessionStartRequest {
   return value;
 }
 
-function event(type: MoonlightCoordinatorEvent['type'], generation: number,
+function event(type: MoonlightSessionEventType, generation: number,
   sequence: number, nativeSessionId: number = 0, surfaceId: string = ''):
   MoonlightCoordinatorEvent {
   return {
@@ -875,7 +875,7 @@ export default function moonlightSessionCoordinatorTest(): void {
       registry.resetForTest();
       registry.bindScope('owner-1', 1);
       const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
-      let matching: MoonlightSessionStateSnapshot | null = null;
+      let matching: MoonlightSessionStateSnapshot | null = null as MoonlightSessionStateSnapshot | null;
       let foreignNonNull: boolean = false;
       const unsubscribe = coordinator.subscribeForRoute(
         'owner-1', 1, 'host-1', 'app-1',

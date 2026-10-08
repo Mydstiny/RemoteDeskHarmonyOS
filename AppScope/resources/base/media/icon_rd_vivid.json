@@ -1,0 +1,7 @@
+{
+  "layered-image":
+  {
+    "background" : "$media:icon_rd_vivid_bg",
+    "foreground" : "$media:icon_rd_vivid_fg"
+  }
+}

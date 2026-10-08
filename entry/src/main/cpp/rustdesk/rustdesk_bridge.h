@@ -23,8 +23,27 @@
 #include <optional>
 #include <vector>
 
+// Separate fixed-width ABI: codec preference observed after serialization/write.
+struct RustDeskFfiCodecEvidence {
+    uint32_t version = 1;
+    int32_t requestedPreference = -1;
+    int32_t sentPreference = -1;
+    int32_t wirePreference = -1;
+    uint32_t advertisedMask = 0;
+    int32_t peerEncodingMask = -1;
+    uint32_t lastSendStage = 0;
+    uint32_t reserved = 0;
+    uint64_t loginSends = 0;
+    uint64_t optionSends = 0;
+    uint64_t sendFailures = 0;
+};
+static_assert(sizeof(RustDeskFfiCodecEvidence) == 56);
+static_assert(alignof(RustDeskFfiCodecEvidence) == 8);
+static_assert(offsetof(RustDeskFfiCodecEvidence, loginSends) == 32);
+
 /** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
 struct RustDeskDiagnosticsStats {
+    RustDeskFfiCodecEvidence codecEvidence;
     bool supported = false;
     uint64_t sessionId = 0;
     int latencyMs = -1;
@@ -49,6 +68,14 @@ struct RustDeskDiagnosticsStats {
     uint64_t qualityRequestedGeneration = 0;
     uint64_t qualityAppliedGeneration = 0;
     int qualityUpdateStatus = 0;
+    // The peer's extras (PeerInfo.platform_additions) and the last privacy-mode answer (BackNotification).
+    bool peerInstalled = false;
+    int virtualDisplayImpl = 0; // 0 none, 1 rustdesk_idd, 2 amyuni_idd
+    uint32_t rustdeskVirtualDisplayMask = 0; // bit n: virtual display n (1..4) plugged in
+    int amyuniVirtualDisplayCount = 0;
+    bool privacySupported = false;
+    int privacyState = 0;
+    uint32_t privacyGeneration = 0;
     std::string peerPlatform = "unknown";
     bool remoteInputPermissionKnown = false;
     bool remoteInputAllowed = true;
@@ -98,6 +125,11 @@ struct RustDeskDisplayCapabilities {
     int originalHeight = 0;
     int scaleMilli = 1000;
     uint32_t geometryEpoch = 0;
+    std::string peerVersion;
+    std::string peerPlatform;
+    bool hasDisplayIndex = false;
+    bool hasPermission = false;
+    bool hasVirtualDisplay = false;
     std::vector<RustDeskDisplayResolution> resolutions;
     std::vector<RustDeskDisplayInfo> displays;
 };
@@ -192,6 +224,57 @@ enum class RustDeskMode {
 /**
  * RustDeskBridge — RustDesk 协议适配器
  */
+struct RustDeskRemoteFileEntry {
+    std::string name;
+    uint32_t type = 0;
+    uint64_t size = 0;
+    uint64_t modifiedTime = 0;
+};
+
+struct RustDeskFileClipboardSnapshot {
+    uint64_t revision = 0;
+    uint32_t state = 0;
+    uint32_t capable = 0;
+    uint32_t enabled = 0;
+    uint32_t entryCount = 0;
+    uint32_t diagnosticCode = 0;
+};
+struct RustDeskFileClipboardPublication {
+    uint64_t publicationId = 0;
+    uint32_t state = 0;
+    uint32_t diagnosticCode = 0;
+    uint64_t requestedBytes = 0;
+    uint32_t drained = 0;
+};
+struct RustDeskFileClipboardEntry {
+    std::string name;
+    bool isDirectory = false;
+    uint64_t size = 0;
+    uint64_t modifiedTime = 0;
+};
+struct RustDeskFileClipboardSource {
+    std::string name;
+    int fd = -1;
+    bool isDirectory = false;
+};
+
+struct RustDeskTransferAuthSnapshot {
+    uint64_t transferId = 0;
+    uint64_t challengeId = 0;
+    uint32_t kind = 0;
+    uint32_t state = 0;
+    uint64_t expiresInMs = 0;
+    uint32_t attemptsRemaining = 0;
+    uint32_t diagnosticCode = 0;
+};
+struct RustDeskTransferResult {
+    uint32_t operationKind = 0;
+    uint32_t sourceMetadataAvailable = 0;
+    uint64_t sourceSize = 0;
+    uint64_t sourceModifiedTime = 0;
+    uint32_t remoteOperationAcknowledged = 0;
+};
+
 class RustDeskBridge : public ProtocolAdapter {
 public:
     // The real-core lifetime helpers need the incomplete type while keeping
@@ -227,6 +310,12 @@ public:
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
     bool            setImageQuality(int quality);
+    /** Live privacy mode (Misc.toggle_privacy_mode); the peer's answer shows up in getDiagnostics().privacyState. */
+    bool            togglePrivacyMode(bool on);
+    /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all). */
+    bool            toggleVirtualDisplay(int display, bool on);
+    /** Live codec preference (0 auto … 5 H265) and remote audio. */
+    bool            setStreamOptions(int codec, bool audioEnabled);
     bool            reportVideoPressureForSession(uint64_t sessionId,
                                                   uint64_t generation,
                                                   uint64_t ownerToken,
@@ -248,8 +337,38 @@ public:
     bool changeDisplayResolution(int display, int width, int height);
     bool sendTouchScale(int scale);
     bool sendTouchPan(int phase, int x, int y);
+    void observePhonePresentation(const Render::PhoneFrameIdentity& frame, int textureWidth, int textureHeight);
+    uint64_t phoneStreamEpoch() const;
+    int64_t phoneControl(uint64_t generation, uint64_t ownerToken, int operation, int x, int y, uint64_t streamEpoch);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
+    int64_t sendFileFromFd(const std::string& remotePath, int fd, int conflictPolicy);
+    SessionTransferStatus getTransferStatusById(uint64_t transferId);
+    bool cancelTransfer(uint64_t transferId);
+    bool releaseTransfer(uint64_t transferId);
+    bool configureFileClipboard(bool enabled);
+    RustDeskFileClipboardSnapshot getFileClipboardSnapshot();
+    std::vector<RustDeskFileClipboardEntry> getFileClipboardEntries(uint64_t revision);
+    uint64_t publishFileClipboard(const std::vector<RustDeskFileClipboardSource>& sources);
+    RustDeskFileClipboardPublication getFileClipboardPublication(uint64_t publicationId);
+    bool revokeFileClipboardPublication(uint64_t publicationId);
+    int64_t receiveFileClipboardToFd(uint64_t revision, uint32_t index, int fd);
+    int64_t createRemoteDirectory(const std::string& remotePath);
+    RustDeskTransferAuthSnapshot getTransferAuthentication(uint64_t transferId);
+    bool submitTransferAuthentication(uint64_t transferId, uint64_t challengeId, uint32_t responseKind, const std::string& secret);
+    RustDeskTransferResult getTransferResult(uint64_t transferId);
+    int64_t requestRemoteDirectory(const std::string& remotePath, bool includeHidden = false);
+    int64_t requestRemoteTree(const std::string& remotePath, bool includeHidden);
+    int64_t removeRemotePath(const std::string& remotePath, bool directory);
+    int64_t renameFileSessionPath(const std::string& remotePath, const std::string& newName);
+    std::string getRemoteDirectoryPath(uint64_t transferId);
+    std::vector<RustDeskRemoteFileEntry> getRemoteDirectoryEntries(uint64_t transferId);
+    int64_t downloadFileToFd(const std::string& remotePath, int fd, uint64_t expectedSize, uint64_t modifiedTime);
+    bool getTransferPermissionSnapshot(uint32_t& knownMask, uint32_t& enabledMask);
+    ClipboardSnapshot getClipboardSnapshot() override;
+    bool publishClipboard(const uint8_t* data, uint32_t len) override;
+    uint64_t publishClipboardTracked(const uint8_t* data, uint32_t len);
+    uint32_t getClipboardPublicationState(uint64_t publicationId);
     void sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool isClipboardReceiveReady() override;
