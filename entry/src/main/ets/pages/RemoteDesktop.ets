@@ -19352,6 +19352,11 @@ struct RemoteDesktop {
             state.phase === 'cached' ? '目录已接收，请在文件传输中整目录另存' :
             state.phase === 'failed' || state.phase === 'cancelled' ? '文件同步未完成，可通过文件传输重试' :
             '正在同步远端文件，完成后可在本机粘贴';
+          // 'idle' is also what the service reports the moment the listener attaches: nothing is syncing.
+          if (state.phase === 'idle' && state.error !== 'too_large_for_automatic') {
+            this.hideClipboardFileStatus();
+            return;
+          }
           const settledPhase: boolean = state.phase === 'ready' || state.phase === 'cached' ||
             state.phase === 'failed' || state.phase === 'cancelled' || state.error === 'too_large_for_automatic';
           this.showClipboardFileStatus(this.continuousClipboardMessage, !settledPhase,
@@ -19402,6 +19407,8 @@ struct RemoteDesktop {
     if (lease !== null && token > 0) { this.loader.revokeSessionClipboardAuthority(lease.sessionId, lease.nativeGeneration, token); }
     this.pcClipboardFiles?.dispose(); this.pcClipboardFiles = null;
     this.clipboardBridge?.stopMonitoring(); this.clipboardBridge = null;
+    // A sync the service no longer reports on must not stay on screen as running.
+    if (this.clipboardFileBusy) { this.hideClipboardFileStatus(); }
   }
 
   private restartClipboardBridgeIfActiveForeground(): void {
@@ -19815,6 +19822,12 @@ struct RemoteDesktop {
         this.clipboardFileStatus = '';
       }, 4200);
     }
+  }
+
+  private hideClipboardFileStatus(): void {
+    if (this.clipboardFileHideTimer >= 0) { clearTimeout(this.clipboardFileHideTimer); this.clipboardFileHideTimer = -1; }
+    this.clipboardFileStatus = '';
+    this.clipboardFileBusy = false;
   }
 
   private clearFileTransferAutoHide(): void {

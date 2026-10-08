@@ -2,7 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const ts=require(process.env.TRANSFER_TYPESCRIPT_PATH||'typescript');
 const root=path.resolve(__dirname,'../..'),source=fs.readFileSync(path.join(root,'entry/src/main/ets/pages/RemoteDesktop.ets'),'utf8');
-const names=['transferRouteIdentity','captureTransferLease','clipboardSessionLeaseIsCurrent','withClipboardAuthority','startClipboardBridgeBestEffort','stopClipboardBridge','restartClipboardBridgeIfActiveForeground','publishClipboardForLease','waitClipboardPublication','publishContinuousLocalContent','showClipboardFileStatus'];
+const names=['transferRouteIdentity','captureTransferLease','clipboardSessionLeaseIsCurrent','withClipboardAuthority','startClipboardBridgeBestEffort','stopClipboardBridge','restartClipboardBridgeIfActiveForeground','publishClipboardForLease','waitClipboardPublication','publishContinuousLocalContent','showClipboardFileStatus','hideClipboardFileStatus'];
 const methods=names.map(name=>{const match=new RegExp('^  private (?:async )?'+name+'\\(','m').exec(source);assert.ok(match,name);const end=source.indexOf('\n  private ',match.index+1);assert.ok(end>match.index);return source.slice(match.index,end)});
 const code=ts.transpileModule('export class Harness {\n'+methods.join('\n')+'\n}',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
 function fixture(){
