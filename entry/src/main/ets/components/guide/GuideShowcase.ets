@@ -1,12 +1,15 @@
 import { settleBeforeLoop } from '../../common/AnimationLoop';
 import { curves } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../common/Theme';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { GuideContentPage } from '../../services/GuideContentRegistry';
 import { ReleaseNotePage } from '../../services/ReleaseNotesRegistry';
 import { mixHex } from '../../services/pro/ProBadgeFlowPolicy';
 
 /** Layouts at or above this width split each slide into a hero panel and a content column. */
 const WIDE_LAYOUT_MIN_WIDTH: number = 560;
+/** Room under the last note for the floating button (its height and a gap). */
+const WHATS_NEW_ACTION_ROOM: number = 64;
 const KEY_LEFT: number = 2014;
 const KEY_RIGHT: number = 2015;
 const KEY_ENTER: number = 2054;
@@ -387,6 +390,8 @@ export struct WhatsNewList {
         Text(this.headline).fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).lineHeight(21)
           .width('100%').margin({ top: 6 })
       }
+      // The button floats over the list (the list scrolls under it) instead of a bar that cut the cards off.
+      Stack({ alignContent: Alignment.Bottom }) {
       Scroll() {
         Column({ space: 10 }) {
           ForEach(this.rows(), (line: ReleaseNotePage[]): void => {
@@ -398,14 +403,16 @@ export struct WhatsNewList {
             }.width('100%').alignItems(VerticalAlign.Top)
           }, (line: ReleaseNotePage[], at: number): string => at.toString() + (this.wide() ? 'w' : 'n') +
             line.map((note: ReleaseNotePage): string => note.id).join(','))
-        }.width('100%').padding({ top: 16, bottom: 12 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+          Text('可在「设置 → 教程 → 本版本更新日志」随时回看').fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(AppConfig.fontFamily).width('100%').textAlign(TextAlign.Center).margin({ top: 6 })
+        }.width('100%').padding({ top: 16, bottom: 12 + WHATS_NEW_ACTION_ROOM })
+      }.width('100%').height('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
       Button(this.primaryLabel).width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(Color.White).backgroundColor(this.accent).borderRadius(24)
-        .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
+        .fontColor(appUiOnAccentText(this.accent)).backgroundColor(this.accent).borderRadius(24)
+        .shadow({ radius: 20, color: tint(this.accent, '59'), offsetY: 8 })
+        .constraintSize({ maxWidth: 520 })
         .onClick((): void => { this.onPrimary(); })
-      Text('可在「设置 → 教程 → 本版本更新日志」随时回看').fontSize(11).fontColor(this.pal().text3)
-        .fontFamily(AppConfig.fontFamily).margin({ top: 10 })
+      }.layoutWeight(1).width('100%')
     }
     .width('100%').height('100%').padding({ left: 22, right: 22, top: 14, bottom: 28 })
     .onAreaChange((_old: Area, area: Area): void => {

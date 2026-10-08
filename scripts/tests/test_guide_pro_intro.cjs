@@ -52,6 +52,7 @@ test('Pro 功能介绍 lists eight distinct areas, AI 助理 first and featured,
   assert.match(pro.proIntroStatus(true), /需要购买鸿蒙 PC 做测试/);
   assert.match(pro.proIntroStatus(true), /商务合同审核通过前/);
   assert.match(load('entry/src/main/ets/services/ProTrialStory.ets').PRO_TRIAL_STORY, /年底前 25 元，明年起 38\.8 元/);
+  assert.match(load('entry/src/main/ets/services/ProTrialStory.ets').PRO_TRIAL_STORY, /买断制：一次购买、永久使用，不是订阅，不会自动续费/);
   assert.match(pro.proIntroStatus(false), /正式开放/);
   // No 「收费前提前通知」: the story under the hero says why Pro is here and what it will cost.
   assert.deepEqual([...pro.proIntroPromises()], ['全部功能免费试用', '核心连接永久免费']);

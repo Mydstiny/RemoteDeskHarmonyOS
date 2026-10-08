@@ -611,13 +611,31 @@ export struct AboutSettingsSheet {
             this.openUrl('https://github.com/Mydstiny/RemoteDeskHarmonyOS');
           })
 
+          // Gitee 链接
+          Row() {
+            Text('Gitee 仓库')
+              .fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Medium)
+              .fontFamily(this.font())
+            Blank()
+            Text('在浏览器中打开 >')
+              .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
+          }
+          .width('100%')
+          .padding({ left: 14, right: 14, top: 14, bottom: 14 })
+          .borderRadius(16).backgroundColor(this.pal().surface)
+          .margin({ bottom: 12 })
+          .onClick((): void => {
+            this.openUrl('https://gitee.com/Lijiong_Space/RemoteDeskHarmonyOS');
+          })
+
           // 更新与联系
           Column() {
             Text('更新与联系')
               .fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Medium)
               .fontFamily(this.font()).width('100%').margin({ bottom: 6 })
-            Text('作者正在准备考研，回复和更新可能不及时，尽量半月更新一版。\n' +
-              '如有建议，可从设置中的“反馈”发送邮件或获取最新畅联群聊二维码。')
+            Text('作者为独立学生开发者，鞭策 AI 辅助开发，资金有限，测试条件不完善，测试设备不够全。' +
+              '如有问题请与作者联系，我会尽全力将问题修复。\n' +
+              '任何问题可以通过“反馈”里面的渠道向作者反映。')
               .fontSize(13).fontColor(this.pal().text2).lineHeight(22)
               .fontFamily(this.font()).width('100%')
           }

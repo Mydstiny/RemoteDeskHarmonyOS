@@ -5,6 +5,8 @@ import { PRO_COMPLIMENTARY_TRIAL } from '../../services/pro/ProComplimentaryPoli
 import { PRO_BADGE_PALETTES } from '../../services/pro/ProBadgeFlowPolicy';
 
 const WIDE_LAYOUT_MIN_WIDTH: number = 560;
+/** Room under the last card for the floating button (its height and a gap). */
+const FLOATING_ACTION_ROOM: number = 72;
 
 function tint(color: string, alpha: string): string {
   return /^#[0-9A-Fa-f]{6}$/.test(color) ? '#' + alpha + color.substring(1) : color;
@@ -166,6 +168,8 @@ export struct ProShowcase {
             .onClick((): void => { this.onClose(); })
         }
       }.width('100%').height(36)
+      // The button floats over the list (the list scrolls under it) instead of a bar that cut the cards off.
+      Stack({ alignContent: Alignment.Bottom }) {
       Scroll() {
         Column({ space: 12 }) {
           this.hero()
@@ -188,16 +192,20 @@ export struct ProShowcase {
           Text('全部协议的连接、正常画质、键鼠操作、基础文件传输与安全更新永久免费；试用期间其余 Pro 功能也全部免费。')
             .fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(18)
             .width('100%').textAlign(TextAlign.Center).margin({ top: 4 })
-        }.width('100%').padding({ top: 4, bottom: 12 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+        }.width('100%').padding({ top: 4, bottom: 12 + FLOATING_ACTION_ROOM })
+      }.width('100%').height('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
       // One button: 立即试用. There is nothing to decline — the trial is on for everyone.
       Row() {
         Button(this.actionLabel).layoutWeight(1).height(50).fontSize(17).fontWeight(FontWeight.Bold)
           .fontColor(Color.White).borderRadius(25)
           .linearGradient({ angle: 100, colors: [['#5B8CFF', 0], ['#B455FF', 1]] })
-          .shadow({ radius: 18, color: '#665B8CFF', offsetY: 6 })
+          .shadow({ radius: 22, color: '#805B8CFF', offsetY: 8 })
           .onClick((): void => { this.onAction(); })
-      }.width('100%')
+      }
+      .width('100%').constraintSize({ maxWidth: 520 }).padding({ left: 4, right: 4, bottom: 2 })
+      .opacity(this.entered ? 1 : 0).translate({ y: this.entered ? 0 : 24 })
+      .animation({ duration: 420, delay: 160, curve: Curve.FastOutSlowIn })
+      }.layoutWeight(1).width('100%')
     }
     // Bottom room for the system navigation bar under sheets.
     .width('100%').height('100%').padding({ left: 20, right: 20, top: 10, bottom: 28 })

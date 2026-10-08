@@ -569,7 +569,7 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-08-v23$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-08-v24$/);
   const guide = kb.aiAppGuide();
   for (const words of ['Pi（Pi 编程代理，9445', 'pi-gui', '全部项目（含电脑 App 里的项目）', '修改前询问', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {

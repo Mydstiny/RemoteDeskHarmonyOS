@@ -73,6 +73,9 @@ interface RankedSshCommand {
   sourceIndex: number;
 }
 
+/** The floating command palette's enter and exit; a chosen action runs after the exit. */
+export const SSH_COMMAND_PALETTE_MOTION_MS: number = 200;
+
 const SSH_COMMAND_QUERY_MAX_CHARS: number = 256;
 const SSH_COMMAND_RESULT_MAX: number = 120;
 

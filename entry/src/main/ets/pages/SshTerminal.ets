@@ -185,6 +185,7 @@ import {
 } from '../services/SshTerminalPipService';
 import {
   SSH_PIP_EXIT_GRACE_MS,
+  SSH_PIP_REARM_DELAY_MS,
   matchesSshPipExitFence,
   shouldCoordinateSshPipExit
 } from '../services/ssh/pip/SshPipLifecyclePolicy';
@@ -489,7 +490,8 @@ import {
   SshCommandDescriptor,
   SshCommandExecutionFence,
   SshCommandHostRef,
-  SshCommandSessionRef
+  SshCommandSessionRef,
+  SSH_COMMAND_PALETTE_MOTION_MS
 } from '../services/ssh/command/SshCommandPolicy';
 import {
   TransferSession,
@@ -692,7 +694,10 @@ struct SshTerminal {
   @State @Watch('stopSftpKnock') visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
-  @State showSshCommandPalette: boolean = false;
+  @State @Watch('onSshCommandPaletteVisibilityChange') showSshCommandPalette: boolean = false;
+  /** The page's own size, for the floating command palette. */
+  @State sshPageAreaW: number = 0;
+  @State sshPageAreaH: number = 0;
   @State showSshProductivitySheet: boolean = false;
   @State sshProductivityQuery: string = '';
   @State sshProductivityReady: boolean = false;
@@ -1072,6 +1077,8 @@ struct SshTerminal {
   private sshSignalBackgroundTasks: SshBackgroundSignalTaskRegistry =
     new SshBackgroundSignalTaskRegistry();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
+  /** Re-arms PiP once a background cycle has ended (see scheduleSshPipRearm). */
+  private sshPipRearmTimer: number = -1;
   private sshTabStore: SshTerminalTabStore = SshTerminalTabStore.getInstance();
   private sshTranscriptStore: SshTerminalTranscriptStore =
     SshTerminalTranscriptStore.getInstance();
@@ -6130,13 +6137,57 @@ struct SshTerminal {
       commands: this.sshCommandRegistry,
       compact: this.breakpoint === 'sm',
       onExecute: (commandId: string): void => { this.queueSshCommand(commandId); },
-      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
-      onClose: (): void => {
-        this.pendingSshCommandId = '';
-        this.showSshCommandPalette = false;
-      }
+      maxBodyHeightVp: this.sshCommandPaletteListMaxVp(),
+      onClose: (): void => { this.closeSshCommandPalette(); }
     })
       .width('100%')
+  }
+
+  private closeSshCommandPalette(): void {
+    this.pendingSshCommandId = '';
+    this.showSshCommandPalette = false;
+  }
+
+  /** The palette's exit plays for SSH_COMMAND_PALETTE_MOTION_MS; its queued action runs once the card is gone. */
+  private onSshCommandPaletteVisibilityChange(): void {
+    if (this.showSshCommandPalette) { return; }
+    setTimeout((): void => {
+      if (!this.showSshCommandPalette) { this.onSshCommandPaletteDisappear(); }
+    }, SSH_COMMAND_PALETTE_MOTION_MS);
+  }
+
+  private sshCommandPalettePageW(): number {
+    if (this.sshPageAreaW > 0) { return this.sshPageAreaW; }
+    return this.shellAreaW > 0 ? this.shellAreaW : 360;
+  }
+
+  private sshCommandPalettePageH(): number {
+    if (this.sshPageAreaH > 0) { return this.sshPageAreaH; }
+    return this.shellAreaH > 0 ? this.shellAreaH : 720;
+  }
+
+  /** Phone: just under the status bar; wider windows: the upper part of the page, like a desktop command palette. */
+  private sshCommandPaletteTopVp(): number {
+    const top: number = this.isDesktopDevice ? 0 : this.topSafeHeight;
+    if (this.breakpoint === 'sm') { return top + 10; }
+    const room: number = this.sshCommandPalettePageH() - this.kbHeight;
+    return top + Math.max(24, Math.min(96, room * 0.10));
+  }
+
+  private sshCommandPaletteCardWidth(): number {
+    const page: number = this.sshCommandPalettePageW();
+    return this.breakpoint === 'sm' ? Math.max(240, page - 24) : Math.max(240, Math.min(680, page - 48));
+  }
+
+  private sshCommandPaletteCardX(): number {
+    return Math.max(0, (this.sshCommandPalettePageW() - this.sshCommandPaletteCardWidth()) / 2);
+  }
+
+  /** The list's room: what is left above the keyboard under the card's search row, footer and margins. */
+  private sshCommandPaletteListMaxVp(): number {
+    const chrome: number = 44 + 12 + 28 + (this.breakpoint === 'sm' ? 0 : 12 + 18);
+    const room: number = this.sshCommandPalettePageH() - this.sshCommandPaletteTopVp() - this.kbHeight - chrome - 16;
+    return Math.max(120, Math.min(560, room));
   }
 
   @Builder
@@ -11252,6 +11303,7 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.clearSshPipRearm();
     this.sshSkinStopPro?.(); this.sshSkinStopPro = null;
     this.proContinuationAutoStop?.(); this.proContinuationAutoStop = null;
     if (this.proContinuationWindowId > 0) {
@@ -12019,6 +12071,8 @@ struct SshTerminal {
     }
     if (!this.sshContextualGuideInBackground()) {
       this.scheduleSshContextualGuide();
+      // Back in front: the PiP of the last background cycle is being retired; the next one needs a new controller.
+      this.scheduleSshPipRearm();
     }
     this.syncSshBackgroundTasksForAbilitySignal();
   }
@@ -12906,6 +12960,9 @@ struct SshTerminal {
       const prepared: boolean = await this.sshPipService.prepare(
         context, this.makeSshPipInfo(), (reason: string): void => {
           hilog.info(0x0017, 'SshTerminal', 'SSH PiP stopped reason=' + reason);
+          // WMS retires a controller after each background cycle (restore or close); without a new one the
+          // second time the app leaves shows no PiP.
+          this.scheduleSshPipRearm();
         });
       if (prepared && this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         hilog.info(0x0017, 'SshTerminal', 'SSH PiP prepared session=' + this.sessionId.toString());
@@ -12913,6 +12970,28 @@ struct SshTerminal {
     } catch (err) {
       hilog.warn(0x0017, 'SshTerminal', 'SSH PiP prepare failed code=' +
         sshDiagnosticErrorCode(err));
+    }
+  }
+
+  /**
+   * Arm PiP again for the next time the app leaves, once the last cycle's controller is gone: only in front, for a
+   * connected session of this page (an independent SSH window never owns the phone PiP).
+   */
+  private scheduleSshPipRearm(): void {
+    this.clearSshPipRearm();
+    this.sshPipRearmTimer = setTimeout((): void => {
+      this.sshPipRearmTimer = -1;
+      if (this.terminalClosing || this.sessionWindowId.length > 0 || this.sshContextualGuideInBackground() ||
+        !this.connected || this.sessionId <= 0 || this.sshPipService.isPreparedOrPreparing()) { return; }
+      hilog.info(0x0017, 'SshTerminal', 'SSH PiP re-arming for the next background');
+      void this.prepareSshPip(this.pageGeneration, this.sshBindingGeneration, this.hostId);
+    }, SSH_PIP_REARM_DELAY_MS);
+  }
+
+  private clearSshPipRearm(): void {
+    if (this.sshPipRearmTimer !== -1) {
+      clearTimeout(this.sshPipRearmTimer);
+      this.sshPipRearmTimer = -1;
     }
   }
 
@@ -19925,29 +20004,6 @@ struct SshTerminal {
           }
         })
 
-      // API 23 treats chained bindSheet modifiers as one native lifecycle.
-      // Give the command palette its own inert host so later closed Sheets
-      // cannot immediately dismiss it after the toolbar sets show=true.
-      Column()
-        .width(1)
-        .height(1)
-        .hitTestBehavior(HitTestMode.None)
-        .bindSheet($$this.showSshCommandPalette, this.sshCommandPaletteSheet(), {
-          height: SheetSize.FIT_CONTENT,
-          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-          width: this.breakpoint === 'sm' ? '100%' : '700vp',
-          dragBar: this.breakpoint === 'sm',
-          backgroundColor: this.bindSheetBg('#171D25'),
-          blurStyle: BlurStyle.NONE,
-          showClose: false,
-          maskColor: 'rgba(0,0,0,0.48)',
-          onWillDismiss: (action: DismissSheetAction): void => {
-            if (this.pendingSshCommandId.length === 0) { this.showSshCommandPalette = false; }
-            action.dismiss();
-          },
-          onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
-        })
-
       // The transfer center is also a long-lived workbench modal. Keep it off
       // the root bindSheet chain so a later closed binding cannot consume its
       // show transition on API 23 multi-window devices.
@@ -20153,8 +20209,43 @@ struct SshTerminal {
             this.clearSshSecretPrompt();
           }
         })
+
+      // The command palette floats above the terminal as the page's own layer, not a native Sheet: the page turns
+      // the window's keyboard avoidance off, so a Sheet shrank under the keyboard. Here the card hangs from the top
+      // and its list is bounded by the space left above the keyboard.
+      if (this.showSshCommandPalette) {
+        Column()
+          .width('100%').height('100%')
+          .backgroundColor('rgba(0,0,0,0.46)')
+          .zIndex(300)
+          .transition(TransitionEffect.OPACITY.animation({ duration: SSH_COMMAND_PALETTE_MOTION_MS,
+            curve: Curve.FastOutSlowIn }))
+          .onClick((): void => { this.closeSshCommandPalette(); })
+          .accessibilityText('关闭 SSH 命令面板')
+      }
+      if (this.showSshCommandPalette) {
+        Row() {
+          this.sshCommandPaletteSheet()
+        }
+        .width(this.sshCommandPaletteCardWidth())
+        .borderRadius(22).clip(true)
+        .border({ width: 0.6, color: 'rgba(255,255,255,0.10)' })
+        .shadow({ radius: 30, color: 'rgba(0,0,0,0.46)', offsetY: 12 })
+        .position({ x: this.sshCommandPaletteCardX(), y: this.sshCommandPaletteTopVp() })
+        .zIndex(301)
+        .transition(TransitionEffect.OPACITY
+          .combine(TransitionEffect.translate({ y: -16 }))
+          .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 }))
+          .animation({ duration: SSH_COMMAND_PALETTE_MOTION_MS, curve: Curve.FastOutSlowIn }))
+      }
     }
     .width('100%').height('100%')
+    .onAreaChange((_oldArea: Area, newArea: Area): void => {
+      const width: number = newArea.width as number;
+      const height: number = newArea.height as number;
+      if (Math.abs(width - this.sshPageAreaW) >= 1) { this.sshPageAreaW = width; }
+      if (Math.abs(height - this.sshPageAreaH) >= 1) { this.sshPageAreaH = height; }
+    })
   }
 
   pageTransition() {

@@ -8,7 +8,7 @@ import { diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
  * 也不包含密码、主机地址、日志原文或用户资料。后续可以按版本拆成独立文档资源，
  * 但 Agent 必须始终带上知识版本，避免模型把过期操作当成当前 UI。
  */
-export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-08-v23';
+export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-08-v24';
 
 /**
  * What the AI itself can do and where things are (1.2.0). Shared by 助理 (with the catalogs below) and by 聊天 and
@@ -64,7 +64,7 @@ const AI_GUIDE: string[] = [
   'AI 能管理的数据：它生成的文档（列出、读取、改写、删除）、提醒（设置、列出、取消）、记忆（记住、改写、忘掉）、对话记录（列出、删除）、主机（列出、连接、编辑、删除）；删除和会改动数据的操作都先给确认卡片。',
   '需求收集：用户提出新功能或改进想法时，AI 会记下来；用户说想要这些功能或“把需求发给开发者”时，整理成邮件，确认后在邮件应用里发送。',
   '反馈邮件：诊断邮件分为问题概述、初步诊断、详细诊断、建议步骤、尚未确认，诊断日志作为附件（不贴进正文）；邮件只在用户的邮件应用里打开，由用户检查后发送。',
-  'Pro：1.2.0 起所有用户免费试用全部已开发的 Pro 功能（AI 助理、工作区、高级主机管理、远端显示方案、个性化、同账号接续等）。因为需要购买鸿蒙 PC 做测试，Pro 订阅提前上线，商务合同审核通过前一直保持试用；价格：年底前 25 元，明年起 38.8 元。碰一碰两项仍在验证，暂不开放。Release 版默认为所有用户开启 Pro 试用，权益模拟、沙盒测试等开发者工具不在界面上显示。'
+  'Pro：1.2.0 起所有用户免费试用全部已开发的 Pro 功能（AI 助理、工作区、高级主机管理、远端显示方案、个性化、同账号接续等）。因为需要购买鸿蒙 PC 做测试，Pro 提前上线，商务合同审核通过前一直保持试用；Pro 是买断制（一次购买、永久使用，不是订阅，不会自动续费），价格：年底前 25 元，明年起 38.8 元。碰一碰两项仍在验证，暂不开放。Release 版默认为所有用户开启 Pro 试用，权益模拟、沙盒测试等开发者工具不在界面上显示。'
 ];
 
 /** The short app guide for 聊天 and AI 语音 (their tools read settings, hosts and actions live). */
