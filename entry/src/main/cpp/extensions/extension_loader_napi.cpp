@@ -9000,6 +9000,22 @@ napi_value NapiPublishSessionClipboardFiles(napi_env env, napi_callback_info inf
     SetObjectInt64(env, result, "publicationId", id); SetObjectInt32(env, result, "state", state); return result;
 }
 
+// (sessionId, generation) -> how far the remote has read the files offered on its clipboard.
+napi_value NapiGetSessionRdpFileOfferProgress(napi_env env, napi_callback_info info) {
+    napi_value args[3]; RdpFileOfferReadProgress progress;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) progress = rdp->getLocalFileOfferReadProgress();
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "generation", static_cast<int64_t>(progress.generation));
+    SetObjectInt64(env, result, "requestedBytes", static_cast<int64_t>(progress.requestedBytes));
+    SetObjectInt64(env, result, "requests", progress.requests);
+    SetObjectInt64(env, result, "lastRequestAgoMs", progress.lastRequestAgoMs);
+    return result;
+}
+
 napi_value NapiGetSessionRdpDrive(napi_env env, napi_callback_info info) {
     napi_value args[3];
     RdpDriveStatus status;
@@ -13818,6 +13834,8 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "publishSessionClipboardFiles", fn);
     napi_create_function(env, "getSessionRdpDrive", NAPI_AUTO_LENGTH, NapiGetSessionRdpDrive, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionRdpDrive", fn);
+    napi_create_function(env, "getSessionRdpFileOfferProgress", NAPI_AUTO_LENGTH, NapiGetSessionRdpFileOfferProgress, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpFileOfferProgress", fn);
     napi_create_function(env, "disableSessionRdpDrive", NAPI_AUTO_LENGTH, NapiDisableSessionRdpDrive, nullptr, &fn);
     napi_set_named_property(env, exports, "disableSessionRdpDrive", fn);
     napi_create_function(env, "getSessionTransferPermissions", NAPI_AUTO_LENGTH, NapiGetSessionTransferPermissions, nullptr, &fn);

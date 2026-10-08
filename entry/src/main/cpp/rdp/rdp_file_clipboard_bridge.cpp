@@ -109,6 +109,7 @@ RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
     if (result != RdpFileClipboardOfferResult::Ready) {
         return result;
     }
+    resetReadProgressLocked(offer_.snapshot().generation);
     if (!channel_) {
         offer_.clear();
         return RdpFileClipboardOfferResult::InvalidPath;
@@ -136,6 +137,37 @@ RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
         return RdpFileClipboardOfferResult::InvalidPath;
     }
     return RdpFileClipboardOfferResult::Ready;
+}
+
+void RdpFileClipboardBridge::resetReadProgressLocked(uint64_t generation) {
+    readGeneration_ = generation;
+    requestedEndByIndex_.clear();
+    readRequests_ = 0;
+    lastReadRequest_ = {};
+}
+
+bool RdpFileClipboardBridge::readActiveLocked(std::chrono::milliseconds window) const {
+    return readRequests_ > 0 && std::chrono::steady_clock::now() - lastReadRequest_ < window;
+}
+
+void RdpFileClipboardBridge::releaseLocalFiles(std::chrono::milliseconds activeWindow) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    offer_.clear();
+    if (clipboard_) ClipboardEmpty(clipboard_);
+    if (fileContext_ && !readActiveLocked(activeWindow)) cliprdr_file_context_clear(fileContext_);
+}
+
+RdpFileOfferReadProgress RdpFileClipboardBridge::readProgress() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    RdpFileOfferReadProgress progress;
+    progress.generation = readGeneration_;
+    progress.requests = readRequests_;
+    for (const auto& entry : requestedEndByIndex_) progress.requestedBytes += entry.second;
+    if (readRequests_ > 0) {
+        progress.lastRequestAgoMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - lastReadRequest_).count();
+    }
+    return progress;
 }
 
 void RdpFileClipboardBridge::clearLocalFiles() {
@@ -185,6 +217,15 @@ UINT RdpFileClipboardBridge::handleFileContentsRequest(
         response.common.msgFlags = CB_RESPONSE_FAIL;
         response.streamId = request->streamId;
         return context->ClientFileContentsResponse(context, &response);
+    }
+    // Progress of the remote's paste: the furthest byte it asked for in each offered file.
+    ++readRequests_;
+    lastReadRequest_ = std::chrono::steady_clock::now();
+    if ((request->dwFlags & FILECONTENTS_RANGE) != 0) {
+        const uint64_t end = ((static_cast<uint64_t>(request->nPositionHigh) << 32) | request->nPositionLow) +
+            request->cbRequested;
+        uint64_t& furthest = requestedEndByIndex_[request->listIndex];
+        if (end > furthest) furthest = end;
     }
     return helperRequest_(context, request);
 }

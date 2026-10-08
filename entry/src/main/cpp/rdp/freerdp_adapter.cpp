@@ -9506,7 +9506,8 @@ void FreeRdpAdapter::dispatchClipboardPublication() {
             if (!item.formatId) { impl_->clipboardPublications.sendFailed(job->id,false); return; }
         }
         { std::lock_guard<std::mutex> lock(impl_->clipboardMutex); impl_->clipboardText = job->text; impl_->localClipboardContent=job->content; }
-        impl_->fileClipboard->clearLocalFiles();
+        // New text replaces the file offer; a paste of those files the remote is still reading keeps its streams.
+        impl_->fileClipboard->releaseLocalFiles(std::chrono::milliseconds(3000));
         attempted = true;
         sent = impl_->fileClipboard->sendContentFormatList(job->content) == CHANNEL_RC_OK;
     }
@@ -9601,6 +9602,10 @@ void FreeRdpAdapter::releaseRemoteClipboardLock(CliprdrClientContext* expectedCh
     request.common.msgType = CB_UNLOCK_CLIPDATA; request.clipDataId = clipDataId;
     (void)expectedChannel->ClientUnlockClipboardData(expectedChannel, &request);
 }
+RdpFileOfferReadProgress FreeRdpAdapter::getLocalFileOfferReadProgress() {
+    return impl_->fileClipboard ? impl_->fileClipboard->readProgress() : RdpFileOfferReadProgress {};
+}
+
 RemoteClipboardFileOffer FreeRdpAdapter::getRemoteClipboardFiles() {
     uint32_t expiredLock = 0;
     CliprdrClientContext* channel = nullptr;
@@ -10340,6 +10345,7 @@ RdpDriveStatus FreeRdpAdapter::getRdpDriveStatus() { return {}; }
 std::vector<RdpReceivedFileFact> FreeRdpAdapter::getRdpReceivedFileFacts() { return {}; }
 bool FreeRdpAdapter::disableRdpDrive() { return false; }
 RemoteClipboardFileOffer FreeRdpAdapter::getRemoteClipboardFiles() { return {}; }
+RdpFileOfferReadProgress FreeRdpAdapter::getLocalFileOfferReadProgress() { return {}; }
 uint64_t FreeRdpAdapter::publishClipboardContentTracked(const RdpClipboardContent&) { return 0; }
 RdpClipboardFormatOffer FreeRdpAdapter::getRemoteClipboardFormats() { return {}; }
 uint64_t FreeRdpAdapter::requestRemoteClipboardFormat(uint64_t, RdpClipboardFormat) { return 0; }

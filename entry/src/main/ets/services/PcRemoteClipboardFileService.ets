@@ -16,7 +16,10 @@ class PcRdpReceiveSlot { value: TransferNativeReceiveDirectory | null = null; }
 export type PcRemoteClipboardFilePhase = 'idle' | 'preparing' | 'receiving' | 'verifying' | 'publishing' |
   'ready' | 'cached' | 'cancelled' | 'failed';
 export type PcRemoteClipboardFileError = 'none' | 'unavailable' | 'invalid_offer' | 'source_changed' |
-  'receive_failed' | 'directory_requires_export' | 'publication_failed';
+  'receive_failed' | 'directory_requires_export' | 'publication_failed' | 'too_large_for_automatic';
+
+/** Remote copies up to this size are pulled to the local clipboard on their own; larger ones wait for 接收. */
+export const PC_AUTOMATIC_RECEIVE_LIMIT_BYTES: number = 50 * 1024 * 1024;
 export interface PcRemoteClipboardFileStatus {
   phase: PcRemoteClipboardFilePhase;
   writtenBytes: number;
@@ -362,6 +365,10 @@ export class PcRemoteClipboardFileService {
       }
       const total: number = offer !== null ? offer.totalKnown ? offer.totalBytes : 0 :
         entries.reduce((sum: number, entry: RustDeskClipboardEntry): number => sum + entry.size, 0);
+      // A large or unknown-size copy is not pulled automatically; it stays offered for an explicit receive.
+      if (total > PC_AUTOMATIC_RECEIVE_LIMIT_BYTES || (offer !== null && !offer.totalKnown)) {
+        this.report(epoch, 'cancelled', 0, total, 'too_large_for_automatic'); return false;
+      }
       const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
       if (!service.init(this.context) || !current()) { this.report(epoch, 'failed', 0, total, 'unavailable'); return false; }
       const ownedBatch: TransferArtifactBatch = new TransferArtifactBatch(this.context.filesDir,

@@ -1002,6 +1002,13 @@ export interface SessionRdpReceivedFileFact {
   remoteClosed: boolean;
   uncertain: boolean;
 }
+/** How far the remote has read the files offered on its clipboard (requestedBytes may pass a file's end). */
+export interface SessionRdpFileOfferProgress {
+  generation: number;
+  requestedBytes: number;
+  requests: number;
+  lastRequestAgoMs: number;
+}
 export interface SessionRdpDrive {
   phase: string;
   generation: number;
@@ -1010,6 +1017,7 @@ export interface SessionRdpDrive {
   entries: SessionRdpReceivedFileFact[];
 }
 export const getSessionRdpDrive: (sessionId: number, generation: number) => SessionRdpDrive;
+export const getSessionRdpFileOfferProgress: (sessionId: number, generation: number) => SessionRdpFileOfferProgress;
 export const disableSessionRdpDrive: (sessionId: number, generation: number) => boolean;
 
 /** Only accepts a directory FD already opened through the authorized local provider. */

@@ -4,6 +4,16 @@
 #include <string>
 #include <vector>
 
+/** How far the remote has read the files this side offered on its clipboard (FILECONTENTS_RANGE requests). */
+struct RdpFileOfferReadProgress {
+    uint64_t generation = 0;
+    /** Sum over the offered files of the furthest byte requested (may exceed the file size near its end). */
+    uint64_t requestedBytes = 0;
+    uint32_t requests = 0;
+    /** Milliseconds since the last request; -1 before the first. */
+    int64_t lastRequestAgoMs = -1;
+};
+
 struct RdpDriveStatus {
     uint32_t schema = 1;
     uint64_t generation = 0;

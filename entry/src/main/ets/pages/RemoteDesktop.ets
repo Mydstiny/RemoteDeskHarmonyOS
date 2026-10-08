@@ -782,6 +782,7 @@ import {
   SessionRdpClipboardReceive,
   SessionRdpClipboardArtifact,
   SessionRdpDrive,
+  SessionRdpFileOfferProgress,
   SessionRdpReceivedFileFact,
   SessionTransferPermissions
 } from '../types/rdpnapi';
@@ -19284,6 +19285,7 @@ struct RemoteDesktop {
         files.setStatusListener((state: PcRemoteClipboardFileStatus): void => {
           if (!this.clipboardSessionLeaseIsCurrent(lease)) { return; }
           this.continuousClipboardMessage = state.phase === 'ready' ? '文件已同步，可在本机文件管理器粘贴' :
+            state.error === 'too_large_for_automatic' ? '远端复制的文件超过 50MB，未自动同步；可在文件传输中接收' :
             state.phase === 'cached' ? '目录已接收，请在文件传输中整目录另存' :
             state.phase === 'failed' || state.phase === 'cancelled' ? '文件同步未完成，可通过文件传输重试' :
             '正在同步远端文件，完成后可在本机粘贴';
@@ -19749,6 +19751,58 @@ struct RemoteDesktop {
     }
   }
 
+  /**
+   * A new clipboard offer replaces the one the remote may still be pasting from. Waits (at most 4 minutes, below
+   * the task idle limit) until the remote has not read for 3 seconds.
+   */
+  private async waitForRdpOfferReadsToSettle(lease: RemoteTransferLease, current: () => boolean): Promise<void> {
+    const deadline: number = Date.now() + 240000;
+    let announced: boolean = false;
+    while (current() && Date.now() < deadline) {
+      const progress: SessionRdpFileOfferProgress =
+        this.loader.getSessionRdpFileOfferProgress(lease.sessionId, lease.nativeGeneration);
+      if (progress.requests === 0 || progress.lastRequestAgoMs < 0 || progress.lastRequestAgoMs >= 3000) { return; }
+      if (!announced && this.transferLeaseIsCurrent(lease)) {
+        announced = true;
+        this.setFileTransferStatus('远端仍在粘贴上一批文件，完成后再发送这一批', -1, true);
+      }
+      await this.yieldUi(500);
+    }
+  }
+
+  /**
+   * After the remote got the offer (and a paste was sent), follows its reads: done when it requested every byte and
+   * stopped, handed off when nobody read it within 2 minutes or the reads stopped halfway for 30 seconds.
+   */
+  private async followRdpFileOfferReads(lease: RemoteTransferLease, total: number,
+    control: ManagedTransferControl): Promise<ManagedTransferOutcome> {
+    const started: number = Date.now();
+    let generation: number = -1;
+    while (control.isCurrent()) {
+      const progress: SessionRdpFileOfferProgress =
+        this.loader.getSessionRdpFileOfferProgress(lease.sessionId, lease.nativeGeneration);
+      if (generation < 0) { generation = progress.generation; }
+      else if (progress.generation !== generation) {
+        // A newer clipboard offer replaced this one.
+        return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+      }
+      if (progress.requests > 0) {
+        const requested: number = Math.min(total, Math.max(0, progress.requestedBytes));
+        control.update({ stage: 'transferring', sentBytes: requested });
+        if (requested >= total && progress.lastRequestAgoMs >= 1500) {
+          return { stage: 'completed', evidence: 'senderCompleted', diagnosticCode: 'remote_read_all' };
+        }
+        if (progress.lastRequestAgoMs > 30000) {
+          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'remote_read_partial' };
+        }
+      } else if (Date.now() - started > 120000) {
+        return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+      }
+      await this.yieldUi(500);
+    }
+    return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+  }
+
   private async prepareAndOfferRdpFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
     origin: string, expectedSource?: TransferClipboardSourceIdentity,
     preparedBatch?: TransferArtifactBatch, preparedArtifacts?: TransferArtifact[], automaticCurrent?: () => boolean): Promise<boolean> {
@@ -19811,6 +19865,8 @@ struct RemoteDesktop {
           const nativeOwner: NativeDisconnectIdentity | null = this.nativeDisconnectIdentity;
           if (nativeOwner === null || nativeOwner.sessionId !== lease.sessionId ||
             nativeOwner.generation !== lease.nativeGeneration) { return { stage: 'cancelled', evidence: 'none' }; }
+          if (automaticCurrent === undefined) { await this.waitForRdpOfferReadsToSettle(lease, control.isCurrent); }
+          if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
           TransferArtifactPublicationService.getInstance().registerNativeOffer(batch, nativeOwner);
           let receipt: ClipboardPublicationResult = { publicationId: 0, state: 0 };
           const publish = (): boolean => {
@@ -19834,7 +19890,8 @@ struct RemoteDesktop {
               this.loader.sendKey(lease.sessionId, this.mapPhysicalKeyCode(key), true);
             }
           }
-          // CLIPRDR offer/read success does not acknowledge destination persistence.
+          // CLIPRDR reads show the remote took the bytes; where it saved them stays unconfirmed.
+          if (automaticCurrent === undefined) { return await this.followRdpFileOfferReads(lease, total, control); }
           return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
         } catch (_err) {
           return { stage: control.isCancellationRequested() ? 'cancelled' : 'failed', evidence: 'none',
@@ -19846,10 +19903,11 @@ struct RemoteDesktop {
       });
     if (!handle.accepted) { try { batch.release(); } catch (_err) {} }
     const outcome: ManagedTransferOutcome = await handle.result;
-    const offered: boolean = outcome.evidence === 'offered';
+    const readAll: boolean = outcome.diagnosticCode === 'remote_read_all';
+    const offered: boolean = outcome.evidence === 'offered' || readAll;
     if (sessionCurrent() && automaticCurrent === undefined) {
-      this.setFileTransferStatus(offered ? '已提供给远端读取，尚未确认目标写入' : '文件准备已停止或失败',
-        offered ? 1 : -1, false);
+      this.setFileTransferStatus(readAll ? '远端已取走全部文件' : offered ? '已交给远端，可在远端粘贴或保存' :
+        '文件准备已停止或失败', offered ? 1 : -1, false);
     }
     return offered;
   }
@@ -20053,23 +20111,28 @@ struct RemoteDesktop {
           if (owner === null || owner.sessionId !== lease.sessionId || owner.generation !== lease.nativeGeneration) {
             return { stage: 'cancelled', evidence: 'none' };
           }
+          await this.waitForRdpOfferReadsToSettle(lease, control.isCurrent);
+          if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
           TransferArtifactPublicationService.getInstance().registerNativeOffer(batch, owner);
           const receipt = this.loader.publishSessionClipboardFiles(lease.sessionId, lease.nativeGeneration, [root.path]);
           if (!await this.waitClipboardPublication(lease, receipt, control.isCurrent)) {
             return { stage: 'paused', evidence: 'none', diagnosticCode: 'offer_ack_unconfirmed' };
           }
+          control.update({ stage: 'offered' });
           if (this.clipboardLeaseIsCurrent(lease)) {
             this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [KEYCODE_CTRL_LEFT, KEY_V], 'RDP directory paste');
           }
-          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+          return await this.followRdpFileOfferReads(lease, tree.totalBytes, control);
         } catch (_error) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'directory_staging_incomplete' }; }
         finally { batch.release(); }
       });
     if (!handle.accepted) { batch.release(); }
     const result: ManagedTransferOutcome = await handle.result;
     if (this.transferLeaseIsCurrent(lease)) {
-      this.setFileTransferStatus(result.evidence === 'offered' ? '目录已提供给远端读取，目标写入未确认，源目录保留' :
-        '目录准备未完成，源目录保留', result.evidence === 'offered' ? 1 : -1, false);
+      const readAll: boolean = result.diagnosticCode === 'remote_read_all';
+      this.setFileTransferStatus(readAll ? '远端已取走整个目录' : result.evidence === 'offered' ?
+        '目录已交给远端，可在远端粘贴或保存' : '目录准备未完成，源目录保留',
+        readAll || result.evidence === 'offered' ? 1 : -1, false);
     }
   }
 

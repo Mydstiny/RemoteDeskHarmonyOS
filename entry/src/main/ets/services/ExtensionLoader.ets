@@ -55,6 +55,7 @@ import {
   SessionTransferAuthentication,
   SessionTransferResult,
   SessionRdpDrive,
+  SessionRdpFileOfferProgress,
   SessionRdpClipboardFiles,
   SessionRdpClipboardContent,
   SessionRdpClipboardFormats,
@@ -1242,6 +1243,10 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     catch (_err) { return { publicationId: 0, state: 0 }; }
   }
 
+  getSessionRdpFileOfferProgress(sessionId: number, generation: number): SessionRdpFileOfferProgress {
+    try { return rdpnapi.getSessionRdpFileOfferProgress(sessionId, generation) as SessionRdpFileOfferProgress; }
+    catch (_err) { return { generation: 0, requestedBytes: 0, requests: 0, lastRequestAgoMs: -1 }; }
+  }
   getSessionRdpDrive(sessionId: number, generation: number): SessionRdpDrive {
     try { return rdpnapi.getSessionRdpDrive(sessionId, generation) as SessionRdpDrive; }
     catch (_err) { return { phase: 'unavailable', generation: 0, evidenceComplete: false, diagnosticCode: 'unavailable', entries: [] }; }

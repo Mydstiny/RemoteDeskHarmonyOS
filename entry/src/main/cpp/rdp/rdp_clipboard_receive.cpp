@@ -36,7 +36,9 @@ struct RdpClipboardReceive::State {
     ~State() { if (stageFd >= 0) close(stageFd); }
 };
 namespace {
-constexpr uint32_t kBlockBytes = 65536;
+// One request per 512 KiB (it used to be 64 KiB, one round trip each): a shorter answer near a file's end, or from
+// a peer that caps its answers, is continued from where it stopped.
+constexpr uint32_t kBlockBytes = 512 * 1024;
 std::atomic<uint64_t> nextStream {1};
 bool terminal(const std::string& phase) {
     return phase == "completed" || phase == "failed" || phase == "cancelled";

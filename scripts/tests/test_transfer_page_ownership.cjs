@@ -40,7 +40,7 @@ function fixture() {
     return { accepted:true,taskId:'test-task',attemptId:1,result:state.skipRunner ? Promise.resolve({stage:'cancelled',evidence:'none',diagnosticCode:'cancelled_before_start'}).then(async outcome=>{await options.onFinalize?.(outcome);return outcome;}) : runner(control) };
   }};
   const methods=['transferRouteIdentity','captureTransferLease','transferLeaseIsCurrent','transferQueueKey','activeTransferPanelLease','clipboardLeaseIsCurrent',
-    'releaseNativeTransfer','observeTransferAuthentication','clearTransferAuthentication','submitTransferAuthentication','waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','sendRustDeskFile','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
+    'releaseNativeTransfer','waitForRdpOfferReadsToSettle','followRdpFileOfferReads','observeTransferAuthentication','clearTransferAuthentication','submitTransferAuthentication','waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','sendRustDeskFile','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
     'rdpClipboardHierarchyIsSafe','receiveRdpClipboardEntries','rustDeskClipboardFilesAllowed','offerRustDeskClipboardFiles','observeRustDeskLocalClipboardChange','prepareAndOfferRdpDirectory','pickAndSendDirectory','handleRdpSystemFilePaste','transferClipboardSourceIsCurrent','startDeferredRdpFileDrop','createTransferArtifactBatch'];
   const module={exports:{}};
   const code=ts.transpileModule('export class Harness {\n'+methods.map(extract).join('\n')+'\n}',{
@@ -102,6 +102,7 @@ function fixture() {
       cancelSessionFileTransfer:()=>true,releaseSessionFileTransfer:(sid,generation,id)=>state.releases.push({sid,generation,id}),
       getSessionClipboardSnapshot:()=>({sequence:state.remoteSequence}),publishSessionClipboardFiles:(sid,_gen,files)=>{state.offers.push({sid,files});return {publicationId:1,state:state.publicationState};},
       getSessionClipboardPublicationState:()=>state.publicationState,
+      getSessionRdpFileOfferProgress:()=>state.readProgress??{generation:1,requestedBytes:Number.MAX_SAFE_INTEGER,requests:1,lastRequestAgoMs:5000},
       publishSessionClipboard:()=>({state:2,publicationId:1})}});
   return {page,state,scope,owner};
 }
@@ -139,7 +140,16 @@ test('RDP batch publishes distinct artifacts once and leaves target unconfirmed'
   const files=[{uri:'authorized://one',name:'same.txt',size:0},{uri:'authorized://two',name:'same.txt',size:2}];
   assert.equal(await f.page.prepareAndOfferRdpFiles(files,lease,'picker'),true);
   assert.equal(f.state.offers.length,1);assert.deepEqual(Array.from(f.state.offers[0].files),['/private/file-1','/private/file-2']);
-  assert.equal(f.state.updates.at(-1).stage,'offered');
+  assert.ok(f.state.updates.some(u=>u.stage==='offered'));
+  // The remote then read every byte: the task follows its reads to the end.
+  assert.equal(f.state.updates.at(-1).stage,'transferring');assert.equal(f.state.updates.at(-1).sentBytes,2);
+});
+test('an RDP offer the remote stopped reading halfway is handed off, not completed',async()=>{
+  const f=fixture();f.page.pendingHost.protocol='rdp';const lease=f.page.captureTransferLease();
+  f.state.readProgress={generation:1,requestedBytes:1,requests:3,lastRequestAgoMs:31000};
+  let outcome;f.page.followRdpFileOfferReads(lease,10,{isCurrent:()=>true,update:u=>{f.state.updates.push(u);return true;}}).then(o=>{outcome=o;});
+  for(let i=0;i<20&&!outcome;i++)await Promise.resolve();
+  assert.equal(outcome.stage,'handedOff');assert.equal(outcome.diagnosticCode,'remote_read_partial');
 });
 test('verified source metadata is distinct from sender-only completion',async()=>{
   const f=fixture();f.state.fileSize=42;

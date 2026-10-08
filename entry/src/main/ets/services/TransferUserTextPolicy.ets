@@ -55,6 +55,7 @@ reason('directory_target_unavailable', '目标文件夹不可用，请换一个�
 reason('directory_path_invalid', '目标路径无效');
 reason('directory_create_unconfirmed', '远端没有确认已创建文件夹');
 reason('target_write_unconfirmed', '');
+reason('remote_read_partial', '远端只读取了一部分，可能取消了粘贴');
 reason('peer_prelogin', '被控端 RustDesk 认为当前没有用户登录桌面，文件服务没有启动');
 reason('peer_file_service_unavailable', '被控端 RustDesk 的文件服务没有响应，可能没有运行');
 reason('remote_file_transfer_disabled', '被控端关闭了文件传输');
@@ -85,11 +86,13 @@ export function transferTaskDescription(input: TransferTaskTextInput): string {
   const download: boolean = input.direction === 'download';
   switch (input.stage) {
     case 'completed':
+      if (input.diagnosticCode === 'remote_read_all') { return '远端已取走全部内容'; }
       if (input.evidence === 'exported') { return '已保存到所选位置'; }
       if (input.evidence === 'contentVerified') { return download ? '已接收，内容已校验' : '已发送，远端内容已校验'; }
       if (input.evidence === 'metadataVerified') { return download ? '已接收' : '已发送，远端大小与时间已核对'; }
       return '已发送，远端尚未确认保存';
     case 'handedOff':
+      if (input.diagnosticCode === 'remote_read_partial') { return reason; }
       return download ? '已交给本机剪贴板' : '已交给远端，可在远端粘贴或保存';
     case 'interrupted':
       return reason.length > 0 ? reason : '传输中断，请重新传输';

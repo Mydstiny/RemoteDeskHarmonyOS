@@ -131,6 +131,8 @@ public:
     std::vector<RdpReceivedFileFact> getRdpReceivedFileFacts();
     bool disableRdpDrive();
     RemoteClipboardFileOffer getRemoteClipboardFiles();
+    /** How far the remote has read the files this side offered on its clipboard. */
+    RdpFileOfferReadProgress getLocalFileOfferReadProgress();
     bool requestRemoteClipboardFiles(uint64_t expectedSequence);
     bool startRemoteClipboardReceive(uint64_t taskId, uint64_t expectedSequence,
         const std::vector<uint32_t>& selectedIndices, int privateStageDirectoryFd);

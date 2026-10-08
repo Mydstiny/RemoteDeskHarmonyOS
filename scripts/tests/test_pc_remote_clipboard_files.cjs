@@ -179,6 +179,10 @@ test('invalid tag and oversized offer never admit a receiver',async()=>{
  const f=fixture();assert.equal(await f.receiver.receiveRemote({sequence:9,kind:'files'},()=>true,'untrusted'),false);assert.equal(f.s.starts,0);
  f.s.entries[0].size=2*1024**3+1;assert.equal(await f.run(),false);assert.equal(f.s.starts,0);
 });
+test('copies over 50MB are not pulled automatically and say why',async()=>{
+ const f=fixture();f.s.entries[0].size=50*1024*1024+1;assert.equal(await f.run(),false);assert.equal(f.s.starts,0);
+ assert.equal(f.s.stages.at(-1).error,'too_large_for_automatic');
+});
 test('disposing a service fences pending work and removes observer callbacks',async()=>{
  const f=fixture();f.s.beginHook=()=>f.receiver.dispose();assert.equal(await f.run(),false);assert.equal(f.s.writes,0);assert.equal(f.s.starts,0);
 });

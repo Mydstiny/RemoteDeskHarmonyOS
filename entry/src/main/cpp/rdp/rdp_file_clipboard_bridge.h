@@ -3,6 +3,7 @@
 
 #include "rdp_file_clipboard_offer.h"
 #include "rdp_clipboard_content.h"
+#include "rdp_transfer_types.h"
 
 #ifdef USE_REAL_FREERDP
 
@@ -10,6 +11,8 @@
 #include <freerdp/client/cliprdr.h>
 #include <winpr/clipboard.h>
 
+#include <chrono>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -29,6 +32,12 @@ public:
 
     RdpFileClipboardOfferResult publishLocalFiles(const std::vector<std::string>& paths, bool* formatListAttempted = nullptr);
     void clearLocalFiles();
+    /**
+     * Withdraws the local file offer (new text replaced it). While the remote read the files within `activeWindow`
+     * (a paste in progress) the file streams stay, so the paste completes; they are dropped with the next offer.
+     */
+    void releaseLocalFiles(std::chrono::milliseconds activeWindow);
+    RdpFileOfferReadProgress readProgress() const;
     void setEnabled(bool enabled);
     UINT handleFileContentsRequest(CliprdrClientContext*, const CLIPRDR_FILE_CONTENTS_REQUEST*);
     UINT handleLock(CliprdrClientContext*, const CLIPRDR_LOCK_CLIPBOARD_DATA*);
@@ -50,6 +59,8 @@ public:
 private:
     bool initializeClipboardFormats();
     UINT sendCurrentFormatListLocked(bool includeText);
+    void resetReadProgressLocked(uint64_t generation);
+    bool readActiveLocked(std::chrono::milliseconds window) const;
 
     void* owner_ = nullptr;
     mutable std::mutex mutex_;
@@ -64,6 +75,10 @@ private:
     pcCliprdrServerLockClipboardData helperLock_ = nullptr;
     pcCliprdrServerUnlockClipboardData helperUnlock_ = nullptr;
     pcCliprdrServerFileContentsResponse helperResponse_ = nullptr;
+    uint64_t readGeneration_ = 0;
+    std::map<UINT32, uint64_t> requestedEndByIndex_;
+    uint32_t readRequests_ = 0;
+    std::chrono::steady_clock::time_point lastReadRequest_ {};
 };
 
 #endif // USE_REAL_FREERDP
