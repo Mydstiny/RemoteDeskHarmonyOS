@@ -19927,7 +19927,8 @@ struct RemoteDesktop {
 
   private transferControlClient(lease: RemoteTransferLease, current: () => boolean): RustDeskTransferClient {
     return new RustDeskTransferClient(this.loader, lease, current,
-      (snapshot: SessionTransferAuthentication): void => { this.observeTransferAuthentication(lease, snapshot); });
+      (snapshot: SessionTransferAuthentication): void => { this.observeTransferAuthentication(lease, snapshot); },
+      (message: string): void => { hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk file session ' + message); });
   }
 
   private async createRemoteTransferDirectory(): Promise<void> {
@@ -20827,6 +20828,7 @@ struct RemoteDesktop {
         return;
       }
       if (directory === null) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk remote directory not read pathLength=' + path.length.toString());
         this.remoteTransferBrowserMessage = '目录读取未完成，请检查文件会话授权后刷新重试';
         return;
       }
