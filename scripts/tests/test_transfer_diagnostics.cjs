@@ -88,7 +88,9 @@ test('host scope is stable and separates account host and ambiguous component bo
     project(record({ accountScopeId: 'a', hostId: 'bc' })).hostScope);
   assert.equal(first.hostScope, project(record({ taskId: 'different-task' })).hostScope);
   assert.notEqual(first.task, project(record({ taskId: 'different-task' })).task);
-  assert.equal(project(record({ hostId: 'x'.repeat(257) })).hostScope, 'unknown');
+  assert.equal(project(record({ hostId: 'x'.repeat(1025) })).hostScope, 'unknown');
+  // Hosts synced from RustDesk Pro have long URL-encoded ids; they are hashed like any other.
+  assert.match(project(record({ hostId: 'rdpro_' + encodeURIComponent('relay:acct:123 456') })).hostScope, /^host-[0-9a-f]{8}$/);
 });
 
 test('lease accepts only bounded safe numeric generations and never echoes host or window identity', () => {

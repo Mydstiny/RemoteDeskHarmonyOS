@@ -310,7 +310,8 @@ import { RustDeskTransferClient } from '../services/RustDeskTransferClient';
 import { TransferArtifactPublicationService } from '../services/TransferArtifactPublicationService';
 import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, TransferArtifactBatchInfo, TransferPlatformIncomingDirectory, recoverTransferArtifactInventory, cleanupOwnedTransferArtifactBatch, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey, transferStorageFailureCode } from '../services/TransferArtifactStore';
 import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
-import { rustDeskFileFailureText, rustDeskTransferFailureCode } from '../services/TransferUserTextPolicy';
+import { rustDeskFileFailureText, rustDeskTransferFailureCode, transferFailureReason } from '../services/TransferUserTextPolicy';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { ManagedTransferTaskService, ManagedTransferControl } from '../services/ManagedTransferTaskService';
 import { FileTransferTaskList } from '../components/FileTransferTaskList';
 import { renamedRemoteTransferFileName, joinRemoteTransferPath, remoteTransferPathIsAbsolute, parentRemoteTransferPath, remoteTransferEntryPath } from '../services/TransferRemotePathPolicy';
@@ -703,8 +704,10 @@ import {
   remoteTopBarLayout,
   shouldConsumeRemoteSessionBack,
   shouldShowRemoteSessionTopBar,
-  shouldUseRemoteSessionEdgeRail
+  shouldUseRemoteSessionEdgeRail,
+  remoteSessionEdgeRailWidth
 } from '../services/RemoteSessionTopBarPolicy';
+import { moonlightToolbarLayout } from '../services/MoonlightUiPolicy';
 import {
   RemoteSessionSidebarSystemInsets,
   RemoteSessionSidebarViewport,
@@ -928,6 +931,8 @@ const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
 const TOUCH_INDICATOR_BUTTON_DRAG = 3;
 const RUSTDESK_ADAPTIVE_MAX_EDGE_PX = 1600;
 const RDP_FILE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+/** An RDP file offer the remote has not read this long after the paste: offer 「粘贴到这里」. */
+const RDP_PASTE_HINT_DELAY_MS: number = 4000;
 const RDP_TRANSFER_DRIVE_NAME = 'RemoteDesktop';
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const FILE_TRANSFER_DIAG_RDP_DIR = 'E-RDP-FILE-DIR';
@@ -1499,6 +1504,14 @@ struct RemoteDesktop {
   private rdpOfferRequestGeneration: number = 0;
   @State private remoteTransferBrowserBusy: boolean = false;
   @State private remoteTransferBrowserMessage: string = '';
+  /** Why the remote folder could not be read; shown at the top of the file panel in every mode until a read works. */
+  @State private remoteTransferFailure: string = '';
+  /**
+   * An RDP file offer the remote has not read a few seconds after the paste: the paste went where the remote's focus
+   * was, which may be no folder. The session then offers 「粘贴到这里」 for after the user clicked the target remotely.
+   */
+  @State private rdpPastePending: boolean = false;
+  private rdpPasteLease: RemoteTransferLease | null = null;
   private transferPanelLease: RemoteTransferLease | null = null;
   private transferPanelAccountUnsubscribe: (() => void) | null = null;
   private transferDirectoryRequestGeneration: number = 0;
@@ -6432,8 +6445,29 @@ struct RemoteDesktop {
   /** The side bar's edge, for the AI's orb to keep clear of: RDP/RustDesk rails on the right, VNC's where it is. */
   private sessionAiAvoidSide(): string {
     if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pc') { return ''; }
-    if (this.currentProtocolName() === 'vnc') { return this.vncToolbarPreferredSide; }
+    if (this.currentProtocolName() === 'vnc') { return this.vncAiRailSide(); }
     return 'right';
+  }
+
+  /** The side VNC's rail actually took (it moves to the other side when its own does not fit). */
+  private vncAiRailSide(): string {
+    return this.vncToolbarPlacement.railRect.width > 0 ? this.vncToolbarPlacement.side : this.vncToolbarPreferredSide;
+  }
+
+  /** How far the session's side rail reaches in from its edge: the orb rests just inside it. */
+  private sessionAiAvoidWidth(): number {
+    if (this.currentProtocolName() === 'vnc') {
+      const rail: OverlayRect = this.vncToolbarPlacement.railRect;
+      if (rail.width <= 0) { return 72; }
+      return this.vncAiRailSide() === 'left' ? rail.x + rail.width :
+        Math.max(0, this.currentRemoteSessionSidebarViewport().width - rail.x);
+    }
+    if (this.isRustDeskSession()) {
+      return remoteSessionEdgeRailWidth(remoteTopBarLayout(this.isDesktopDevice, this.breakpoint,
+        this.isPadDevice).iconSize);
+    }
+    // RdpSessionToolbar's rail: 32 vp beside the icon, then 7 vp padding and a 1 vp border a side.
+    return moonlightToolbarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).iconSize + 48;
   }
 
   private openSessionAi(): void { this.aiSessionOpenRequest = Date.now(); }
@@ -19778,29 +19812,67 @@ struct RemoteDesktop {
     control: ManagedTransferControl): Promise<ManagedTransferOutcome> {
     const started: number = Date.now();
     let generation: number = -1;
-    while (control.isCurrent()) {
-      const progress: SessionRdpFileOfferProgress =
-        this.loader.getSessionRdpFileOfferProgress(lease.sessionId, lease.nativeGeneration);
-      if (generation < 0) { generation = progress.generation; }
-      else if (progress.generation !== generation) {
-        // A newer clipboard offer replaced this one.
-        return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
-      }
-      if (progress.requests > 0) {
-        const requested: number = Math.min(total, Math.max(0, progress.requestedBytes));
-        control.update({ stage: 'transferring', sentBytes: requested });
-        if (requested >= total && progress.lastRequestAgoMs >= 1500) {
-          return { stage: 'completed', evidence: 'senderCompleted', diagnosticCode: 'remote_read_all' };
+    let hinted: boolean = false;
+    try {
+      while (control.isCurrent()) {
+        const progress: SessionRdpFileOfferProgress =
+          this.loader.getSessionRdpFileOfferProgress(lease.sessionId, lease.nativeGeneration);
+        if (generation < 0) { generation = progress.generation; }
+        else if (progress.generation !== generation) {
+          // A newer clipboard offer replaced this one.
+          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
         }
-        if (progress.lastRequestAgoMs > 30000) {
-          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'remote_read_partial' };
+        if (progress.requests === 0 && !hinted && Date.now() - started >= RDP_PASTE_HINT_DELAY_MS) {
+          hinted = true;
+          hilog.info(RD_DOMAIN, RD_TAG, 'RDP file offer not read after paste; offering paste here');
+          this.rdpPasteLease = lease;
+          this.rdpPastePending = true;
+        } else if (progress.requests > 0 && this.rdpPasteLease === lease) {
+          this.endRdpPasteHint();
         }
-      } else if (Date.now() - started > 120000) {
-        return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+        if (progress.requests > 0) {
+          const requested: number = Math.min(total, Math.max(0, progress.requestedBytes));
+          control.update({ stage: 'transferring', sentBytes: requested });
+          if (requested >= total && progress.lastRequestAgoMs >= 1500) {
+            return { stage: 'completed', evidence: 'senderCompleted', diagnosticCode: 'remote_read_all' };
+          }
+          if (progress.lastRequestAgoMs > 30000) {
+            return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'remote_read_partial' };
+          }
+        } else if (Date.now() - started > 120000) {
+          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+        }
+        await this.yieldUi(500);
       }
-      await this.yieldUi(500);
+      return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+    } finally {
+      if (this.rdpPasteLease === lease) { this.endRdpPasteHint(); }
     }
-    return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+  }
+
+  private endRdpPasteHint(): void {
+    this.rdpPastePending = false;
+    this.rdpPasteLease = null;
+  }
+
+  /** 「粘贴到这里」: the user clicked the remote folder; paste the offered files at that focus. */
+  private pasteRdpOfferHere(): void {
+    const lease: RemoteTransferLease | null = this.rdpPasteLease;
+    if (lease === null || !this.clipboardLeaseIsCurrent(lease)) {
+      this.endRdpPasteHint();
+      promptAction.showToast({ message: '连接已变化，请重新发送文件', duration: 2200 });
+      return;
+    }
+    this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [KEYCODE_CTRL_LEFT, KEY_V], 'RDP file paste here');
+    for (const key of this.physicalModifierKeyCodesDown) {
+      this.loader.sendKey(lease.sessionId, this.mapPhysicalKeyCode(key), true);
+    }
+    promptAction.showToast({ message: '已在远端粘贴；远端开始读取后进度会显示在任务记录里', duration: 2200 });
+  }
+
+  /** The panel's 「去远端选位置」: close the panel so the remote can be clicked; the session shows 「粘贴到这里」. */
+  private chooseRdpPasteTarget(): void {
+    this.showFileTransferPanel = false;
   }
 
   private async prepareAndOfferRdpFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
@@ -20219,12 +20291,27 @@ struct RemoteDesktop {
     }
   }
 
+  /** A RustDesk send or receive that stops before it becomes a task: which check refused it, and a word in the panel. */
+  private logRustDeskTransferRefused(kind: string, lease: RemoteTransferLease | null, size: number): void {
+    const capabilities: RemoteSessionCapabilities = this.currentSessionCapabilities();
+    hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk ' + kind + ' refused lease=' + (lease === null ? 'none' :
+      this.transferLeaseIsCurrent(lease) ? 'current' : 'stale') + ' protocol=' + this.currentProtocolName() +
+      ' upload=' + (capabilities.fileUpload.enabled ? '1' : '0') +
+      ' download=' + (capabilities.fileDownload.enabled ? '1' : '0') + ' sizeOk=' +
+      (Number.isSafeInteger(size) && size >= 0 && size <= RDP_FILE_MAX_BYTES ? '1' : '0'));
+    this.remoteTransferBrowserMessage = lease !== null && !this.transferLeaseIsCurrent(lease) ?
+      '连接已变化，请关闭文件面板后重新打开' : kind === 'upload' ?
+      (capabilities.fileUpload.enabled ? '这个文件不能发送（单个文件最大 2GB）' : capabilities.fileUpload.reason) :
+      (capabilities.fileDownload.enabled ? '这个条目不能接收' : capabilities.fileDownload.reason);
+  }
+
   private async submitFileToRustDesk(uri: string, fileName: string, fileSize: number,
     lease: RemoteTransferLease | null = this.captureTransferLease(),
     targetDirectory: string = this.remoteTransferDirectory, allowOverwrite: boolean = false,
     renameOnConflict: boolean = false): Promise<TransferState> {
     if (lease === null || !this.transferLeaseIsCurrent(lease) || !Number.isSafeInteger(fileSize) ||
       fileSize < 0 || fileSize > RDP_FILE_MAX_BYTES || !this.currentSessionCapabilities().fileUpload.enabled) {
+      this.logRustDeskTransferRefused('upload', lease, fileSize);
       return 'failed';
     }
     if (renameOnConflict) {
@@ -20235,8 +20322,11 @@ struct RemoteDesktop {
     }
     const remotePath: string = joinRemoteTransferPath(targetDirectory, fileName);
     if (remotePath.length === 0) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk upload refused remote path absolute=' +
+        (remoteTransferPathIsAbsolute(targetDirectory) ? '1' : '0') + ' nameLength=' + fileName.length.toString());
       this.openFileTransferPanel();
-      this.remoteTransferBrowserMessage = '请先选择远端目标文件夹，再发送文件';
+      this.remoteTransferBrowserMessage = remoteTransferPathIsAbsolute(targetDirectory) ?
+        '文件名在远端系统里不可用（含有 \\ / : * ? " < > | 等字符），请改名后再发送' : '请先选择远端目标文件夹，再发送文件';
       return 'failed';
     }
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
@@ -20259,7 +20349,9 @@ struct RemoteDesktop {
       this.setFileTransferStatus(outcome.stage === 'completed' ?
         outcome.evidence === 'metadataVerified' ? '目标大小与修改时间已核对，源文件保留' :
         '发送端已发送全部数据，目标文件尚未校验' : outcome.diagnosticCode === 'target_exists' ?
-        '远端已存在同名文件，已保留；重新选择发送前可明确允许覆盖' : '文件传输已停止，可在任务记录中查看',
+        '远端已存在同名文件，已保留；重新选择发送前可明确允许覆盖' :
+        !handle.accepted ? '没能开始发送：' + transferFailureReason('task_admission_rejected') :
+        '文件传输已停止，可在任务记录中查看',
         outcome.stage === 'completed' ? 1 : -1, false);
     }
     return outcome.stage === 'completed' ? 'senderCompleted' : 'failed';
@@ -20542,7 +20634,10 @@ struct RemoteDesktop {
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     const root: string = joinRemoteTransferPath(this.remoteTransferDirectory, entry.name);
     if (lease === null || context === null || entry.type !== 0 || root.length === 0 ||
-      !this.transferLeaseIsCurrent(lease) || !this.currentSessionCapabilities().fileDownload.enabled) { return; }
+      !this.transferLeaseIsCurrent(lease) || !this.currentSessionCapabilities().fileDownload.enabled) {
+      this.logRustDeskTransferRefused('download-directory', lease, 0);
+      return;
+    }
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
     if (!service.init(context)) { return; }
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
@@ -20591,6 +20686,7 @@ struct RemoteDesktop {
     if (this.transferLeaseIsCurrent(lease)) {
       this.refreshTransferCache();
       this.setFileTransferStatus(outcome.stage === 'completed' ? '目录已接收到本机，源文件保留' :
+        !handle.accepted ? '没能开始接收：' + transferFailureReason('task_admission_rejected') :
         '目录接收未完成，已接收文件与源文件保留', outcome.stage === 'completed' ? 1 : -1, false);
     }
   }
@@ -20599,7 +20695,10 @@ struct RemoteDesktop {
     const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const remotePath: string = joinRemoteTransferPath(this.remoteTransferDirectory, entry.name);
     if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rustdesk' ||
-      entry.type !== 4 || remotePath.length === 0 || !this.currentSessionCapabilities().fileDownload.enabled) { return; }
+      entry.type !== 4 || remotePath.length === 0 || !this.currentSessionCapabilities().fileDownload.enabled) {
+      this.logRustDeskTransferRefused('download', lease, entry.size);
+      return;
+    }
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (context === null) { return; }
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
@@ -20622,6 +20721,7 @@ struct RemoteDesktop {
     const outcome: ManagedTransferOutcome = await handle.result;
     if (this.transferLeaseIsCurrent(lease)) {
       this.setFileTransferStatus(outcome.stage === 'completed' ? '已接收到本机（保留 7 天），可另存或复制到剪贴板' :
+        !handle.accepted ? '没能开始接收：' + transferFailureReason('task_admission_rejected') :
         '接收未完成，源文件保留', outcome.stage === 'completed' ? 1 : -1, false);
     }
   }
@@ -20838,6 +20938,7 @@ struct RemoteDesktop {
     if (!sameOwner) { this.clearTransferAuthentication(); this.legacyTransferCaches = []; }
     if (!sameOwner) {
       this.rustdeskClipboardEntries = []; this.rustdeskClipboardRevision = 0; this.rustdeskClipboardMessage = '';
+      this.remoteTransferFailure = '';
       this.remoteTransferDirectory = '';
       this.remoteTransferPathInput = '';
       this.remoteTransferEntries = [];
@@ -20912,12 +21013,14 @@ struct RemoteDesktop {
         hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk remote directory not read pathLength=' + path.length.toString() +
           ' reason=' + client.lastFailure);
         this.remoteTransferBrowserMessage = rustDeskFileFailureText(client.lastFailure, this.rustDeskPeerPlatformCategory);
+        this.remoteTransferFailure = this.remoteTransferBrowserMessage;
         return;
       }
       if (!remoteTransferPathIsAbsolute(directory.path)) {
         this.remoteTransferBrowserMessage = '远端未返回可用目录，请输入绝对目录后重试';
         return;
       }
+      this.remoteTransferFailure = '';
       this.remoteTransferDirectory = directory.path;
       this.remoteTransferPathInput = directory.path;
       this.remoteTransferEntries = directory.entries.filter((entry: SessionRemoteFileEntry): boolean =>
@@ -24699,7 +24802,7 @@ struct RemoteDesktop {
           deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pc' ? 'pc' :
             remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pad' ? 'pad' : 'phone',
           avoidSide: this.sessionAiAvoidSide(),
-          avoidWidth: 72,
+          avoidWidth: this.sessionAiAvoidWidth(),
           onSessionAction: (action: DiagnosticAiAppActionId): boolean => this.runSessionAiAction(action)
         })
       }
@@ -24893,6 +24996,24 @@ struct RemoteDesktop {
         .borderRadius(0)
         .hitTestBehavior(HitTestMode.None)
         .animation({ duration: 180, curve: Curve.EaseOut })
+      }
+
+      // An RDP file offer nothing read yet: the user clicks the target folder remotely, then pastes here.
+      if (this.connected && this.rdpPastePending && !this.showFileTransferPanel && this.isRdpRemoteSession()) {
+        Row({ space: 8 }) {
+          Text('在远端点开要放文件的文件夹，然后点')
+            .fontSize(13).fontColor('#FFFFFF').layoutWeight(1).maxLines(2)
+          Button('粘贴到这里').height(36).fontSize(13)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
+            .onClick((): void => { this.pasteRdpOfferHere(); })
+          Button('关闭').height(36).fontSize(13).backgroundColor('rgba(255,255,255,0.16)').fontColor('#FFFFFF')
+            .onClick((): void => { this.endRdpPasteHint(); })
+        }
+        .width('88%').constraintSize({ maxWidth: 560 })
+        .padding({ left: 14, right: 8, top: 8, bottom: 8 })
+        .backgroundColor('rgba(20,20,24,0.86)').borderRadius(12)
+        .position({ x: '50%', y: '6%' }).markAnchor({ x: '50%', y: 0 })
+        .zIndex(230)
       }
 
       if (this.connected && this.fileTransferStatus.length > 0) {
@@ -25234,6 +25355,9 @@ struct RemoteDesktop {
         if (this.transferAuth.transferId > 0) {
           this.fileTransferAuthenticationPanel()
         }
+        if (this.currentProtocolName() === 'rustdesk' && this.remoteTransferFailure.length > 0) {
+          this.rustDeskFileFailureBanner()
+        }
 
         if (this.fileTransferPanelMode === 'chooser') {
           this.fileTransferModeChooser()
@@ -25265,6 +25389,23 @@ struct RemoteDesktop {
         this.dropHoverActive = false;
         this.startDeferredFileDrop(event);
       })
+  }
+
+  /** Why the remote folder cannot be read (often a state of the controlled computer), with a retry. */
+  @Builder private rustDeskFileFailureBanner() {
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.exclamationmark_triangle')).fontSize(20).fontColor([this.pal().text])
+        Text('读不到远端文件').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+      }.width('100%')
+      Text(this.remoteTransferFailure).fontSize(13).fontColor(this.pal().text2).width('100%')
+      Button(this.remoteTransferBrowserBusy ? '正在重试…' : '重试').height(40).width('100%')
+        .enabled(!this.remoteTransferBrowserBusy)
+        .onClick((): void => {
+          void this.browseRemoteTransferDirectory(this.remoteTransferDirectory.length > 0 ?
+            this.remoteTransferDirectory : this.remoteTransferPathInput);
+        })
+    }.width('100%').padding(12).backgroundColor(this.pal().card).borderRadius(14)
   }
 
   @Builder private fileTransferAuthenticationPanel() {
@@ -25383,6 +25524,16 @@ struct RemoteDesktop {
         Button('从本机剪贴板发送文件').width('100%').height(42)
           .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled)
           .onClick((): void => { void this.handleRdpSystemFilePaste(); })
+        if (this.rdpPastePending) {
+          Column({ space: 8 }) {
+            Text('文件已放到远端剪贴板，但远端还没有取走：远端当前的焦点可能不在文件夹里。')
+              .fontSize(13).fontColor(this.pal().text).width('100%')
+            Text('点「去远端选位置」，在远端点开要放文件的文件夹，再点画面上的「粘贴到这里」。')
+              .fontSize(12).fontColor(this.pal().text2).width('100%')
+            Button('去远端选位置').width('100%').height(42)
+              .onClick((): void => { this.chooseRdpPasteTarget(); })
+          }.width('100%').padding(12).backgroundColor(this.pal().card).borderRadius(12)
+        }
       }
       if (this.currentProtocolName() === 'rustdesk') {
         Row({ space: 8 }) {

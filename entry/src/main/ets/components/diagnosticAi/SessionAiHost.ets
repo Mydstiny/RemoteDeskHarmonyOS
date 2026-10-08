@@ -2,7 +2,7 @@ import { ComponentContent, display, promptAction, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer } from './AiTopLayer';
-import { AI_VOICE_REQUEST, AiChatMemory, aiChatOwner } from './AiChatView';
+import { AI_VOICE_REQUEST, AiChatMemory, aiChatConfigProblem, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
 import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_HANDOVER, AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { SessionAiPanelParams, sessionAiPanel } from './SessionAiPanel';
@@ -12,6 +12,7 @@ import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 import { AiReadAloud } from '../../services/diagnosticAi/AiSpeech';
 import { AI_VOICE_ENABLED, AiVoiceConfig, AiVoiceSettings } from '../../services/diagnosticAi/AiVoiceSettings';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 
 let sessionHostCount: number = 0;
 
@@ -113,6 +114,17 @@ export struct SessionAiHost {
     try { promptAction.showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
   }
 
+  /** The signed-in account's AI 配置 problem ('' when the AI can answer). */
+  private configProblem(): string {
+    try {
+      const store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
+      store.init(this.getUIContext().getHostContext() as common.UIAbilityContext, aiChatOwner());
+      return aiChatConfigProblem(store);
+    } catch (_error) {
+      return '';
+    }
+  }
+
   private voiceConfig(): AiVoiceConfig {
     const settings: AiVoiceSettings = new AiVoiceSettings();
     settings.init(this.getUIContext().getHostContext() as common.UIAbilityContext, aiChatOwner());
@@ -142,6 +154,9 @@ export struct SessionAiHost {
   private startAi(): void {
     const config: AiVoiceConfig = this.voiceConfig();
     this.openOrb();
+    // Without a usable AI 配置 the orb's chat says so; listening would only lead nowhere.
+    const problem: string = this.configProblem();
+    if (problem !== '') { this.toast(problem); return; }
     if (!config.sessionStartVoice || !config.enabled) { return; }
     AiChatMemory.sessionTalk = 'on';
     if (this.startTimer >= 0) { clearTimeout(this.startTimer); }

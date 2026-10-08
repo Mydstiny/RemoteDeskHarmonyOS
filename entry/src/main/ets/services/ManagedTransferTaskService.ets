@@ -181,10 +181,16 @@ export class ManagedTransferTaskService {
       (item: ManagedTransferRecord): boolean => item.taskId === taskId);
     const activeTask: boolean = Array.from(this.active.values()).some((item: ManagedTransferRuntime): boolean =>
       item.record.accountScopeId === options.accountScopeId && item.record.taskId === taskId);
-    if (this.context === null || !managedTransferIdentifier(options.accountScopeId) || !this.currentOptions(options) ||
-      activeTask || previous.some((item: ManagedTransferRecord): boolean => item.attemptId >= attemptId ||
-        item.stage === 'commitUnknown') ||
-      !this.store.ready(options.accountScopeId) || !this.store.upsert(record)) {
+    // The first reason that refuses the task, for the log (never the ids themselves).
+    const refusal: string = this.context === null ? 'no_context' :
+      !managedTransferIdentifier(options.accountScopeId) ? 'account_scope' :
+      !this.currentOptions(options) ? 'not_current' : activeTask ? 'task_active' :
+      previous.some((item: ManagedTransferRecord): boolean => item.attemptId >= attemptId ||
+        item.stage === 'commitUnknown') ? 'attempt_used' :
+      !this.store.ready(options.accountScopeId) ? 'store_unavailable' : !this.store.upsert(record) ? 'record_refused' : '';
+    if (refusal !== '') {
+      hilog.warn(0x0001, 'TransferTask', 'admission rejected reason=%{public}s protocol=%{public}s direction=%{public}s',
+        refusal, options.protocol, options.direction);
       const rejected: ManagedTransferOutcome = { stage: 'failed', evidence: 'none',
         diagnosticCode: 'task_admission_rejected' };
       return { accepted: false, taskId, attemptId, result: Promise.resolve(rejected) };

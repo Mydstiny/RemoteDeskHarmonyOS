@@ -22,7 +22,8 @@ import {
   rustDeskTopBarSubMenuForItem,
   reduceRustDeskTopBarSubMenuState,
   rustDeskTouchpadSpeedOptions,
-  remoteSessionActionAvailability
+  remoteSessionActionAvailability,
+  remoteSessionEdgeRailWidth
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -59,7 +60,7 @@ import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProEntries } from '../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
 import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
-import { AI_SESSION_PANEL_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
+import { AI_SESSION_PANEL_REQUEST, AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -249,7 +250,8 @@ export struct RemoteSessionTopBar {
     multiDisplay: { enabled: false, reason: '远程会话尚未连接' }
   };
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @State private collapsed: boolean = false;
+  /** The AI orb keeps clear of the rail while it is open, and may use the edge while it is only the handle. */
+  @State @Watch('publishAiRail') private collapsed: boolean = false;
   @State private pinned: boolean = false;
   @State private activeMenu: string = '';
   @State private activeSubMenu: string = '';
@@ -429,6 +431,7 @@ export struct RemoteSessionTopBar {
 
   aboutToAppear(): void {
     this.collapsed = false;
+    this.publishAiRail();
     this.activeMenu = '';
     this.resetSubMenu();
     this.scheduleAutoCollapse();
@@ -496,7 +499,11 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailWidth(): number {
-    return this.layout.iconSize + 12;
+    return remoteSessionEdgeRailWidth(this.layout.iconSize);
+  }
+
+  private publishAiRail(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, !this.collapsed);
   }
 
   private sidebarMenuWidth(): number {

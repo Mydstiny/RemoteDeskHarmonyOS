@@ -25,7 +25,7 @@ const SOURCES: string[] = ['picker', 'file-picker', 'drop', 'deferred-drop', 'sy
   'local-directory-export', 'explicit-legacy-recovery'];
 const STAGES: string[] = ['preparing', 'ready', 'offered', 'transferring', 'senderCompleted', 'verifying',
   'committing', 'waitingConnection', 'waitingRemote', 'paused', 'cancelling', 'commitUnknown',
-  'completed', 'failed', 'cancelled', 'expired'];
+  'completed', 'failed', 'cancelled', 'expired', 'handedOff', 'interrupted'];
 const EVIDENCE: string[] = ['none', 'offered', 'senderCompleted', 'metadataVerified', 'contentVerified', 'exported'];
 // Unknown codes are not echoed: even a syntactically safe string can contain a secret.
 const CODES: string[] = ['task_admission_rejected', 'runner_failed', 'cancelled_by_user', 'cancelled_before_start',
@@ -39,7 +39,12 @@ const CODES: string[] = ['task_admission_rejected', 'runner_failed', 'cancelled_
   'directory_tree_incomplete', 'legacy_import_incomplete', 'clipboard_offer_unavailable', 'clipboard_staging_failed',
   'clipboard_receive_rejected', 'clipboard_receive_incomplete', 'clipboard_receive_retired', 'clipboard_receive_failed',
   'export_destination_retained', 'export_not_committed', 'transfer_directory_close_unknown',
-  'transfer_directory_export_failed', 'transfer_directory_not_attempted'];
+  'transfer_directory_export_failed', 'transfer_directory_not_attempted', 'remote_read_all', 'remote_read_partial',
+  'interrupted', 'export_destination_cleared', 'export_destination_emptied', 'peer_prelogin',
+  'peer_file_service_unavailable', 'remote_file_transfer_disabled', 'remote_one_way_transfer', 'remote_path_not_found',
+  'remote_permission_denied', 'remote_disk_full', 'transfer_space_limit', 'transfer_size_limit',
+  'transfer_batch_size_limit', 'transfer_source_changed', 'transfer_batch_unavailable',
+  'transfer_export_target_unavailable', 'transfer_target_exists'];
 
 function allowed(value: string, values: string[], fallback: string): string {
   return typeof value === 'string' && values.indexOf(value) >= 0 ? value : fallback;
@@ -50,7 +55,8 @@ function safeInteger(value: number): number {
 }
 
 function identifier(value: string): boolean {
-  return typeof value === 'string' && value.length > 0 && value.length <= 256;
+  // Host ids synced from RustDesk Pro are URL-encoded and can be long; they are only hashed here.
+  return typeof value === 'string' && value.length > 0 && value.length <= 1024;
 }
 
 /** FNV-1a over UTF-16 code units, for bounded diagnostic correlation only.

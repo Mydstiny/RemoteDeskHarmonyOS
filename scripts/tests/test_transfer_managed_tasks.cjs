@@ -337,6 +337,17 @@ test('progress ticks persist at most every five seconds; stage changes persist a
   env.advance(5000); control.update({ sentBytes: 3 }); env.advance(300); await drain(); assert.equal(persisted().sentBytes, 3);
   gate.resolve(outcome('cancelled', 'none')); await handle.result; await drain();
 });
+test('hosts synced from RustDesk Pro (URL-encoded ids) are admitted and persisted', async () => {
+  const env = environment(), service = env.service(), gate = deferred();
+  const hostId = 'rdpro_' + encodeURIComponent('relay-1:acct@example.com:123 456 789');
+  const handle = service.enqueue(options({ hostId }), async () => gate.promise); await drain();
+  assert.equal(handle.accepted, true);
+  assert.equal(service.list('account-a')[0].hostId, hostId);
+  gate.resolve(outcome()); await handle.result; await drain();
+  assert.equal(JSON.parse(env.seed.get('account:account-a'))[0].hostId, hostId);
+  const refused = service.enqueue(options({ hostId: 'bad\nhost' }), async () => outcome());
+  assert.equal(refused.accepted, false);
+});
 (async () => {
   for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }
   console.log(`PASS ${tests.length} managed transfer regressions`);

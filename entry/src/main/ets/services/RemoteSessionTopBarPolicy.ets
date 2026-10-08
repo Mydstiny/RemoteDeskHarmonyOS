@@ -444,6 +444,11 @@ export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boo
 }
 
 /** Phone and Pad always use a right rail; PC always uses a top bar. */
+/** The Phone/Pad session rail's width: its buttons plus 6 vp a side (the AI orb rests just inside it). */
+export function remoteSessionEdgeRailWidth(iconSize: number): number {
+  return iconSize + 12;
+}
+
 export function shouldUseRemoteSessionEdgeRail(protocol: string,
   isDesktopDevice: boolean): boolean {
   return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;

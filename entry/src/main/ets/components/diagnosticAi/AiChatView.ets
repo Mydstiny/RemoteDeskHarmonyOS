@@ -208,6 +208,23 @@ export function aiChatSelectedProfile(store: DiagnosticAiProfileStore): Diagnost
   } catch (_error) { return undefined; }
 }
 
+/**
+ * What keeps the chat from asking anything, as the sentence to show ('' when it can ask): no service and model chosen,
+ * or the API Key not readable back. Shown as soon as a chat opens, not only after a question went nowhere.
+ */
+export function aiChatConfigProblem(store: DiagnosticAiProfileStore): string {
+  const profile: DiagnosticAiProviderProfile | undefined = aiChatSelectedProfile(store);
+  if (profile === undefined) {
+    return '还没有配置 AI 服务。请在「设置 → AI 助理 → 辅助 AI 配置」里保存 API Key 并选择模型';
+  }
+  let secret: string = '';
+  try { secret = store.secret(profile); } catch (_error) { secret = ''; }
+  if (!diagnosticAiProviderIsHarmonyLocal(profile.providerId) && secret.trim() === '') {
+    return 'API Key 无法从本机安全存储读回，请在「设置 → AI 助理 → 辅助 AI 配置」里重新保存';
+  }
+  return '';
+}
+
 /** Whether the current account may use the AI chat (the AI 助理 Pro entry). */
 export function aiChatAllowed(): boolean {
   return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
@@ -474,6 +491,8 @@ export struct AiChatView {
     const manifest = profile !== undefined ? diagnosticAiProviderManifest(profile.providerId) : null;
     this.providerName = manifest !== null ? manifest.displayName : '';
     this.reloadFromMemory();
+    // Say it before the user asks: a question would only go nowhere.
+    if (this.error === '' && this.allowed()) { this.error = aiChatConfigProblem(this.store); }
   }
 
   aboutToDisappear(): void {
@@ -867,13 +886,11 @@ export struct AiChatView {
     // Kept for reading the answer aloud, which may land after this view has gone (the chat folded away).
     const context: common.UIAbilityContext = this.context();
     if (!this.allowed()) { this.error = '当前账号没有 AI 助理权限'; return; }
-    const profile: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
-    if (profile === undefined) { this.error = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
+    const problem: string = aiChatConfigProblem(this.store);
+    if (problem !== '') { this.error = problem; return; }
+    const profile: DiagnosticAiProviderProfile = this.selectedProfile() as DiagnosticAiProviderProfile;
     let secret: string = '';
     try { secret = this.store.secret(profile); } catch (_error) { secret = ''; }
-    if (!diagnosticAiProviderIsHarmonyLocal(profile.providerId) && secret.trim() === '') {
-      this.error = 'API Key 无法从本机安全存储读回，请在辅助 AI 配置中重新保存'; return;
-    }
     const sent: AiAttachment[] = retry ? [] : this.pending;
     if (!retry) {
       const message: AiChatMessage = new AiChatMessage(newMessageId(), 'user', question,

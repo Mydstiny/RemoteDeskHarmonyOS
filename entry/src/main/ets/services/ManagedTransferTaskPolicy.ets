@@ -62,6 +62,13 @@ export function managedTransferIdentifier(value: string): boolean {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 &&
     /^[A-Za-z0-9_.:@-]+$/.test(value);
 }
+/**
+ * A host id as the host list keeps it. Ids of hosts synced from RustDesk Pro are URL-encoded ('rdpro_…%3A…'), so this
+ * only refuses what cannot be an id: empty, overlong, or control characters.
+ */
+export function managedTransferHostId(value: string): boolean {
+  return typeof value === 'string' && value.length > 0 && value.length <= 1024 && !/[\x00-\x1f\x7f]/.test(value);
+}
 export function managedTransferCode(value: string | undefined): string {
   return value !== undefined && /^[a-z0-9_-]{1,80}$/.test(value) ? value : '';
 }
@@ -90,7 +97,7 @@ export function normalizeManagedTransferRecord(value: ManagedTransferRecord,
   accountScopeId: string): ManagedTransferRecord | null {
   if (value === null || typeof value !== 'object' || (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     value.accountScopeId !== accountScopeId || !managedTransferIdentifier(value.taskId) ||
-    !managedTransferIdentifier(value.hostId) || !managedTransferInteger(value.attemptId) || value.attemptId < 1 ||
+    !managedTransferHostId(value.hostId) || !managedTransferInteger(value.attemptId) || value.attemptId < 1 ||
     typeof value.sourceKind !== 'string' || (value.sourceKind.length > 0 && !managedTransferIdentifier(value.sourceKind)) ||
     typeof value.leaseId !== 'string' || (value.leaseId.length > 0 && !managedTransferIdentifier(value.leaseId)) ||
     typeof value.batchId !== 'string' || (value.batchId.length > 0 && !managedTransferIdentifier(value.batchId)) ||

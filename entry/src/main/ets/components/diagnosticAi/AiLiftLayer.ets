@@ -29,6 +29,8 @@ const AI_CHAT_TALL: number = 380;
 const AI_CHAT_FRAME: number = 150;
 /** Orb resting distance from the side it snaps to. */
 const AI_EDGE: number = 14;
+/** Beside a session's side rail the orb sits close to it, not a screen margin away. */
+const AI_RAIL_GAP: number = 6;
 /** The one-time hint beside the orb. */
 const AI_HINT_WIDTH: number = 212;
 const AI_HINT_HEIGHT: number = 30;
@@ -536,7 +538,8 @@ struct AiLiftLayer {
     // A session's side bar takes its edge: the orb rests just inside it.
     const avoid: number = this.controller.sessionMode && this.controller.avoidSide === (right ? 'right' : 'left') ?
       (this.railExpanded ? Math.max(0, this.controller.avoidWidth) : 0) : 0;
-    return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE - avoid : AI_EDGE + avoid;
+    const gap: number = avoid > 0 ? AI_RAIL_GAP : AI_EDGE;
+    return right ? this.layerW - AI_FLOAT_ORB - gap - avoid : gap + avoid;
   }
 
   /** The side rail opened or folded: an orb resting on that side moves to the new edge. */
