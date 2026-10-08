@@ -6,8 +6,9 @@ import { DEBUG } from 'BuildProfile';
 import { ProClientLease, ProPurchaseIntent, proPurchaseBatches } from './ProTrustedEntitlementClient';
 import { ProReconciliationOutcome } from './ProEntitlementService';
 
-export const PRO_LAUNCH_PRICE: string = '¥19.99';
-export const PRO_REGULAR_PRICE: string = '¥28.88';
+// 首发价到今年年底，明年起常规价（与 Pro 介绍、更新日志一致）。
+export const PRO_LAUNCH_PRICE: string = '¥25.00';
+export const PRO_REGULAR_PRICE: string = '¥38.80';
 export interface ProStoreProduct { id: string; name: string; price: string; }
 export interface ProBillingOutcome { verified: boolean; records: number; }
 export interface ProBillingBackend {

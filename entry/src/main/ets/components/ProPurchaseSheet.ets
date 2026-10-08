@@ -187,7 +187,7 @@ export struct ProPurchaseSheet {
             if (this.trial) {
               Text('1.2.0 起全部 Pro 功能免费试用').fontSize(12).fontColor(this.accent)
             } else {
-              Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
+              Text('一次购买 · 不自动续费 · 年底前 ' + PRO_LAUNCH_PRICE).fontSize(12).fontColor(this.accent)
             }
           }.width('100%').padding({ top: 16, bottom: 18 })
           ForEach(this.proCatalog(),
@@ -264,7 +264,7 @@ export struct ProPurchaseSheet {
       Column({ space: 8 }) {
         Text(this.message).fontSize(12).fontColor(this.pal().text2).lineHeight(18).width('100%')
         if (this.storePrice.length === 0) {
-          Text('计划首发 ' + PRO_LAUNCH_PRICE + ' · 后续常规价 ' + PRO_REGULAR_PRICE)
+          Text('一次购买 · 年底前 ' + PRO_LAUNCH_PRICE + ' · 明年起 ' + PRO_REGULAR_PRICE)
             .fontSize(13).fontColor(this.pal().text2)
         }
         Button(this.busy ? '正在处理…' : this.purchased ? 'Pro 已开通' : !this.billingReady ? 'Pro 即将推出' :
