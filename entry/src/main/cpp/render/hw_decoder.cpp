@@ -1675,11 +1675,23 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 const Render::DesktopOrientationCorrection measured =
                     Render::DesktopOrientationCorrectionFor(static_cast<int32_t>(codecType_));
                 if (Render::OrientationIsCorrectable(measured.shown)) {
-                    correction = static_cast<int32_t>(measured.shown) | (measured.textureSpace ? 0x100 : 0);
-                    // In texture space the texture's own turn is undone (it commutes
-                    // with the producer matrix only for flips, not quarter turns).
-                    finalTransform = Render::CorrectedNativeImageTransform(resolvedTransform,
-                        measured.textureSpace ? measured.textureShown : measured.shown, measured.textureSpace);
+                    // In texture space the class to undo is this frame's matrix class
+                    // after the texture's own turn; a matrix that is not axis-aligned
+                    // falls back to screen space, which is exact for every class.
+                    Render::NativeImageTransformClass undone = measured.shown;
+                    bool textureSpace = false;
+                    if (measured.textureSpace) {
+                        const Render::NativeImageTransformClass textureClass =
+                            Render::TextureSpaceCorrectionClass(resolvedTransform, measured.textureShown);
+                        if (textureClass != Render::NativeImageTransformClass::Other) {
+                            undone = textureClass;
+                            textureSpace = true;
+                        }
+                    }
+                    if (Render::OrientationIsCorrectable(undone)) {
+                        correction = static_cast<int32_t>(undone) | (textureSpace ? 0x100 : 0);
+                        finalTransform = Render::CorrectedNativeImageTransform(resolvedTransform, undone, textureSpace);
+                    }
                 }
             }
             const Render::NativeImageTransformClass appliedTransformClass =

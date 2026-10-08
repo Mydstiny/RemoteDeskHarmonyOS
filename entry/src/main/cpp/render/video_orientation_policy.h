@@ -3,6 +3,7 @@
 #include "native_image_context_policy.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 
@@ -153,6 +154,51 @@ inline NativeImageTransform MultiplyNativeImageTransforms(const NativeImageTrans
 }
 
 /**
+ * The axis-aligned class of a texture transform that may also crop (the signs
+ * of its linear part); Other when it is not axis-aligned.
+ */
+inline NativeImageTransformClass AxisClassOfNativeImageTransform(const NativeImageTransform& matrix) {
+    const auto zero = [](float value) { return std::fabs(value) <= 0.0001f; };
+    if (zero(matrix[4]) && zero(matrix[1]) && !zero(matrix[0]) && !zero(matrix[5])) {
+        const bool x = matrix[0] > 0.0f;
+        const bool y = matrix[5] > 0.0f;
+        if (x && y) return NativeImageTransformClass::Identity;
+        if (!x && y) return NativeImageTransformClass::FlipX;
+        if (x && !y) return NativeImageTransformClass::FlipY;
+        return NativeImageTransformClass::Rotate180;
+    }
+    if (zero(matrix[0]) && zero(matrix[5]) && !zero(matrix[4]) && !zero(matrix[1])) {
+        const bool xFromY = matrix[4] > 0.0f;
+        const bool yFromX = matrix[1] > 0.0f;
+        if (xFromY && !yFromX) return NativeImageTransformClass::Rotate90;
+        if (!xFromY && yFromX) return NativeImageTransformClass::Rotate270;
+        if (xFromY && yFromX) return NativeImageTransformClass::Transpose;
+        return NativeImageTransformClass::Transverse;
+    }
+    return NativeImageTransformClass::Other;
+}
+
+/**
+ * The class a texture-space correction undoes. With the texture's own turn T
+ * (what sampling with no transform showed) and the applied matrix M, sampling
+ * through C^-1 * M shows source point T(C^-1(M(s))), which is upright when
+ * C = M * T: the applied matrix's class after the texture's turn (T alone is
+ * right only when M has no turn of its own). Other when the applied matrix is
+ * not axis-aligned or the turn is unknown (correct in screen space instead).
+ */
+inline NativeImageTransformClass TextureSpaceCorrectionClass(const NativeImageTransform& applied,
+                                                            NativeImageTransformClass textureShown) {
+    const NativeImageTransformClass appliedClass = AxisClassOfNativeImageTransform(applied);
+    if (appliedClass == NativeImageTransformClass::Other ||
+        (textureShown != NativeImageTransformClass::Identity && !OrientationIsCorrectable(textureShown))) {
+        return NativeImageTransformClass::Other;
+    }
+    const NativeImageTransform product = MultiplyNativeImageTransforms(
+        NativeImageTransformForClass(appliedClass), NativeImageTransformForClass(textureShown));
+    return ClassifyNativeImageProducerTransform(0, product.data());
+}
+
+/**
  * The sampling transform that shows the source upright when `applied` was
  * measured to show it as `shown`.
  *
@@ -161,7 +207,8 @@ inline NativeImageTransform MultiplyNativeImageTransforms(const NativeImageTrans
  * itself introduced the turn (a producer matrix that disagrees with the
  * texture). Texture space (inverse * applied): the texture coordinate is
  * mapped after `applied` — right when the GPU's texture itself is turned, so
- * a crop inside `applied` keeps addressing the picture rows, not padding.
+ * a crop inside `applied` keeps addressing the picture rows, not padding
+ * (`shown` is then TextureSpaceCorrectionClass, not the measured class).
  */
 inline NativeImageTransform CorrectedNativeImageTransform(const NativeImageTransform& applied,
                                                           NativeImageTransformClass shown,

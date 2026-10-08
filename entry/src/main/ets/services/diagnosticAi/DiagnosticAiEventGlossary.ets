@@ -93,7 +93,8 @@ const GLOSSARY: string[] = [
     '地址类别不能证明使用了哪种虚拟网。',
   'runtime.video（RustDesk、Moonlight 的视频证据；值为 0 的字段不发送）：codec 编号 0 H.264、1 H.265、2 VP8、3 VP9、4 AV1。' +
     'decoderAttempts 为每次创建解码器的记录：capabilityHardware 1 为硬件解码；bufferTransform 为 NativeImage 缓冲区变换，' +
-    'producerV1Class 为旧版 V1 矩阵的方向类；orientationCorrection 为方向自检纠正掉的方向类（-1 未纠正）；' +
+    'producerV1Class 为旧版 V1 矩阵的方向类；orientationCorrection 为方向自检纠正掉的方向类（-1 未纠正；在纹理空间纠正时再加 256，' +
+    '如 259 为在纹理空间纠正上下颠倒，否则在画面空间纠正）；' +
     'streamDisplayOrientation 为码流里的显示方向 SEI（0 没有）。orientationSelfTests 为方向自检：把已知的四色画面' +
     '（左上红、右上绿、左下蓝、右下白）用本机真实的解码器 → NativeImage → GPU 路径解码，再读回四角颜色；' +
     'mode 0 为直接采样（手机、平板、RDP），4 为生产者矩阵模式（鸿蒙 PC 的 RustDesk）；stage 15 为完成，其它为停下的步骤' +

@@ -31,7 +31,7 @@ export interface DecoderAttemptEvidence {
   /** NativeImage buffer transform and V1 matrix class on the desktop path (-1 not sampled). */
   bufferTransform: number;
   producerV1Class: number;
-  /** Transform class the orientation self-test correction undid (-1 none). */
+  /** Transform class the orientation self-test correction undid, +256 when undone in texture space (-1 none). */
   orientationCorrection: number;
   /** First key frames: NAL types (bits 0..31 / 32..63), SEI payload types, display-orientation SEI. */
   streamNalMaskLow: number;

@@ -120,6 +120,50 @@ RDP_TEST_CASE(video_orientation_texture_space_correction_keeps_crop_on_turned_te
     RDP_ASSERT(std::fabs(sourceRow(screen, 0.0f) - 0.0f) > 0.005f);
 }
 
+RDP_TEST_CASE(video_orientation_corrections_are_upright_for_every_texture_turn_and_matrix) {
+    // The texture shows source point T(t) at texture point t; the session samples through M.
+    // Identity read: class(T); applied read: class(T * M). Both corrections must end upright.
+    for (NativeImageTransformClass texture : kAxisClasses) {
+        for (NativeImageTransformClass matrixClass : kAxisClasses) {
+            const NativeImageTransform turn = Render::NativeImageTransformForClass(texture);
+            const NativeImageTransform matrix = Render::NativeImageTransformForClass(matrixClass);
+            const NativeImageTransformClass shown = Render::ClassifyNativeImageProducerTransform(
+                0, Render::MultiplyNativeImageTransforms(turn, matrix).data());
+            if (!Render::OrientationIsCorrectable(shown)) { continue; }
+            const NativeImageTransform screen = Render::CorrectedNativeImageTransform(matrix, shown, false);
+            RDP_ASSERT(NearlyIdentity(Render::MultiplyNativeImageTransforms(turn, screen)));
+            const NativeImageTransformClass undone = Render::TextureSpaceCorrectionClass(matrix, texture);
+            RDP_ASSERT(Render::OrientationIsCorrectable(undone));
+            const NativeImageTransform inTexture = Render::CorrectedNativeImageTransform(matrix, undone, true);
+            RDP_ASSERT(NearlyIdentity(Render::MultiplyNativeImageTransforms(turn, inTexture)));
+        }
+    }
+    // A mirrored texture under a flipping matrix shows Rotate180; undoing the texture alone left it upside down.
+    RDP_ASSERT(Render::TextureSpaceCorrectionClass(Render::NativeImageTransformForClass(NativeImageTransformClass::FlipY),
+        NativeImageTransformClass::FlipX) == NativeImageTransformClass::Rotate180);
+}
+
+RDP_TEST_CASE(video_orientation_texture_space_keeps_crop_on_a_quarter_turned_texture) {
+    // Picture rows fill 1080 of 1088 texture rows; the texture content is also turned a quarter.
+    // The producer crops for an unturned texture; the texture-space correction restores it exactly.
+    const float a = 1080.0f / 1088.0f;
+    const NativeImageTransform expected = { 1, 0, 0, 0, 0, 1.0f / a, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    const NativeImageTransform crop = { 1, 0, 0, 0, 0, a, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    const NativeImageTransform turn = Render::MultiplyNativeImageTransforms(expected,
+        Render::NativeImageTransformForClass(NativeImageTransformClass::Rotate90));
+    RDP_ASSERT(Render::AxisClassOfNativeImageTransform(turn) == NativeImageTransformClass::Rotate90);
+    RDP_ASSERT(Render::AxisClassOfNativeImageTransform(crop) == NativeImageTransformClass::Identity);
+    const NativeImageTransformClass undone =
+        Render::TextureSpaceCorrectionClass(crop, NativeImageTransformClass::Rotate90);
+    RDP_ASSERT(undone == NativeImageTransformClass::Rotate90);
+    const NativeImageTransform corrected = Render::CorrectedNativeImageTransform(crop, undone, true);
+    RDP_ASSERT(NearlyIdentity(Render::MultiplyNativeImageTransforms(turn, corrected)));
+    // A matrix that is not axis-aligned leaves the choice to screen space.
+    const NativeImageTransform skew = { 0.7f, 0.7f, 0, 0, -0.7f, 0.7f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    RDP_ASSERT(Render::TextureSpaceCorrectionClass(skew, NativeImageTransformClass::FlipY) ==
+        NativeImageTransformClass::Other);
+}
+
 RDP_TEST_CASE(video_stream_inspection_reads_h264_units_and_display_orientation_sei) {
     // SPS(7), PPS(8), SEI(6) with display orientation (payload 47): cancel=0,
     // hor=0, ver=1, rotation=0x8000, then IDR(5). 3- and 4-byte start codes.

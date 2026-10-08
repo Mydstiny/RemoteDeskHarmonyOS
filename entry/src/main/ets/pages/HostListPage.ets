@@ -20617,7 +20617,6 @@ struct HostListPage {
     .onClick((): void => { this.openSettingsSearchEntry(entry); })
   }
 
-  /** A sheet opens directly (the same app action the AI uses); an inline setting opens its section in place. */
   /**
    * An AI step pointed at a section of 设置 (not a page of its own): open the settings (the settings tab, or the
    * settings panel on a PC) with that section unfolded.
@@ -20626,6 +20625,12 @@ struct HostListPage {
     this.settingsSearchQuery = '';
     if (this.isDesktopDevice && this.breakpoint === 'xl') {
       if (!this.showSettingsPanel) {
+        // The panel waits while a connection starts or a host sheet is open (openSheetSafely): say so.
+        if (this.addSheetClosing || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
+          this.connectionAttemptHostId !== '') {
+          promptAction.showToast({ message: '正在连接或有窗口打开，稍后再打开设置', duration: 2200 });
+          return;
+        }
         this.settingsValuesRevision++;
         this.openSheetSafely((): void => { this.showSettingsPanel = true; });
       }
@@ -20638,6 +20643,7 @@ struct HostListPage {
     this.scrollSettingsSectionIntoView(section, SETTINGS_ACCORDION_ANIMATION_MS + 240);
   }
 
+  /** A sheet opens directly (the same app action the AI uses); an inline setting opens its section in place. */
   private openSettingsSearchEntry(entry: SettingsSearchEntry): void {
     if (entry.action.startsWith('ai:')) {
       this.openDiagnosticAiSection(Number(entry.action.substring(3)));

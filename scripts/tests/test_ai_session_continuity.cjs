@@ -758,7 +758,8 @@ test('the AI knows and can open the new file transfer, RDP name lookup, RDP secu
   const guide = kb.aiAppGuide();
   for (const words of ['「粘贴到这里」', '「去远端选位置」', '「读取远端剪贴板」', '「自动改名」', '本机保留 7 天', 'C:\\Users',
     '正在局域网中查找这台电脑', '目标 RDP 地址解析失败', '「改用 TLS 登录」', '「恢复 NLA 登录」', '恢复各电脑的默认安全设置',
-    '方向自检', '日志标记：上下倒置', 'AI 不能代为开启']) {
+    '方向自检', '日志标记：上下倒置', 'AI 不能代为开启', '选「继续连接」只对这一次降低 TLS 要求', '选「信任」则记住这台电脑的选择',
+    '「正在尝试第 1/2 个地址」']) {
     assert.ok(guide.includes(words), 'the guide mentions ' + words);
   }
   for (const id of guide.match(/\b(session|settings|rdp)\.[A-Za-z]+/g)) {
@@ -771,7 +772,13 @@ test('the AI knows and can open the new file transfer, RDP name lookup, RDP secu
   const ids = (step) => Array.from(actions.diagnosticAiAppActionsForSteps([step]), (a) => a.id);
   assert.deepEqual(ids('在设置 → Windows RDP 里点「恢复各电脑的默认安全设置」'), ['settings.rdpSecurity', 'rdp.restoreSecurity']);
   assert.deepEqual(ids('在 RDP 安全设置里关闭 TLS 兼容登录'), ['settings.rdpSecurity'], 'an RDP sign-in is not the account page');
-  assert.deepEqual(ids('撤销所有降级'), ['rdp.restoreSecurity']);
+  assert.deepEqual(ids('在 Windows RDP 设置里撤销所有降级'), ['rdp.restoreSecurity']);
+  // Windows-side security, other protocols and other kinds of 降级 are not these.
+  assert.ok(!ids('检查 Windows 的 RDP 安全设置（组策略 → 安全层）').includes('settings.rdpSecurity'));
+  assert.ok(!ids('RDP 画质降级时调低分辨率').includes('settings.rdpSecurity'));
+  assert.ok(!ids('在 VNC 安全设置里恢复默认安全设置').includes('rdp.restoreSecurity'));
+  assert.ok(!ids('在 Windows 电脑上恢复默认安全设置（本地安全策略）').includes('rdp.restoreSecurity'));
+  assert.deepEqual(ids('撤销所有降级'), [], 'no protocol named');
   assert.deepEqual(ids('在账号设置里切换华为账号'), ['settings.account']);
   const session = (step) => ids(step).filter((id) => id.startsWith('session.'));
   assert.deepEqual(session('画面上下颠倒时，在「画面翻转」里点「画面上下翻转」'), ['session.flipVertical']);
@@ -779,12 +786,19 @@ test('the AI knows and can open the new file transfer, RDP name lookup, RDP secu
   assert.deepEqual(session('复现后在「画面翻转」里点「日志标记：上下倒置」'), ['session.markUpsideDown']);
   assert.deepEqual(session('在「画面翻转」里点「日志标记：画面正常」'), []);
   assert.deepEqual(session('画面左右镜像时点「画面左右翻转」'), []);
+  // Describing the picture is not asking to flip it; the control layer and the canvas reset are other buttons.
+  assert.deepEqual(session('画面倒置时先导出诊断日志反馈给开发者'), []);
+  assert.deepEqual(session('点「控制层上下翻转」'), []);
+  assert.deepEqual(session('标记一下画面倒过来了'), ['session.markUpsideDown']);
+  assert.deepEqual(session('缩放或翻转后点「复位画面」'), ['session.resetCanvas']);
   assert.equal(actions.diagnosticAiAppActionMode('session.flipVertical'), 'inline');
   assert.equal(actions.diagnosticAiAppActionRequiresConfirmation('rdp.restoreSecurity'), false, 'its own dialog asks first');
 
   // Each action reaches its screen or callback.
   const host = read('pages/HostListPage.ets');
   assert.match(host, /case 'settings\.rdpSecurity': this\.openSettingsSectionForAssistant\(SETTINGS_SECTION_RDP\); return;/);
+  assert.match(host, /private openSettingsSectionForAssistant\(section: string\): void \{[\s\S]*?this\.connectionAttemptHostId !== ''\) \{\s*promptAction\.showToast/,
+    'on a PC the panel says why it waits instead of not opening');
   assert.match(host, /case 'rdp\.restoreSecurity': this\.restoreRdpSecurityForAssistant\(\); return;/);
   assert.match(host, /private restoreRdpSecurityForAssistant\(\): void \{\s*this\.refreshRdpSecurityDowngradeHosts\(\);\s*if \(this\.rdpSecurityDowngradeHosts <= 0\) \{[\s\S]*?return;\s*\}\s*this\.confirmRestoreRdpSecurityDowngrades\(\);/);
   const bar = read('components/RemoteSessionTopBar.ets');
@@ -811,7 +825,8 @@ test('the log the AI reads names RDP name lookup, security choices and the orien
     assert.ok(glossary.includes(code + '：'), code + ' is explained');
   }
   assert.equal(capture.DIAGNOSTIC_EVENT_CATALOG_VERSION, 4);
-  for (const words of ['orientationSelfTests', 'appliedOrientation', 'orientationCorrection', '3 上下颠倒', 'count 1 表示这台电脑只接受旧版 TLS']) {
+  for (const words of ['orientationSelfTests', 'appliedOrientation', 'orientationCorrection', '3 上下颠倒', 'count 1 表示这台电脑只接受旧版 TLS',
+    '在纹理空间纠正时再加 256']) {
     assert.ok(glossary.includes(words), 'the glossary explains ' + words);
   }
   assert.ok(facets.diagnosticFacetsForQuestion('鸿蒙 PC 上 RustDesk 画面上下颠倒').includes('rustdesk.display'));
