@@ -297,14 +297,14 @@ test('queued RDP directory cancellation releases creator without running prepara
  await f.page.prepareAndOfferRdpDirectory({rootName:'Root',entries:[],totalBytes:0},f.page.captureTransferLease());
  assert.equal(f.state.batchReleases,1);assert.equal(typeof f.state.options.onFinalize,'function');
 });
-test('disabled RustDesk file-paste prevents directory Picker',async()=>{
+test('the clipboard file-paste switch does not gate an explicit RustDesk directory send',async()=>{
  const f=fixture();f.page.rustdeskFilePasteEnabled=false;f.state.nextPicker=Promise.resolve([]);
- await f.page.pickAndSendDirectory();assert.equal(f.state.pickerCalls||0,0);
+ await f.page.pickAndSendDirectory();assert.equal(f.state.pickerCalls,1);
 });
-test('disabling file-paste during directory Picker prevents upload',async()=>{
- const f=fixture();let resolve;f.state.nextPicker=new Promise(r=>resolve=r);f.state.fileSize=4;
- f.page.transferControlClient=()=>({list:async p=>({path:p,entries:[]}),mkdir:async()=>true});
- const pending=f.page.pickAndSendDirectory();f.page.rustdeskFilePasteEnabled=false;resolve(['file://root']);await pending;assert.equal(f.state.sent.length,0);
+test('a RustDesk directory send without an opened remote folder says so instead of opening the Picker',async()=>{
+ const f=fixture();f.page.remoteTransferDirectory='';f.state.nextPicker=Promise.resolve([]);
+ await f.page.pickAndSendDirectory();assert.equal(f.state.pickerCalls||0,0);
+ assert.match(f.page.remoteTransferBrowserMessage,/远端文件夹/);
 });
 test('RustDesk system file paste publishes prepared FD then sends one paste chord',async()=>{
  const f=fixture();f.state.nextUnified=Promise.resolve({sources:[{uri:'local://a',name:'a',size:4}]});

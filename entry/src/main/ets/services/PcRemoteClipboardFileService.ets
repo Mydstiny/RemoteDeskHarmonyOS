@@ -233,6 +233,8 @@ export class PcRemoteClipboardFileService {
     try {
       control.update({ stage: 'transferring' });
       for (const entry of entries) {
+        // The previous file was saved; the next one is network work again (cancellable, bound to the session).
+        control.update({ stage: 'transferring' });
         if (!alive()) { return { stage: 'cancelled', evidence: 'none' }; }
         const parts: string[] = entry.name.split('/');
         for (let depth: number = 1; depth <= parts.length - (entry.isDirectory ? 0 : 1); depth++) {
@@ -367,6 +369,7 @@ export class PcRemoteClipboardFileService {
       batch = ownedBatch;
       const handle = service.enqueue({ accountScopeId: this.lease.accountScopeId, hostId: this.lease.hostId,
         queueKey: this.lease.windowId + ':' + this.lease.sessionId.toString() + ':' + this.lease.nativeGeneration.toString(),
+        windowId: this.lease.windowId,
         leaseId: this.lease.nativeGeneration.toString(), protocol: rdp ? 'rdp' : 'rustdesk', direction: 'download',
         fileName: '远端剪贴板文件', totalBytes: total, batchId: ownedBatch.id, sourceKind: 'remote-clipboard',
         isCurrent: current, onFinalize: (): void => { ownedBatch.release(); } },

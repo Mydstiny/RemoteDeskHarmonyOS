@@ -108,6 +108,8 @@ interface ImportedArtifactEntry {
   size: number;
 }
 export interface TransferArtifactCleanupResult {
+  /** Empty batch directories deleted by maintenance. */
+  removedBatches?: number;
   removedFiles: number;
   removedBytes: number;
   retainedBatches: number;
@@ -1121,6 +1123,8 @@ export class TransferArtifactBatch {
     try { this.saveManifest(); } catch (_manifestError) {}
   }
   finishWriter(reservedBytes: number): void {
+    // The reservation now lies on disk (or was released): count it until the next measurement.
+    countMeasuredArtifactBytes(this.filesDir, reservedBytes);
     TransferArtifactBatch.reservedBytes = Math.max(0, TransferArtifactBatch.reservedBytes - reservedBytes);
     this.reservedForBatch = Math.max(0, this.reservedForBatch - reservedBytes);
     this.staging = false; this.releaseMutationIfIdle();
@@ -1183,6 +1187,41 @@ export class TransferArtifactBatch {
     } finally { this.closeMutationLock(); }
   }
   isRestored(): boolean { return this.restored; }
+
+  /**
+   * An unheld batch whose every entry was removed holds only bookkeeping; maintenance deletes its directory. Anything
+   * the manifest does not account for, or an unfinished receive tree, keeps the batch.
+   */
+  removeIfEmpty(): boolean {
+    if (this.staging || this.cleaning || this.localHolders.size > 0 || this.localPublications.size > 0 ||
+      this.locallyPublished) { return false; }
+    try { this.acquireMutationLock(); } catch (_error) { return false; }
+    try {
+      const manifest: ArtifactManifest = this.manifest;
+      const pending = (owner: NativeDirectoryManifest): boolean => owner.state === 'active' || owner.state === 'retained';
+      if (manifest.holders.length > 0 || manifest.published || manifest.publications.length > 0 ||
+        manifest.artifacts.some((item: ArtifactManifestEntry): boolean => item.state !== 'removed') ||
+        manifest.nativeDirectories.some(pending) || manifest.platformDirectories.some(pending)) { return false; }
+      const allowed: string[] = ['manifest.json', 'manifest.pending', 'lease.lock'].concat(
+        manifest.artifacts.filter((item: ArtifactManifestEntry): boolean => item.storageRelativePath.length === 0)
+          .map((item: ArtifactManifestEntry): string => item.id),
+        manifest.nativeDirectories.map((item: NativeDirectoryManifest): string => 'native-' + item.id),
+        manifest.platformDirectories.map((item: NativeDirectoryManifest): string => 'incoming-' + item.id));
+      for (const name of fileIo.listFileSync(this.directory, { recursion: false })) {
+        if (allowed.indexOf(name) < 0) { return false; }
+        const info: fileIo.Stat = fileIo.lstatSync(this.directory + '/' + name);
+        if (info.isSymbolicLink()) { return false; }
+        if (info.isDirectory() && fileIo.listFileSync(this.directory + '/' + name, { recursion: false }).length > 0) {
+          return false;
+        }
+      }
+      fileIo.rmdirSync(this.directory);
+      TransferArtifactBatch.batches.delete(this.directory);
+      return true;
+    } catch (_error) {
+      return false;
+    } finally { this.closeMutationLock(); }
+  }
 
   async cleanupExpired(ttlMs: number): Promise<TransferArtifactCleanupResult> {
     if (this.cleaning) { return { removedFiles: 0, removedBytes: 0, retainedBatches: 1, invalidBatches: 0 }; }
@@ -1283,10 +1322,15 @@ export class TransferArtifactBatch {
       await fileIo.unlink(paths[i]); result.removedFiles++; result.removedBytes += before.size; entries[i].state = 'removed';
     }
     // Keep directory topology and ownership evidence; clear only the completed UI records.
+    let directoriesCleared: boolean = false;
     if (result.invalidBatches === 0 && result.retainedBatches === 0) {
-      for (const entry of this.manifest.artifacts) { if (entry.directory && entry.state === 'complete') { entry.state = 'removed'; } }
+      for (const entry of this.manifest.artifacts) {
+        if (entry.directory && entry.state === 'complete') { entry.state = 'removed'; directoriesCleared = true; }
+      }
     }
-    this.saveManifest(); return result;
+    // An already empty batch is left untouched: rewriting it would move its age on every maintenance run.
+    if (result.removedFiles > 0 || directoriesCleared) { this.saveManifest(); }
+    return result;
   }
 }
 interface ArtifactIoError { code?: number | string; }
@@ -1552,6 +1596,10 @@ function managedArtifactBytes(filesDir: string): number {
 }
 /** After files were removed the next reservation measures again. */
 function forgetMeasuredArtifactBytes(): void { measuredBytesAt = 0; }
+/** A finished write is counted at once, so the cached measurement never lets the quota be overrun. */
+function countMeasuredArtifactBytes(filesDir: string, bytes: number): void {
+  if (measuredBytesDir === filesDir && measuredBytesAt > 0 && validCount(bytes)) { measuredBytes += bytes; }
+}
 
 const STORAGE_FAILURE_CODES: string[] = ['transfer_space_limit', 'transfer_size_limit', 'transfer_batch_size_limit',
   'transfer_cancelled', 'transfer_source_changed', 'transfer_batch_unavailable'];
@@ -1601,7 +1649,8 @@ export async function cleanupExpiredTransferArtifacts(filesDir: string, scopeKey
  */
 export async function reconcileTransferArtifactStorage(filesDir: string,
   ttlMs: number = DEFAULT_ARTIFACT_TTL_MS): Promise<TransferArtifactCleanupResult> {
-  const result: TransferArtifactCleanupResult = { removedFiles: 0, removedBytes: 0, retainedBatches: 0, invalidBatches: 0 };
+  const result: TransferArtifactCleanupResult = { removedFiles: 0, removedBytes: 0, retainedBatches: 0, invalidBatches: 0,
+    removedBatches: 0 };
   let scopes: string[] = [];
   try {
     validateFilesDir(filesDir);
@@ -1617,11 +1666,12 @@ export async function reconcileTransferArtifactStorage(filesDir: string,
           const removed: TransferArtifactCleanupResult = await batch.cleanupExpired(purpose === 'clipboard' ? 0 : ttlMs);
           result.removedFiles += removed.removedFiles; result.removedBytes += removed.removedBytes;
           result.retainedBatches += removed.retainedBatches; result.invalidBatches += removed.invalidBatches;
+          if (batch.removeIfEmpty()) { result.removedBatches = (result.removedBatches ?? 0) + 1; }
         } catch (_error) { result.invalidBatches++; }
       }
     }
   }
-  if (result.removedFiles > 0) { forgetMeasuredArtifactBytes(); }
+  if (result.removedFiles > 0 || (result.removedBatches ?? 0) > 0) { forgetMeasuredArtifactBytes(); }
   return result;
 }
 
@@ -1737,19 +1787,26 @@ async function exportTransferArtifactImpl(artifact: TransferArtifact, pickerUri:
     result.status = 'saved'; result.evidence = 'writtenAndSynced'; safeProgress(progress, artifact.size, artifact.size);
     return result;
   } catch (error) {
-    // A file the save dialog returned holds only this export's bytes: a half-written one is emptied and removed.
-    let cleared: boolean = false;
+    // A half-written target is emptied. A new file the save dialog created for this export is also removed; a file
+    // the user chose to replace is not (its old content was already replaced).
+    let emptied: boolean = false;
+    let removed: boolean = false;
     if (destinationTouched && destination !== null) {
-      try { await fileIo.truncate(destination.fd, 0); cleared = true; } catch (_truncateError) { cleared = false; }
+      try { await fileIo.truncate(destination.fd, 0); emptied = true; } catch (_truncateError) { emptied = false; }
     }
-    result.status = destinationTouched && !cleared ? 'commitUnknown' : (current(isCurrent) ? 'failed' : 'cancelled');
-    result.diagnosticCode = destinationTouched ? (cleared ? 'export_destination_cleared' : 'export_destination_retained') :
-      'export_not_committed';
-    if (cleared) {
+    if (emptied) {
       try { await fileIo.close(destination as fileIo.File); } catch (_closeError) {}
       destination = null;
-      try { await fileIo.unlink(pickerUri); } catch (_unlinkError) { /* An empty file may remain; it holds no partial data. */ }
+      if (!allowOverwrite) {
+        try {
+          await fileIo.unlink(pickerUri.startsWith('file://') ? new fileUri.FileUri(pickerUri).path : pickerUri);
+          removed = true;
+        } catch (_unlinkError) { removed = false; }
+      }
     }
+    result.status = destinationTouched && !emptied ? 'commitUnknown' : (current(isCurrent) ? 'failed' : 'cancelled');
+    result.diagnosticCode = !destinationTouched ? 'export_not_committed' : !emptied ? 'export_destination_retained' :
+      removed ? 'export_destination_cleared' : 'export_destination_emptied';
     return result;
   } finally {
     if (source !== null) { try { await fileIo.close(source); } catch (_error) {} }

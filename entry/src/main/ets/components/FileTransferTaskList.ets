@@ -2,7 +2,7 @@ import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator
 import { common } from '@kit.AbilityKit';
 import { ManagedTransferTaskService } from '../services/ManagedTransferTaskService';
 import { ManagedTransferRecord, managedTransferSettled, managedTransferTerminal } from '../services/ManagedTransferTaskPolicy';
-import { transferTaskCancellable, transferTaskDescription } from '../services/TransferUserTextPolicy';
+import { transferTaskDescription } from '../services/TransferUserTextPolicy';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 
 @Component
@@ -80,7 +80,8 @@ export struct FileTransferTaskList {
           Row({ space: 8 }) {
             Text(record.fileName).fontSize(14).fontColor(this.pal().text)
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-            if (transferTaskCancellable(record.stage)) {
+            if (ManagedTransferTaskService.getInstance().isCancellable(record.accountScopeId, record.taskId,
+              record.attemptId)) {
               Button('取消').fontSize(12).height(28).onClick((): void => {
                 ManagedTransferTaskService.getInstance().cancel(this.accountScopeId, record.taskId, record.attemptId);
               })

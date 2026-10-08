@@ -134,6 +134,12 @@ export class ManagedTransferTaskService {
     const runtime: ManagedTransferRuntime | undefined = this.active.get(this.key(accountScopeId, taskId, attemptId));
     return runtime !== undefined && !runtime.started && !runtime.resultSettled;
   }
+  /** Whether 取消 can stop the task now: running or queued, and not saving received data (a local save can stop). */
+  isCancellable(accountScopeId: string, taskId: string, attemptId: number): boolean {
+    const runtime: ManagedTransferRuntime | undefined = this.active.get(this.key(accountScopeId, taskId, attemptId));
+    return runtime !== undefined && !runtime.resultSettled && !runtime.runnerFinished && !runtime.cancelRequested &&
+      (!runtime.inCommit || runtime.options.local === true);
+  }
   /** Removes the host's finished records from the list; running tasks stay. */
   clearFinished(accountScopeId: string, hostId: string): number {
     const removed: number = this.store.removeSettled(accountScopeId,
@@ -294,7 +300,15 @@ export class ManagedTransferTaskService {
   }
   private update(runtime: ManagedTransferRuntime, progress: ManagedTransferProgress): boolean {
     if (!this.current(runtime)) { return false; }
-    const next: ManagedTransferRecord | null = applyManagedTransferProgress(runtime.record, progress);
+    let effective: ManagedTransferProgress = progress;
+    if (runtime.inCommit && runtime.options.local !== true && progress.stage === undefined &&
+      ((progress.readBytes ?? 0) > runtime.record.readBytes || (progress.sentBytes ?? 0) > runtime.record.sentBytes ||
+        (progress.writtenBytes ?? 0) > runtime.record.writtenBytes)) {
+      // New network bytes after a file was saved: the task moved on to its next file.
+      effective = { stage: 'transferring', readBytes: progress.readBytes, sentBytes: progress.sentBytes,
+        writtenBytes: progress.writtenBytes, verifiedBytes: progress.verifiedBytes, totalBytes: progress.totalBytes };
+    }
+    const next: ManagedTransferRecord | null = applyManagedTransferProgress(runtime.record, effective);
     if (next === null) { return false; }
     const stageChanged: boolean = next.stage !== runtime.record.stage;
     if (stageChanged || next.readBytes !== runtime.record.readBytes ||

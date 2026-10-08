@@ -310,6 +310,7 @@ import { RustDeskTransferClient } from '../services/RustDeskTransferClient';
 import { TransferArtifactPublicationService } from '../services/TransferArtifactPublicationService';
 import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, TransferArtifactBatchInfo, TransferPlatformIncomingDirectory, recoverTransferArtifactInventory, cleanupOwnedTransferArtifactBatch, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey, transferStorageFailureCode } from '../services/TransferArtifactStore';
 import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
+import { rustDeskFileFailureText } from '../services/TransferUserTextPolicy';
 import { ManagedTransferTaskService, ManagedTransferControl } from '../services/ManagedTransferTaskService';
 import { FileTransferTaskList } from '../components/FileTransferTaskList';
 import { renamedRemoteTransferFileName, joinRemoteTransferPath, remoteTransferPathIsAbsolute, parentRemoteTransferPath, remoteTransferEntryPath } from '../services/TransferRemotePathPolicy';
@@ -19928,7 +19929,7 @@ struct RemoteDesktop {
     if (lease === null || path.length === 0 || !this.transferLeaseIsCurrent(lease) || this.remoteTransferBrowserBusy) { return; }
     this.transferNewDirectoryName = ''; this.remoteTransferBrowserBusy = true;
     const client: RustDeskTransferClient = this.transferControlClient(lease, (): boolean =>
-      this.transferLeaseIsCurrent(lease) && this.rustdeskFilePasteEnabled && this.showFileTransferPanel);
+      this.transferLeaseIsCurrent(lease) && this.showFileTransferPanel);
     try {
       const created: boolean = await client.mkdir(path);
       if (!this.transferLeaseIsCurrent(lease)) { return; }
@@ -20078,15 +20079,17 @@ struct RemoteDesktop {
     const target: string = this.remoteTransferDirectory;
     if (lease === null || context === null || this.fileTransferBusy ||
       !this.currentSessionCapabilities().fileUpload.enabled ||
-      (lease.protocol === 'rustdesk' && (!this.rustdeskFilePasteEnabled || !remoteTransferPathIsAbsolute(target)))) { return; }
+      (lease.protocol === 'rustdesk' && !remoteTransferPathIsAbsolute(target))) {
+      if (lease !== null && lease.protocol === 'rustdesk') { this.remoteTransferBrowserMessage = '请先在上方打开一个远端文件夹作为发送目标'; }
+      return;
+    }
     const overwrite: boolean = this.transferAllowOverwrite;
     const rename: boolean = this.transferRenameOnConflict;
     this.transferAllowOverwrite = false; this.transferRenameOnConflict = false;
     try {
       const uris: string[] = await new picker.DocumentViewPicker().select({ maxSelectNumber: 1, selectMode: picker.DocumentSelectMode.FOLDER });
       if (!this.transferLeaseIsCurrent(lease) || uris.length !== 1) { return; }
-      const current = (): boolean => this.transferLeaseIsCurrent(lease) && this.currentSessionCapabilities().fileUpload.enabled &&
-        (lease.protocol !== 'rustdesk' || this.rustdeskFilePasteEnabled);
+      const current = (): boolean => this.transferLeaseIsCurrent(lease) && this.currentSessionCapabilities().fileUpload.enabled;
       const tree: TransferDirectorySourceTree = await scanAuthorizedTransferDirectory(uris[0], current);
       if (!current() || tree.status !== 'ready') { this.setFileTransferStatus('目录无法读取或超过限制，源文件保留', -1, false); return; }
       if (lease.protocol === 'rdp') {
@@ -20163,7 +20166,7 @@ struct RemoteDesktop {
     }
     if (renameOnConflict) {
       const directory: SessionRemoteDirectory | null = await this.transferControlClient(lease,
-        (): boolean => this.transferLeaseIsCurrent(lease) && this.rustdeskFilePasteEnabled).list(targetDirectory);
+        (): boolean => this.transferLeaseIsCurrent(lease)).list(targetDirectory);
       if (!this.transferLeaseIsCurrent(lease) || directory === null || !sameRemoteTransferDirectory(directory.path, targetDirectory)) { return 'failed'; }
       fileName = renamedRemoteTransferFileName(fileName, directory.entries.map((entry: SessionRemoteFileEntry): string => entry.name));
     }
@@ -20182,7 +20185,7 @@ struct RemoteDesktop {
       leaseId: lease.nativeGeneration.toString(),
       protocol: 'rustdesk', direction: 'upload', fileName, totalBytes: fileSize,
       sourceKind: 'authorized-file',
-      isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) && this.rustdeskFilePasteEnabled &&
+      isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) &&
         this.currentSessionCapabilities().fileUpload.enabled },
       async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
         return await this.sendRustDeskFile(uri, fileName, fileSize, lease, targetDirectory,
@@ -20498,6 +20501,8 @@ struct RemoteDesktop {
           const rootArtifact: TransferArtifact = await batch.createDirectoryRoot(entry.name, control.isCurrent);
           let written: number = 0;
           for (let index: number = 1; index < tree.items.length; index++) {
+            // The previous file was saved; the next one is network work again (cancellable, bound to the session).
+            control.update({ stage: 'transferring' });
             if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
             const item = tree.items[index];
             const relative: string = rootArtifact.relativePath + item.relativePath.substring(entry.name.length);
@@ -20550,7 +20555,7 @@ struct RemoteDesktop {
     if (!handle.accepted) { batch.release(); }
     const outcome: ManagedTransferOutcome = await handle.result;
     if (this.transferLeaseIsCurrent(lease)) {
-      this.setFileTransferStatus(outcome.stage === 'completed' ? '已接收到本机副本，可另存或复制到剪贴板' :
+      this.setFileTransferStatus(outcome.stage === 'completed' ? '已接收到本机（保留 7 天），可另存或复制到剪贴板' :
         '接收未完成，源文件保留', outcome.stage === 'completed' ? 1 : -1, false);
     }
   }
@@ -20800,7 +20805,12 @@ struct RemoteDesktop {
       this.showFileTransferPanel = true;
       hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk file panel opened after click settle');
       const maintenanceContext: common.UIAbilityContext | null = this.getFileTransferContext();
-      if (maintenanceContext !== null) { scheduleTransferArtifactMaintenance(maintenanceContext.filesDir); }
+      if (maintenanceContext !== null) {
+        // Copies maintenance removes must not stay listed in the open panel.
+        scheduleTransferArtifactMaintenance(maintenanceContext.filesDir, 0, (): void => {
+          if (this.showFileTransferPanel && this.transferLeaseIsCurrent(lease)) { this.refreshTransferCache(); }
+        });
+      }
       this.refreshTransferCache();
       if (lease.protocol === 'rdp') { this.refreshRdpSharedFiles(); }
       if (lease.protocol === 'rustdesk' && this.remoteTransferDirectory.length === 0) {
@@ -20833,8 +20843,9 @@ struct RemoteDesktop {
         return;
       }
       if (directory === null) {
-        hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk remote directory not read pathLength=' + path.length.toString());
-        this.remoteTransferBrowserMessage = '目录读取未完成，请检查文件会话授权后刷新重试';
+        hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk remote directory not read pathLength=' + path.length.toString() +
+          ' reason=' + client.lastFailure);
+        this.remoteTransferBrowserMessage = rustDeskFileFailureText(client.lastFailure, this.rustDeskPeerPlatformCategory);
         return;
       }
       if (!remoteTransferPathIsAbsolute(directory.path)) {
@@ -20878,11 +20889,6 @@ struct RemoteDesktop {
       promptAction.showToast({ message: capability.reason, duration: 2200 });
       return;
     }
-    if (this.pendingHost.protocol === 'rustdesk' && !this.rustdeskFilePasteEnabled) {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'file transfer blocked rustdesk file paste disabled');
-      promptAction.showToast({ message: 'RustDesk 文件粘贴已禁用', duration: 1600 });
-      return;
-    }
     const lease: RemoteTransferLease | null = this.captureTransferLease();
     if (lease === null) { return; }
     const observedSessionId: number = lease.sessionId;
@@ -20890,7 +20896,7 @@ struct RemoteDesktop {
     const targetDirectory: string = this.remoteTransferDirectory;
     if (lease.protocol === 'rustdesk' && !remoteTransferPathIsAbsolute(targetDirectory)) {
       this.openFileTransferPanel();
-      this.remoteTransferBrowserMessage = '请选择远端目标文件夹';
+      this.remoteTransferBrowserMessage = '请先在上方打开一个远端文件夹作为发送目标';
       return;
     }
     const allowOverwrite: boolean = this.transferAllowOverwrite;
@@ -21139,6 +21145,8 @@ struct RemoteDesktop {
         try {
           control.update({ stage: 'transferring' });
           for (const entry of entries) {
+            // The previous file was saved; the next one is network work again (cancellable, bound to the session).
+            control.update({ stage: 'transferring' });
             if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
             const parts: string[] = entry.name.split('/');
             let parent: string = '';
@@ -21272,8 +21280,7 @@ struct RemoteDesktop {
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (lease === null || context === null || !this.currentSessionCapabilities().fileUpload.enabled ||
       (lease.protocol === 'rdp' && !this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) ||
-      (lease.protocol === 'rustdesk' && (!this.rustdeskFilePasteEnabled ||
-        !remoteTransferPathIsAbsolute(targetDirectory)))) {
+      (lease.protocol === 'rustdesk' && !remoteTransferPathIsAbsolute(targetDirectory))) {
       event.setResult(DragResult.DRAG_FAILED); return;
     }
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
@@ -21281,8 +21288,7 @@ struct RemoteDesktop {
     let slot: TransferPlatformIncomingDirectory | null = null;
     try {
       const current = (): boolean => this.transferLeaseIsCurrent(lease) && this.currentSessionCapabilities().fileUpload.enabled &&
-        (lease.protocol === 'rdp' ? this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) :
-          this.rustdeskFilePasteEnabled);
+        (lease.protocol !== 'rdp' || this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId));
       slot = batch.createPlatformIncomingSync(current);
       const incoming: TransferPlatformIncomingDirectory = slot;
       if (!current()) { void incoming.retainPartial().then((): void => { batch.release(); }); event.setResult(DragResult.DRAG_FAILED); return; }
@@ -21371,9 +21377,9 @@ struct RemoteDesktop {
     const lease: RemoteTransferLease | null = this.captureTransferLease();
     if (lease === null || this.fileTransferBusy || !this.currentSessionCapabilities().fileUpload.enabled) { return; }
     const targetDirectory: string = this.remoteTransferDirectory;
-    if (lease.protocol === 'rustdesk' && (!this.rustdeskFilePasteEnabled || !remoteTransferPathIsAbsolute(targetDirectory))) {
+    if (lease.protocol === 'rustdesk' && !remoteTransferPathIsAbsolute(targetDirectory)) {
       this.openFileTransferPanel();
-      this.remoteTransferBrowserMessage = '请选择远端目标文件夹后重新拖入文件';
+      this.remoteTransferBrowserMessage = '请先打开一个远端文件夹作为发送目标，再重新拖入文件';
       return;
     }
     let sources: TransferFileSource[] = [];
@@ -25098,6 +25104,8 @@ struct RemoteDesktop {
             this.fileTransferPanelMode = 'chooser';
             this.fileTransferPanelOpenScheduled = false;
             this.transferDirectoryRequestGeneration++;
+            // A listing still running belongs to the closed panel; the next panel must not inherit its busy state.
+            this.remoteTransferBrowserBusy = false;
             this.rdpOfferRequestGeneration++;
             this.transferPanelAccountUnsubscribe?.(); this.transferPanelAccountUnsubscribe = null;
           }
@@ -25287,28 +25295,22 @@ struct RemoteDesktop {
       if (this.currentProtocolName() === 'rustdesk') {
         this.rustDeskRemoteBrowserPanel(false)
         Row({ space: 8 }) {
-          Text('发送目标：' + (this.remoteTransferDirectory.length > 0 ?
-            this.remoteTransferDirectory : '正在读取远端目录…'))
+          Text('发送到：' + (this.remoteTransferDirectory.length > 0 ? this.remoteTransferDirectory :
+            this.remoteTransferBrowserBusy ? '正在读取远端目录…' : '尚未打开远端文件夹'))
             .fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
             .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Button('选择此文件夹').height(40)
-            .enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
-            .onClick((): void => {
-              this.remoteTransferBrowserMessage = '已选择当前文件夹作为发送目标';
-            })
         }.width('100%').padding(10).backgroundColor(this.pal().card).borderRadius(10)
       } else {
         Text('远端将通过当前会话读取你选择的文件；RDP 不能由本端指定远端保存目录。发送完成后请在远端应用中粘贴或保存。')
           .fontSize(13).fontColor(this.pal().text2).width('100%')
       }
       Row({ space: 8 }) {
+        // Always selectable: without an opened remote folder a RustDesk send says what is missing.
         Button('选择文件').layoutWeight(1).height(46)
-          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled &&
-            (this.currentProtocolName() !== 'rustdesk' || this.remoteTransferDirectory.length > 0))
+          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled)
           .onClick((): void => { void this.pickAndSendFile(); })
         Button('选择文件夹').layoutWeight(1).height(46)
-          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled &&
-            (this.currentProtocolName() !== 'rustdesk' || this.remoteTransferDirectory.length > 0))
+          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled)
           .onClick((): void => { void this.pickAndSendDirectory(); })
       }.width('100%')
       if (this.currentProtocolName() !== 'rustdesk') {
@@ -25452,8 +25454,6 @@ struct RemoteDesktop {
         .fontSize(13).fontColor(this.pal().text2).width('100%')
       if (this.currentProtocolName() === 'rustdesk') {
         this.rustDeskRemoteBrowserPanel(true)
-        Button('读取远端已复制文件').width('100%').height(42)
-          .onClick((): void => { void this.refreshRustDeskClipboardFiles(); })
       } else {
         Column({ space: 8 }) {
           Text('远端文件清单').fontSize(15).fontWeight(FontWeight.Medium)

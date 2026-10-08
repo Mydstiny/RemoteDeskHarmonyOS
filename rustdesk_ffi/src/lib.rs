@@ -4456,6 +4456,17 @@ fn start_file_operation(
                 };
                 // Login owns its approval / 2FA deadlines; data idle time starts after authentication.
                 job.progress(0);
+                // A peer that believes it is at the login window never starts the connection manager that serves
+                // file-system requests; only downloads from macOS and Linux peers bypass it.
+                let needs_file_service = match &operation {
+                    file_transfer::FileOperation::Download(_) => {
+                        connector.file_peer_platform().eq_ignore_ascii_case("windows")
+                    }
+                    _ => true,
+                };
+                if needs_file_service && connector.file_peer_prelogin() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "peer_prelogin"));
+                }
                 let cancel_remote_read = matches!(&operation, file_transfer::FileOperation::Download(_));
                 let operation_result = match operation {
                     file_transfer::FileOperation::Upload { source, overwrite } => {

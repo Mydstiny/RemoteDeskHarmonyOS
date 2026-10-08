@@ -413,10 +413,14 @@ export default class EntryAbility extends UIAbility {
     if (typeof raw !== 'string' || raw.length === 0 || this.windowStage === null) { return; }
     const target: number = RemoteSessionWindowCoordinator.getInstance().nativeWindowIdFor(raw);
     if (target <= 0) { return; }
-    try {
-      const source: number = this.windowStage.getMainWindowSync().getWindowProperties().id;
-      window.shiftAppWindowFocus(source, target).catch((): void => {});
-    } catch (_error) { /* The main window stays in front. */ }
+    // The main window must hold focus before it can pass it on; let the tap bring it forward first.
+    const stage: window.WindowStage = this.windowStage;
+    setTimeout((): void => {
+      try {
+        const source: number = stage.getMainWindowSync().getWindowProperties().id;
+        window.shiftAppWindowFocus(source, target).catch((): void => {});
+      } catch (_error) { /* The main window stays in front. */ }
+    }, 300);
   }
 
   private acceptProConnectionShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {

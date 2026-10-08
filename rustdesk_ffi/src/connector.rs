@@ -1637,7 +1637,8 @@ impl RustDeskConnector {
                                 Some(FileResponse_oneof_union::error(error))
                                     if error.get_id() == id =>
                                 {
-                                    return Err(io::Error::new(
+                                    return Err(Self::remote_file_error(
+                                        error.get_error(),
                                         ErrorKind::PermissionDenied,
                                         "remote upload rejected",
                                     ))
@@ -1701,13 +1702,11 @@ impl RustDeskConnector {
                     if waiting.elapsed() >= Duration::from_secs(30) {
                         return Err(io::Error::new(ErrorKind::TimedOut, "file confirmation deadline"));
                     }
-                    // Upstream does not send a positive reply for a new file. Its receive job
-                    // is ready immediately. Existing-target digest must be handled first.
-                    if overwrite
-                        && crypto.buffered_receive_bytes() == 0
-                        && waiting.elapsed() >= Duration::from_millis(1500)
-                    {
-                        break;
+                    // The peer's connection manager confirms a new file (offset 0) or reports an existing one with a
+                    // digest. Without either, nothing would be written: blocks are never sent unconfirmed, and
+                    // silence means its file service is not running.
+                    if waiting.elapsed() >= Self::FILE_SERVICE_SILENCE {
+                        return Err(io::Error::new(ErrorKind::TimedOut, "peer_file_service_unavailable"));
                     }
                 }
                 Err(error) => {
@@ -2032,7 +2031,8 @@ impl RustDeskConnector {
                         return Ok(());
                     }
                     Some(FileResponse_oneof_union::error(error)) if error.get_id() == 1 => {
-                        return Err(io::Error::new(
+                        return Err(Self::remote_file_error(
+                            error.get_error(),
                             ErrorKind::PermissionDenied,
                             "directory creation rejected",
                         ))
@@ -2057,6 +2057,74 @@ impl RustDeskConnector {
         }
     }
 
+    /// The file login's PeerInfo had no username: RustDesk clears it while it believes the console is at the login
+    /// window, and then never starts its connection manager, which serves every file-system request except
+    /// downloads on macOS and Linux peers.
+    pub(crate) fn file_peer_prelogin(&self) -> bool {
+        self.session.peer_info().is_some_and(|info| info.get_username().is_empty())
+    }
+
+    pub(crate) fn file_peer_platform(&self) -> String {
+        self.session.peer_info().map(|info| info.get_platform().to_string()).unwrap_or_default()
+    }
+
+    /// How long a file request may go without any answer from the peer's file service before it is reported as
+    /// not running (the peer's connection itself stays alive; its own timeout is 30 s).
+    const FILE_SERVICE_SILENCE: Duration = if cfg!(test) { Duration::from_millis(400) } else { Duration::from_secs(12) };
+
+    fn echo_file_test_delay(
+        crypto: &mut CryptoChannel,
+        delay: crate::protocol::message_proto::TestDelay,
+    ) -> io::Result<()> {
+        // The peer closes a session that sends nothing for 30 s; answering its probes keeps a quiet download alive.
+        let mut echo = Message::new();
+        echo.union = Some(Message_oneof_union::test_delay(delay));
+        Self::send_message_encrypted(crypto, &echo)
+    }
+
+    /// Whether a directory reply answers the requested path. The peer also pushes the login's initial directory
+    /// (its home when the requested one is missing), which must not be taken for the answer.
+    fn directory_reply_matches(requested: &str, replied: &str) -> bool {
+        if requested.is_empty() {
+            return true;
+        }
+        let trim = |value: &str| -> String {
+            let normalized = value.replace('\\', "/");
+            let trimmed = normalized.trim_end_matches('/');
+            if trimmed.is_empty() || trimmed.ends_with(':') {
+                normalized
+            } else {
+                trimmed.to_string()
+            }
+        };
+        let (left, right) = (trim(requested), trim(replied));
+        left == right || (left.eq_ignore_ascii_case(&right) && left.contains(':'))
+    }
+
+    /// A peer's file error text as one of the reasons the app explains (see file_transfer::REPORTED_FILE_ERRORS).
+    fn remote_file_error(text: &str, fallback_kind: ErrorKind, fallback: &'static str) -> io::Error {
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("one-way-file-transfer") {
+            return io::Error::new(ErrorKind::PermissionDenied, "remote_one_way_transfer");
+        }
+        if lower.contains("no such file") || lower.contains("os error 2)") || lower.contains("os error 3)")
+            || lower.contains("not found")
+        {
+            return io::Error::new(ErrorKind::NotFound, "remote_path_not_found");
+        }
+        if lower.contains("permission denied") || lower.contains("not permitted") || lower.contains("access is denied")
+            || lower.contains("os error 1)") || lower.contains("os error 5)") || lower.contains("os error 13)")
+        {
+            return io::Error::new(ErrorKind::PermissionDenied, "remote_permission_denied");
+        }
+        if lower.contains("no space") || lower.contains("disk full") || lower.contains("os error 28)")
+            || lower.contains("os error 112)")
+        {
+            return io::Error::new(ErrorKind::Other, "remote_disk_full");
+        }
+        io::Error::new(fallback_kind, fallback)
+    }
+
     pub(crate) fn read_remote_directory(
         &mut self,
         path: &str,
@@ -2072,14 +2140,22 @@ impl RustDeskConnector {
         let mut message = Message::new();
         message.union = Some(Message_oneof_union::file_action(action));
         Self::send_message_encrypted(crypto, &message)?;
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        // The peer's connection manager answers every directory request, and pushes the login's initial directory
+        // on its own; silence from it while the connection itself is alive means it is not running.
+        let mut file_service_answered = false;
         loop {
             job.check()?;
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return Err(io::Error::new(
                     ErrorKind::TimedOut,
                     "directory reply deadline",
                 ));
+            }
+            if !file_service_answered && now.duration_since(started) >= Self::FILE_SERVICE_SILENCE {
+                return Err(io::Error::new(ErrorKind::TimedOut, "peer_file_service_unavailable"));
             }
             match crypto.recv_with_pump(|_| job.check()) {
                 Ok(bytes) => {
@@ -2091,10 +2167,16 @@ impl RustDeskConnector {
                             "file permission denied",
                         ));
                     }
+                    if let Some(Message_oneof_union::test_delay(delay)) = message.union {
+                        Self::echo_file_test_delay(crypto, delay)?;
+                        continue;
+                    }
                     if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        file_service_answered = true;
                         match response.union {
                             Some(FileResponse_oneof_union::dir(directory))
-                                if directory.get_id() == 0 =>
+                                if directory.get_id() == 0
+                                    && Self::directory_reply_matches(path, directory.get_path()) =>
                             {
                                 if directory.get_path().len() > 32768
                                     || directory.get_path().contains('\0')
@@ -2133,8 +2215,9 @@ impl RustDeskConnector {
                                     entries: result,
                                 });
                             }
-                            Some(FileResponse_oneof_union::error(_)) => {
-                                return Err(io::Error::new(
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == 0 => {
+                                return Err(Self::remote_file_error(
+                                    error.get_error(),
                                     ErrorKind::PermissionDenied,
                                     "directory request rejected",
                                 ))
@@ -2187,6 +2270,10 @@ impl RustDeskConnector {
                             ErrorKind::PermissionDenied,
                             "file permission denied",
                         ));
+                    }
+                    if let Some(Message_oneof_union::test_delay(delay)) = message.union {
+                        Self::echo_file_test_delay(crypto, delay)?;
+                        continue;
                     }
                     if let Some(Message_oneof_union::file_response(response)) = message.union {
                         match response.union {
@@ -2262,7 +2349,8 @@ impl RustDeskConnector {
                                 return sink.complete(job);
                             }
                             Some(FileResponse_oneof_union::error(error)) if error.get_id() == 1 => {
-                                return Err(io::Error::new(
+                                return Err(Self::remote_file_error(
+                                    error.get_error(),
                                     ErrorKind::PermissionDenied,
                                     "download rejected by peer",
                                 ))
@@ -7485,6 +7573,93 @@ mod tests {
             }
             peer.join().unwrap();
         }
+    }
+
+    #[test]
+    fn file_transfer_directory_waits_for_its_own_path_and_answers_probes() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{
+            FileDirectory, FileEntry, FileResponse, FileResponse_oneof_union, FileType, TestDelay,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let _request = wire::read_frame(&mut socket).unwrap();
+            let directory_message = |path: &str, name: &str| {
+                let mut directory = FileDirectory::new();
+                directory.set_path(path.to_owned());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_name(name.to_owned());
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                message.write_to_bytes().unwrap()
+            };
+            // The login's initial directory (the peer's home) arrives first and is not the answer.
+            wire::write_frame(&mut socket, &directory_message("/Users/peer", "home.txt")).unwrap();
+            let mut probe = Message::new();
+            probe.union = Some(Message_oneof_union::test_delay(TestDelay::new()));
+            wire::write_frame(&mut socket, &probe.write_to_bytes().unwrap()).unwrap();
+            let echo: Message = protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            assert!(matches!(echo.union, Some(Message_oneof_union::test_delay(_))));
+            wire::write_frame(&mut socket, &directory_message("/data/", "wanted.txt")).unwrap();
+        });
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(TcpStream::connect(address).unwrap()));
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        let directory = connector.read_remote_directory("/data", &job).unwrap();
+        assert_eq!(directory.entries[0].name, "wanted.txt");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_silent_file_service_is_reported_as_not_running() {
+        use crate::file_transfer::TransferRegistry;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let _request = wire::read_frame(&mut socket).unwrap();
+            // The connection stays open; the file service never answers.
+            thread::sleep(Duration::from_millis(1500));
+        });
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(TcpStream::connect(address).unwrap()));
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        let error = match connector.read_remote_directory("", &job) {
+            Ok(_) => panic!("a silent file service must not produce a listing"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "peer_file_service_unavailable");
+        assert_eq!(crate::file_transfer::file_error_code(&error), "peer_file_service_unavailable");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_peer_errors_and_directory_paths_are_classified() {
+        let code = |text: &str| {
+            RustDeskConnector::remote_file_error(text, std::io::ErrorKind::Other, "fallback").to_string()
+        };
+        assert_eq!(code("No such file or directory (os error 2)"), "remote_path_not_found");
+        assert_eq!(code("Operation not permitted (os error 1)"), "remote_permission_denied");
+        assert_eq!(code("Access is denied. (os error 5)"), "remote_permission_denied");
+        assert_eq!(code("one-way-file-transfer-tip"), "remote_one_way_transfer");
+        assert_eq!(code("No space left on device (os error 28)"), "remote_disk_full");
+        assert_eq!(code("something else"), "fallback");
+        assert!(RustDeskConnector::directory_reply_matches("", "/anything"));
+        assert!(RustDeskConnector::directory_reply_matches("/data", "/data/"));
+        assert!(RustDeskConnector::directory_reply_matches("C:\\Users", "c:/users"));
+        assert!(RustDeskConnector::directory_reply_matches("/", "/"));
+        assert!(!RustDeskConnector::directory_reply_matches("/data", "/Users/peer"));
+        assert!(!RustDeskConnector::directory_reply_matches("/Data", "/data"));
     }
 
     #[test]

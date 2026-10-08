@@ -58,6 +58,9 @@ export interface RemoteSessionBgInfo {
 export class RemoteSessionBackgroundTaskService {
   private static instance: RemoteSessionBackgroundTaskService | null = null;
   private tasks: Map<common.UIAbilityContext, ActiveBgTask> = new Map<common.UIAbilityContext, ActiveBgTask>();
+  /** Each window's notification tap carries its own window id, so each needs its own WantAgent request code. */
+  private requestCodes: Map<common.UIAbilityContext, number> = new Map<common.UIAbilityContext, number>();
+  private nextRequestCode: number = SESSION_NOTIFY_BASE_ID;
 
   static getInstance(): RemoteSessionBackgroundTaskService {
     if (RemoteSessionBackgroundTaskService.instance === null) {
@@ -99,7 +102,7 @@ export class RemoteSessionBackgroundTaskService {
           parameters
         }],
         actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: notificationId,
+        requestCode: this.requestCodeFor(context),
         wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
       };
       const agent: WantAgent = await wantAgent.getWantAgent(agentInfo);
@@ -197,6 +200,7 @@ export class RemoteSessionBackgroundTaskService {
       return;
     }
     this.tasks.delete(context);
+    this.requestCodes.delete(context);
 
     if (task.state === BgTaskState.running && task.continuousTaskId >= 0) {
       try {
@@ -218,6 +222,15 @@ export class RemoteSessionBackgroundTaskService {
         // 取消通知失败不影响
       }
     }
+  }
+
+  private requestCodeFor(context: common.UIAbilityContext): number {
+    const existing: number | undefined = this.requestCodes.get(context);
+    if (existing !== undefined) { return existing; }
+    this.nextRequestCode = this.nextRequestCode >= SESSION_NOTIFY_BASE_ID + 999 ? SESSION_NOTIFY_BASE_ID + 1 :
+      this.nextRequestCode + 1;
+    this.requestCodes.set(context, this.nextRequestCode);
+    return this.nextRequestCode;
   }
 
   /** Stops every window's task, each with its own context (account switch). */

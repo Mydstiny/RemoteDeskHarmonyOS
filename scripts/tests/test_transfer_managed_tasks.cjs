@@ -263,6 +263,17 @@ test('saving received data ignores cancel and disconnect; the next file of the t
   env.advance(1000); await drain(); assert.equal(control.isCancellationRequested(), true);
   gate.resolve(outcome('cancelled', 'none')); assert.equal((await handle.result).stage, 'cancelled'); await drain();
 });
+test('new network bytes after a saved file end the save phase even without a stage update', async () => {
+  const env = environment(), service = env.service(), gate = deferred(); let control, current = true;
+  const handle = service.enqueue(options({ direction: 'download', isCurrent: () => current }), async c => { control = c; return gate.promise; });
+  await drain(); control.update({ stage: 'transferring', writtenBytes: 2 }); assert.equal(await control.enterCommit(), true);
+  assert.equal(service.isCancellable('account-a', handle.taskId, 1), false);
+  assert.equal(control.update({ writtenBytes: 5 }), true);
+  assert.equal(service.list('account-a')[0].stage, 'transferring');
+  assert.equal(service.isCancellable('account-a', handle.taskId, 1), true);
+  current = false; env.advance(1000); await drain(); assert.equal(control.isCancellationRequested(), true);
+  gate.resolve(outcome('cancelled', 'none')); await handle.result; await drain();
+});
 test('a local save stays cancellable while it writes and does not depend on the session', async () => {
   const env = environment(), service = env.service(), gate = deferred(); let control;
   const handle = service.enqueue(options({ local: true, direction: 'download' }), async c => { control = c; return gate.promise; });

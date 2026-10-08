@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { transferFailureReason, transferTaskCancellable, transferTaskDescription } from '../main/ets/services/TransferUserTextPolicy';
+import { rustDeskFileFailureText, transferFailureReason, transferTaskCancellable,
+  transferTaskDescription } from '../main/ets/services/TransferUserTextPolicy';
 import { managedTransferSettled, managedTransferTerminal, recoverManagedTransferRecord,
   ManagedTransferRecord } from '../main/ets/services/ManagedTransferTaskPolicy';
 
@@ -26,6 +27,15 @@ export default function transferUserTextPolicyTest(): void {
       expect(transferTaskCancellable('transferring')).assertTrue();
       expect(transferTaskCancellable('committing')).assertFalse();
       expect(transferTaskCancellable('handedOff')).assertFalse();
+    });
+
+    it('rustdesk_file_failures_name_the_cause_and_the_controlled_side_fix', 0, (): void => {
+      expect(rustDeskFileFailureText('file_transfer:peer_prelogin', 'macos').indexOf('注销后重新登录') >= 0).assertTrue();
+      expect(rustDeskFileFailureText('file_transfer:peer_file_service_unavailable', 'windows')
+        .indexOf('托盘') >= 0).assertTrue();
+      expect(rustDeskFileFailureText('file_transfer:remote_permission_denied', 'macos')
+        .indexOf('完全磁盘访问权限') >= 0).assertTrue();
+      expect(rustDeskFileFailureText('lost', 'unknown')).assertEqual('读取远端目录失败，请稍后重试。');
     });
 
     it('records_found_at_start_are_settled', 0, (): void => {

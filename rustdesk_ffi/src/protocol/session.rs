@@ -705,6 +705,21 @@ impl Session {
                                 "No Password Access" if !totp => {
                                     auth.challenge(3)?;
                                 }
+                                text if text.to_ascii_lowercase().contains("file transfer") => {
+                                    // "No permission of file transfer": the peer turned file transfer off.
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "remote_file_transfer_disabled",
+                                    ));
+                                }
+                                text if text.to_ascii_lowercase().contains("logon")
+                                    || text.to_ascii_lowercase().contains("login screen") =>
+                                {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "peer_prelogin",
+                                    ));
+                                }
                                 _ => {
                                     return Err(io::Error::new(
                                         io::ErrorKind::PermissionDenied,

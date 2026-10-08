@@ -47,6 +47,7 @@ reason('clipboard_offer_unavailable', '远端剪贴板暂不可用，请重试')
 reason('clipboard_not_ready', '剪贴板通道尚未就绪，请稍后重试');
 reason('export_destination_cleared', '保存未完成，已删除写了一半的文件');
 reason('export_destination_retained', '保存未完成，所选位置可能留下不完整的文件');
+reason('export_destination_emptied', '保存未完成，所选位置留下了一个空文件，可以删除');
 reason('export_not_committed', '保存未完成');
 reason('transfer_export_target_unavailable', '无法写入所选位置，请换一个位置');
 reason('manifest_write_failed', '本机记录写入失败，请检查存储空间');
@@ -107,4 +108,54 @@ export function transferTaskDescription(input: TransferTaskTextInput): string {
 export function transferTaskCancellable(stage: TransferStage): boolean {
   return ['preparing', 'ready', 'offered', 'transferring', 'senderCompleted', 'verifying', 'waitingRemote',
     'waitingConnection'].indexOf(stage) >= 0;
+}
+
+/** What to do on the controlled computer when its RustDesk file service is not running. */
+function rustDeskFileServiceAdvice(platformCategory: string): string {
+  if (platformCategory === 'macos') {
+    return '请确认被控 Mac 已登录桌面；若仍不行，在被控 Mac 上注销后重新登录，或重启电脑。';
+  }
+  if (platformCategory === 'windows') {
+    return '请确认被控电脑已登录 Windows 桌面、RustDesk 托盘程序在运行；必要时重启被控端的 RustDesk。';
+  }
+  if (platformCategory === 'linux') {
+    return '请确认被控电脑已登录图形桌面，并且当前用户的 RustDesk 在运行。';
+  }
+  return '请确认被控端已登录桌面，并重启被控端的 RustDesk 后再试。';
+}
+
+/**
+ * A RustDesk file job's diagnostic ("file_transfer:<code>" from the native layer, or a client-side code) as a sentence
+ * for the file panel, with advice for the controlled computer's platform where the cause is on that side.
+ */
+export function rustDeskFileFailureText(diagnostic: string, platformCategory: string): string {
+  const code: string = diagnostic.startsWith('file_transfer:') ? diagnostic.substring('file_transfer:'.length) : diagnostic;
+  switch (code) {
+    case 'peer_prelogin':
+      return '被控端 RustDesk 认为当前没有用户登录桌面，文件服务没有启动。' + rustDeskFileServiceAdvice(platformCategory);
+    case 'peer_file_service_unavailable':
+      return '被控端 RustDesk 没有响应文件请求，它的文件服务没有运行。' + rustDeskFileServiceAdvice(platformCategory);
+    case 'remote_file_transfer_disabled':
+      return '被控端关闭了文件传输，请在被控端 RustDesk 的设置里允许文件传输。';
+    case 'remote_one_way_transfer':
+      return '被控端设置为单向文件传输，不能向它发送或在它上面修改文件。';
+    case 'remote_path_not_found':
+      return '远端没有这个文件夹，请检查路径。';
+    case 'remote_permission_denied':
+      return platformCategory === 'macos' ?
+        '被控 Mac 不允许 RustDesk 读写这个位置。可在被控 Mac 的“系统设置 → 隐私与安全性 → 完全磁盘访问权限”中允许 RustDesk。' :
+        '被控端没有权限访问这个位置。';
+    case 'remote_disk_full':
+      return '被控端磁盘空间不足。';
+    case 'TimedOut':
+      return '远端长时间没有回应，请稍后重试。';
+    case 'PermissionDenied':
+      return '文件会话没有获得授权，或被被控端拒绝。';
+    case 'AlreadyExists':
+      return '远端已有同名文件。';
+    case 'enqueue_failed':
+      return '同时进行的文件任务太多，请等前面的任务完成。';
+    default:
+      return '读取远端目录失败，请稍后重试。';
+  }
 }

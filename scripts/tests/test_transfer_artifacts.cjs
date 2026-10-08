@@ -210,6 +210,15 @@ test('export cancellation after target write removes the half-written file and p
   assert.equal(fs.existsSync(destination), false); assert.ok(fs.existsSync(artifact.path)); assert.ok(fs.existsSync(source));
   assert.equal(env.descriptors.size, 0);
 }));
+test('a failed replace empties the chosen file but never deletes it', () => using(async env => {
+  const source = env.source('source', crypto.randomBytes(100)), batch = env.batch('received');
+  const artifact = await batch.stage(source, 'file', 100, () => true, () => {}), destination = path.join(env.directory, 'chosen');
+  fs.writeFileSync(destination, 'the old version');
+  let active = true; env.limitWrite(5); env.onWrite(name => { if (name === destination) active = false; });
+  const result = await env.api.exportTransferArtifact(artifact, destination, () => active, () => {}, true);
+  assert.equal(result.diagnosticCode, 'export_destination_emptied'); assert.ok(fs.existsSync(destination));
+  assert.equal(fs.statSync(destination).size, 0);
+}));
 test('a save that replaces a file the user picked overwrites it', () => using(async env => {
   const bytes = crypto.randomBytes(40), source = env.source('source', bytes), batch = env.batch('received');
   const artifact = await batch.stage(source, 'file', bytes.length, () => true, () => {}), destination = path.join(env.directory, 'picked');
@@ -364,11 +373,16 @@ test('after a restart, stale holders are cleared: staged upload copies go at onc
   received.closeMutationLock(); upload.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear();
   const first = await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day);
   assert.equal(first.removedFiles, 1); assert.equal(fs.existsSync(offered.path), false); assert.ok(fs.existsSync(kept.path));
+  // The emptied upload batch is deleted, not rewritten on every later run.
+  assert.equal(first.removedBatches, 1); assert.equal(fs.existsSync(upload.directory), false);
+  assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day)).removedBatches, 0);
   const info = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'received').batches[0];
   assert.equal(info.held, false); assert.equal(info.unknown, false); assert.equal(info.canCleanup, true);
   env.advance(6 * day); assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day)).removedFiles, 0);
-  env.advance(2 * day); assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day)).removedFiles, 1);
-  assert.equal(fs.existsSync(kept.path), false); assert.equal(fs.readFileSync(source, 'utf8'), 'abc');
+  env.advance(2 * day); const expired = await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day);
+  assert.equal(expired.removedFiles, 1); assert.equal(expired.removedBatches, 1);
+  assert.equal(fs.existsSync(kept.path), false); assert.equal(fs.existsSync(received.directory), false);
+  assert.equal(fs.readFileSync(source, 'utf8'), 'abc');
 }));
 test('reconcile never clears a batch held in this process or whose lock someone else holds', () => using(async env => {
   const source = env.source('source', Buffer.from('abc'));
@@ -385,11 +399,13 @@ test('reconcile never clears a batch held in this process or whose lock someone 
 test('a stale unfinished receive tree is emptied and its batch becomes cleanable', () => using(async env => {
   const batch = env.batch('received'), directory = await batch.createNativeReceiveDirectory(() => true, 200);
   fs.mkdirSync(path.join(directory.path, 'receive-1')); fs.writeFileSync(path.join(directory.path, 'receive-1', 'half'), 'xx');
+  const nativePath = directory.path;
   await directory.abandon(); batch.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear();
-  await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * 24 * 60 * 60 * 1000);
-  assert.deepEqual(fs.readdirSync(directory.path), []);
-  const info = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'received').batches[0];
-  assert.equal(info.unknown, false); assert.equal(info.canCleanup, true);
+  // The stale tree is emptied; the batch then holds nothing and is deleted with it.
+  const result = await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * 24 * 60 * 60 * 1000);
+  assert.equal(result.removedBatches, 1); assert.equal(fs.existsSync(nativePath), false);
+  assert.equal(fs.existsSync(batch.directory), false);
+  assert.equal(env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'received').batches.length, 0);
 }));
 test('storage failures keep the space and size reasons a user can act on', () => using(async env => {
   const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));

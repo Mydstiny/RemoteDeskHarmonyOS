@@ -12,6 +12,8 @@ export class RustDeskTransferClient {
   // Each job's state, authentication and diagnostic code as they change: the file session is its own connection to
   // the peer (connect, authenticate, permission), and a failed listing otherwise leaves no trace of where it stopped.
   private log: (message: string) => void;
+  /** Why the last list/mkdir did not succeed: the job's diagnostic, or a client-side code. */
+  lastFailure: string = '';
   constructor(loader: ExtensionLoader, lease: ClipboardLease, isCurrent: () => boolean,
     onAuthentication: (snapshot: SessionTransferAuthentication) => void,
     log: (message: string) => void = (_message: string): void => {}) {
@@ -70,12 +72,16 @@ export class RustDeskTransferClient {
     const id: number = this.loader.requestSessionRemoteDirectory(this.lease.sessionId, this.lease.nativeGeneration, path);
     this.log('list request id=' + id.toString() + ' session=' + this.lease.sessionId.toString() +
       ' generation=' + this.lease.nativeGeneration.toString() + ' pathLength=' + path.length.toString());
-    if (id <= 0) { return null; }
+    if (id <= 0) { this.lastFailure = 'enqueue_failed'; return null; }
     let drained: boolean = false;
     try {
       const status: SessionTransferStatus | null = await this.wait(id);
       drained = status !== null;
-      if (!this.isCurrent() || status === null || [3, 6].indexOf(status.rustdeskTransferState) < 0) { return null; }
+      if (!this.isCurrent() || status === null || [3, 6].indexOf(status.rustdeskTransferState) < 0) {
+        this.lastFailure = status !== null ? (status.diagnosticCode ?? '') : 'lost';
+        return null;
+      }
+      this.lastFailure = '';
       return this.loader.getSessionRemoteDirectory(this.lease.sessionId, this.lease.nativeGeneration, id);
     } finally {
       if (!drained) { drained = await this.cancelAndDrain(id); }
@@ -85,12 +91,15 @@ export class RustDeskTransferClient {
   async mkdir(path: string): Promise<boolean> {
     if (!this.isCurrent()) { return false; }
     const id: number = this.loader.createSessionRemoteDirectory(this.lease.sessionId, this.lease.nativeGeneration, path);
-    if (id <= 0) { return false; }
+    if (id <= 0) { this.lastFailure = 'enqueue_failed'; return false; }
     let drained: boolean = false;
     try {
       const status: SessionTransferStatus | null = await this.wait(id);
       drained = status !== null;
-      if (!this.isCurrent() || status === null || [3, 6].indexOf(status.rustdeskTransferState) < 0) { return false; }
+      if (!this.isCurrent() || status === null || [3, 6].indexOf(status.rustdeskTransferState) < 0) {
+        this.lastFailure = status !== null ? (status.diagnosticCode ?? '') : 'lost';
+        return false;
+      }
       const result: SessionTransferResult = this.loader.getSessionTransferResult(this.lease.sessionId, this.lease.nativeGeneration, id);
       return result.operationKind === 4 && result.remoteOperationAcknowledged;
     } finally {

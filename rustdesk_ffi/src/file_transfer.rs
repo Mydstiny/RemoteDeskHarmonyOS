@@ -225,7 +225,7 @@ impl TransferJob {
                         4
                     };
                     status.0.diagnostic_code = 1;
-                    status.1 = format!("file_transfer:{:?}", error.kind());
+                    status.1 = format!("file_transfer:{}", file_error_code(&error));
                 }
             }
         }
@@ -235,6 +235,26 @@ impl TransferJob {
         }
     }
 }
+/// Failure reasons the app explains to the user; any other error is reported by its kind.
+pub(crate) const REPORTED_FILE_ERRORS: &[&str] = &[
+    "peer_prelogin",
+    "peer_file_service_unavailable",
+    "remote_file_transfer_disabled",
+    "remote_one_way_transfer",
+    "remote_path_not_found",
+    "remote_permission_denied",
+    "remote_disk_full",
+];
+
+pub(crate) fn file_error_code(error: &io::Error) -> String {
+    let text = error.to_string();
+    if REPORTED_FILE_ERRORS.contains(&text.as_str()) {
+        text
+    } else {
+        format!("{:?}", error.kind())
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct TransferRegistry {
     jobs: BTreeMap<u64, Arc<TransferJob>>,
