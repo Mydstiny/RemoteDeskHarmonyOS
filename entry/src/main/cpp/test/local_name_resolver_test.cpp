@@ -47,12 +47,15 @@ RDP_TEST_CASE(local_name_dns_query_carries_unicast_response_bit) {
 }
 
 RDP_TEST_CASE(local_name_parses_mdns_answers_with_compression_and_cache_flush) {
-    std::vector<uint8_t> response = { 0x00, 0x00, 0x84, 0x00, 0, 1, 0, 3, 0, 0, 0, 0 };
+    std::vector<uint8_t> response = { 0x00, 0x00, 0x84, 0x00, 0, 1, 0, 5, 0, 0, 0, 0 };
     const auto name = Name({ "Office-PC", "local" });
     response.insert(response.end(), name.begin(), name.end());  // question at offset 12
     Append(response, { 0, 1, 0x80, 0x01 });
     // A 192.168.1.20 with the cache-flush bit, name compressed to offset 12.
     Append(response, { 0xc0, 12, 0, 1, 0x80, 0x01, 0, 0, 0, 120, 0, 4, 192, 168, 1, 20 });
+    // A 127.0.0.1 and 255.255.255.255 (never the remote host, dropped).
+    Append(response, { 0xc0, 12, 0, 1, 0x80, 0x01, 0, 0, 0, 120, 0, 4, 127, 0, 0, 1 });
+    Append(response, { 0xc0, 12, 0, 1, 0x80, 0x01, 0, 0, 0, 120, 0, 4, 255, 255, 255, 255 });
     // AAAA fe80::1 (link-local, dropped).
     Append(response, { 0xc0, 12, 0, 28, 0x80, 0x01, 0, 0, 0, 120, 0, 16,
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 });
@@ -92,10 +95,15 @@ RDP_TEST_CASE(local_name_netbios_query_and_response) {
     Append(response, { 0, 0x20, 0, 1, 0, 0, 0x0e, 0x10, 0, 12,
         0, 0, 192, 168, 1, 30, 0, 0, 10, 0, 0, 7 });
     std::vector<std::string> addresses;
-    RDP_ASSERT(remotedesk::net::ParseNetbiosNameResponse(response.data(), response.size(), 0x0102, addresses));
+    RDP_ASSERT(remotedesk::net::ParseNetbiosNameResponse(response.data(), response.size(), 0x0102,
+        "desktop-1", addresses));
     RDP_ASSERT(addresses.size() == 2 && addresses[0] == "192.168.1.30" && addresses[1] == "10.0.0.7");
     std::vector<std::string> none;
-    RDP_ASSERT(!remotedesk::net::ParseNetbiosNameResponse(response.data(), response.size(), 0x9999, none));
+    RDP_ASSERT(!remotedesk::net::ParseNetbiosNameResponse(response.data(), response.size(), 0x9999,
+        "desktop-1", none));
+    // An answer for another name is ignored.
+    RDP_ASSERT(!remotedesk::net::ParseNetbiosNameResponse(response.data(), response.size(), 0x0102,
+        "other-pc", none));
 }
 
 RDP_TEST_CASE(local_name_resolution_skips_names_that_are_not_local) {

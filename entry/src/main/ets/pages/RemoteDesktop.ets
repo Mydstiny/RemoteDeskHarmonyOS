@@ -1414,6 +1414,10 @@ struct RemoteDesktop {
   @State rdpSessionErrorSuggestTls: boolean = false;
   /** Whether the current RDP attempt signs in over TLS without NLA. */
   private rdpConnectionTlsWithoutNla: boolean = false;
+  /** ...because of this host's own choice (not the global setting): a failure offers to restore NLA. */
+  private rdpConnectionTlsWithoutNlaByHostChoice: boolean = false;
+  /** The failed connection used this host's TLS sign-in choice: offer 「恢复 NLA 登录」. */
+  @State rdpSessionErrorRestoreNla: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
   /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
@@ -14537,6 +14541,8 @@ struct RemoteDesktop {
     this.rdpSessionErrorMessage = model.message;
     this.rdpSessionErrorCode = model.code;
     const host: RemoteHost | null = this.pendingHost;
+    this.rdpSessionErrorRestoreNla = this.rdpConnectionTlsWithoutNlaByHostChoice && host !== null &&
+      host.protocol === 'rdp' && model.source === RdpSessionErrorSource.CONNECT_FAILURE;
     this.rdpSessionErrorSuggestTls = model.suggestTlsWithoutNla === true && host !== null &&
       host.protocol === 'rdp' && !this.rdpConnectionTlsWithoutNla &&
       shouldUseRdpTlsWithoutNla(true, normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost),
@@ -14563,7 +14569,8 @@ struct RemoteDesktop {
     promptAction.showDialog({
       title: '对这台电脑改用 TLS 登录？',
       message: '不再在连接前做网络级身份验证（NLA），密码在 TLS 加密通道里交给 Windows 登录界面校验。' +
-        '这台电脑强制要求 NLA 时仍然连不上。只对这台电脑生效，可以随时在 RDP 设置里关闭 TLS 兼容登录。',
+        '这台电脑强制要求 NLA 时仍然连不上，那时错误界面会提供「恢复 NLA 登录」；' +
+        '也可以在「设置 → Windows RDP」里恢复。只对这台电脑生效。',
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '改用 TLS 登录', color: this.accentColor }
@@ -14571,12 +14578,27 @@ struct RemoteDesktop {
     }).then((result: Object): void => {
       const response: Record<string, number> = result as Record<string, number>;
       if (response['index'] !== 1) { return; }
-      RdpLegacyTlsConsentStore.getInstance().allowKind(getContext(this) as common.UIAbilityContext,
-        'tls-without-nla', host.id, rdpRouteIdentity(host));
+      const saved: boolean = RdpLegacyTlsConsentStore.getInstance().allowKind(
+        getContext(this) as common.UIAbilityContext, 'tls-without-nla', host.id, rdpRouteIdentity(host));
+      if (!saved) {
+        promptAction.showToast({ message: '没能保存这个选择，登录方式没有改变', duration: 2600 });
+        return;
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP TLS sign-in without NLA chosen for host=' + maskHost(host.host));
       promptAction.showToast({ message: '已对这台电脑改用 TLS 登录，请重新连接', duration: 2600 });
       this.closeRdpSessionErrorSheet();
     }).catch((_error: Error): void => {});
+  }
+
+  /** Withdraw this host's TLS sign-in choice: the next connection uses NLA again. */
+  private restoreRdpNlaForHost(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null) { return; }
+    RdpLegacyTlsConsentStore.getInstance().revokeKind(getContext(this) as common.UIAbilityContext,
+      'tls-without-nla', host.id, rdpRouteIdentity(host));
+    hilog.info(RD_DOMAIN, RD_TAG, 'RDP NLA sign-in restored for host=' + maskHost(host.host));
+    promptAction.showToast({ message: '已恢复 NLA 登录，请重新连接', duration: 2600 });
+    this.closeRdpSessionErrorSheet();
   }
 
   private closeRdpSessionErrorSheet(): void {
@@ -16314,13 +16336,13 @@ struct RemoteDesktop {
         const routeMode: string = normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost);
         const routeIdentity: string = rdpRouteIdentity(host);
         // The global TLS sign-in setting, or this host's own choice after NLA failed on it.
-        rdpTlsWithoutNla = shouldUseRdpTlsWithoutNla(
-          (AppStorage.get<boolean>('rdpTlsWithoutNla') ?? false) ||
-            RdpLegacyTlsConsentStore.getInstance().allowedKind(getContext(this) as common.UIAbilityContext,
-              'tls-without-nla', host.id, routeIdentity),
-          routeMode,
+        const globalTlsSignIn: boolean = AppStorage.get<boolean>('rdpTlsWithoutNla') ?? false;
+        const hostTlsSignIn: boolean = RdpLegacyTlsConsentStore.getInstance().allowedKind(
+          getContext(this) as common.UIAbilityContext, 'tls-without-nla', host.id, routeIdentity);
+        rdpTlsWithoutNla = shouldUseRdpTlsWithoutNla(globalTlsSignIn || hostTlsSignIn, routeMode,
           normalizeRdpAuthMode(host.rdpAuthMode));
         this.rdpConnectionTlsWithoutNla = rdpTlsWithoutNla;
+        this.rdpConnectionTlsWithoutNlaByHostChoice = rdpTlsWithoutNla && hostTlsSignIn && !globalTlsSignIn;
         rdpVerifyCertificateOnConnect = rdpCertificatePreflightSkipAllowed(
           this.rdpVerifyCertificateOnConnectRouteIdentity === routeIdentity,
           routeMode);
@@ -16993,9 +17015,9 @@ struct RemoteDesktop {
       if (!isVnc) {
         const desktopRustDeskSurfaceCompatibility: boolean =
           host.protocol === 'rustdesk' && this.isDesktopDevice;
-        if (host.protocol === 'rustdesk') {
-          // Measured in the background while the stream starts; the PC path corrects with it.
-          this.loader.ensureVideoOrientationSelfTest(desktopRustDeskSurfaceCompatibility);
+        if (desktopRustDeskSurfaceCompatibility) {
+          // PC hardware decode: measured in the background while the stream starts, then corrected with.
+          this.loader.ensureVideoOrientationSelfTest(true);
         }
         const dHandle: number = this.loader.initDecoder(
           w, h, decoderCodec, this.rendererHandle,
@@ -26152,6 +26174,25 @@ struct RemoteDesktop {
         .textAlign(TextAlign.Center)
         .width('100%')
         .margin({ top: 12 })
+      if (this.rdpSessionErrorRestoreNla) {
+        Text('这台电脑之前改用了 TLS 登录（不做网络级身份验证）。如果它要求 NLA，就会一直连不上，可以恢复为 NLA 登录。')
+          .fontSize(13)
+          .fontColor(this.pal().text2)
+          .lineHeight(19)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ top: 14 })
+        Button('恢复 NLA 登录')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .height(48)
+          .width('100%')
+          .backgroundColor(appUiTint(this.accentColor, '1F'))
+          .fontColor(this.accentColor)
+          .borderRadius(14)
+          .margin({ top: 20 })
+          .onClick(() => { this.restoreRdpNlaForHost(); })
+      }
       if (this.rdpSessionErrorSuggestTls) {
         Text('如果这台电脑没有强制要求 NLA，可以改用 TLS 登录：在加密通道里直接进入 Windows 登录界面，' +
           '不再预先做 NLA 认证。安全性略低，只对这台电脑生效。')
@@ -26180,7 +26221,7 @@ struct RemoteDesktop {
         .backgroundColor(this.accentColor)
         .fontColor(appUiOnAccentText(this.accentColor))
         .borderRadius(14)
-        .margin({ top: this.rdpSessionErrorSuggestTls ? 10 : 26 })
+        .margin({ top: this.rdpSessionErrorSuggestTls || this.rdpSessionErrorRestoreNla ? 10 : 26 })
         .onClick(() => { this.closeRdpSessionErrorSheet(); })
     }
     .width('100%')

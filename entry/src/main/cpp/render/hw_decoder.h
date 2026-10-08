@@ -415,6 +415,8 @@ private:
     Render::NativeImageTransformClass appliedTransformClass_ =
         Render::NativeImageTransformClass::NotSampled;
     std::atomic<bool> textureTransformLogged_ {false};
+    // The resolved producer transform before the orientation correction.
+    Render::NativeImageTransform resolvedTextureTransform_ = Render::IdentityNativeImageTransform();
     // Orientation self-test correction composed on the PC desktop path, as the
     // NativeImageTransformClass value it undoes (-1 none); logged on change.
     int32_t orientationCorrectionLogged_ = -1;

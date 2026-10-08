@@ -154,16 +154,24 @@ inline NativeImageTransform MultiplyNativeImageTransforms(const NativeImageTrans
 
 /**
  * The sampling transform that shows the source upright when `applied` was
- * measured to show it as `shown`: applied * inverse(shown), i.e. the screen
- * coordinate is first mapped back through the inverse orientation.
+ * measured to show it as `shown`.
+ *
+ * Screen space (applied * inverse): the screen coordinate is mapped back
+ * through the inverse orientation before `applied` — right when `applied`
+ * itself introduced the turn (a producer matrix that disagrees with the
+ * texture). Texture space (inverse * applied): the texture coordinate is
+ * mapped after `applied` — right when the GPU's texture itself is turned, so
+ * a crop inside `applied` keeps addressing the picture rows, not padding.
  */
 inline NativeImageTransform CorrectedNativeImageTransform(const NativeImageTransform& applied,
-                                                          NativeImageTransformClass shown) {
+                                                          NativeImageTransformClass shown,
+                                                          bool textureSpace = false) {
     if (!OrientationIsCorrectable(shown)) {
         return applied;
     }
-    return MultiplyNativeImageTransforms(
-        applied, NativeImageTransformForClass(InverseOrientationClass(shown)));
+    const NativeImageTransform inverse = NativeImageTransformForClass(InverseOrientationClass(shown));
+    return textureSpace ? MultiplyNativeImageTransforms(inverse, applied) :
+        MultiplyNativeImageTransforms(applied, inverse);
 }
 
 } // namespace Render

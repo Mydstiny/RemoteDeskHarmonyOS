@@ -101,6 +101,25 @@ RDP_TEST_CASE(video_orientation_correction_keeps_crop_and_fixes_flip) {
     RDP_ASSERT(std::fabs(sx - 0.09f) < 0.001f && std::fabs(sy - 0.19f) < 0.001f);
 }
 
+RDP_TEST_CASE(video_orientation_texture_space_correction_keeps_crop_on_turned_textures) {
+    // The GPU texture itself is upside down (texture row v holds source row 1 - v);
+    // the applied matrix crops 1080 of 1088 rows.
+    const float a = 1080.0f / 1088.0f;
+    const NativeImageTransform crop = { 1, 0, 0, 0, 0, a, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    const auto sourceRow = [](const NativeImageTransform& m, float y) {
+        const float v = m[5] * y + m[13];
+        return 1.0f - v;  // texture row v shows source row 1 - v
+    };
+    // Screen space would read padding at the top edge; texture space maps the top to the first picture row.
+    const NativeImageTransform screen =
+        Render::CorrectedNativeImageTransform(crop, NativeImageTransformClass::FlipY, false);
+    const NativeImageTransform texture =
+        Render::CorrectedNativeImageTransform(crop, NativeImageTransformClass::FlipY, true);
+    RDP_ASSERT(std::fabs(sourceRow(texture, 0.0f) - 0.0f) < 0.0001f);
+    RDP_ASSERT(std::fabs(sourceRow(texture, 1.0f) - a) < 0.0001f);
+    RDP_ASSERT(std::fabs(sourceRow(screen, 0.0f) - 0.0f) > 0.005f);
+}
+
 RDP_TEST_CASE(video_stream_inspection_reads_h264_units_and_display_orientation_sei) {
     // SPS(7), PPS(8), SEI(6) with display orientation (payload 47): cancel=0,
     // hor=0, ver=1, rotation=0x8000, then IDR(5). 3- and 4-byte start codes.

@@ -393,6 +393,7 @@ import {
   shouldPersistRdpCertificateTrust
 } from '../services/RdpCertificatePreflightPolicy';
 import { RdpLegacyTlsConsentStore } from '../services/RdpLegacyTlsConsentStore';
+import { AppSettingsActionRow } from '../components/AppSettingsActionRow';
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
@@ -1452,6 +1453,8 @@ struct HostListPage {
   @State rdpCertificateInfo: RdpCertificateInfo | null = null;
   /** Which step the RDP certificate probe is on, under 「正在检查 RDP 证书…」. */
   @State rdpCertificateProgress: string = '';
+  /** Hosts with their own lowered RDP security choice (legacy TLS / TLS sign-in), for 「恢复各电脑的默认安全设置」. */
+  @State rdpSecurityDowngradeHosts: number = 0;
   @State rdpGatewayCertificateInfo: RdpCertificateInfo | null = null;
   @State rdpCertificateRouteResult: RdpPreflightResult | null = null;
   @State rdpCertificateError: string = '';
@@ -3143,6 +3146,7 @@ struct HostListPage {
     this.takeSessionAi();
     // 全新视觉 reads some values from services (VNC, Moonlight); read them again whenever the page comes back.
     this.settingsValuesRevision++;
+    this.refreshRdpSecurityDowngradeHosts();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     this.refreshMoonlightDirectory();
@@ -10011,6 +10015,42 @@ struct HostListPage {
     this.doRdpCertificateRoute(routed, result, true);
   }
 
+  /** A deleted host takes its lowered security choices with it. */
+  private forgetRdpSecurityDowngrades(host: RemoteHost): void {
+    if (host.protocol !== 'rdp') { return; }
+    try {
+      RdpLegacyTlsConsentStore.getInstance().revokeHost(getContext(this) as common.UIAbilityContext, host.id);
+    } catch (_error) { /* nothing stored */ }
+    this.refreshRdpSecurityDowngradeHosts();
+  }
+
+  /** Re-read how many hosts have their own lowered security choice (shown in the Windows RDP settings). */
+  private refreshRdpSecurityDowngradeHosts(): void {
+    try {
+      this.rdpSecurityDowngradeHosts = RdpLegacyTlsConsentStore.getInstance().hostCount(
+        getContext(this) as common.UIAbilityContext);
+    } catch (_error) {
+      this.rdpSecurityDowngradeHosts = 0;
+    }
+  }
+
+  private confirmRestoreRdpSecurityDowngrades(): void {
+    promptAction.showDialog({
+      title: '恢复默认安全设置？',
+      message: '这些电脑以后会重新要求 TLS 1.2 以上和网络级身份验证（NLA）；只支持旧系统的电脑会在连接时重新询问。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '全部恢复', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) { return; }
+      RdpLegacyTlsConsentStore.getInstance().revokeAll(getContext(this) as common.UIAbilityContext);
+      this.refreshRdpSecurityDowngradeHosts();
+      promptAction.showToast({ message: '已恢复默认安全设置', duration: 2000 });
+    }).catch((_error: Error): void => {});
+  }
+
   private rdpLegacyTlsConsented(host: RemoteHost, routeIdentity: string): boolean {
     try {
       return RdpLegacyTlsConsentStore.getInstance().allowed(getContext(this) as common.UIAbilityContext,
@@ -13242,6 +13282,7 @@ struct HostListPage {
       removed = this.srv.removeHost(host.id);
     }
     if (removed) {
+      this.forgetRdpSecurityDowngrades(host);
       const key: string = remoteHostCardKey(host.id);
       this.hostManualOrder = this.hostManualOrder.filter(
         (stored: string): boolean => stored !== key && stored !== host.id);
@@ -13296,6 +13337,7 @@ struct HostListPage {
           ? this.vncHosts.remove(vncHostId)
           : this.srv.removeHost(host.id);
         if (removed) {
+          this.forgetRdpSecurityDowngrades(host);
           const key: string = remoteHostCardKey(host.id);
           this.hostManualOrder = this.hostManualOrder.filter(
             (stored: string): boolean => stored !== key && stored !== host.id);
@@ -19501,6 +19543,16 @@ struct HostListPage {
             onToggle: (on: boolean): void => { this.saveRdpTlsWithoutNla(on); },
             neutralIcon: true
           })
+          if (this.rdpSecurityDowngradeHosts > 0) {
+            this.cardDivider()
+            AppSettingsActionRow({
+              icon: $r('app.media.icon_info'),
+              title: '恢复各电脑的默认安全设置',
+              detail: this.rdpSecurityDowngradeHosts.toString() +
+                ' 台电脑单独改用了旧版 TLS 或 TLS 登录；点此全部恢复',
+              onAction: (): void => { this.confirmRestoreRdpSecurityDowngrades(); }
+            })
+          }
           this.cardDivider()
           this.rustdeskSwitchRow({
             icon: $r('app.media.icon_audio'),

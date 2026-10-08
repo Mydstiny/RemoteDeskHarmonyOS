@@ -84,14 +84,25 @@ OrientationSelfTestResult RunVideoOrientationSelfTest(OrientationSelfTestCodec c
 bool LatestVideoOrientationSelfTest(OrientationSelfTestCodec codec, NativeImagePresentationMode mode,
                                     OrientationSelfTestResult& result);
 
+/** What the desktop path measured for a codec: how the picture was shown, and where the turn lives. */
+struct DesktopOrientationCorrection {
+    NativeImageTransformClass shown = NativeImageTransformClass::NotSampled;
+    /** The GPU texture itself was turned (sampling with no transform already showed it turned). */
+    bool textureSpace = false;
+};
+
 /**
- * The orientation the desktop presentation path measured for `codec`
- * (TopLeftProducerTransform), or NotSampled when no conclusive test ran.
+ * The orientation the desktop presentation path (TopLeftProducerTransform)
+ * measured for `codec`; `shown` is NotSampled until a conclusive test ran.
  * Read on every presented frame; lock-free.
  */
-NativeImageTransformClass DesktopOrientationCorrectionClass(int32_t codec);
+DesktopOrientationCorrection DesktopOrientationCorrectionFor(int32_t codec);
 
-/** Start a background self-test for codec and mode unless one ran or runs already. */
+/**
+ * Start a background self-test for codec and mode unless one completed or
+ * runs already; a test that stopped short is retried (at most three times,
+ * ten seconds apart).
+ */
 void EnsureVideoOrientationSelfTest(OrientationSelfTestCodec codec, NativeImagePresentationMode mode);
 
 /** Every result kept in this process, ordered by codec then mode. */

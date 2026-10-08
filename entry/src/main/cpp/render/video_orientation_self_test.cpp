@@ -149,7 +149,10 @@ void OnNewOutput(OH_AVCodec*, uint32_t index, OH_AVBuffer*, void* userData) {
 void OnFrameAvailable(void* userData) {
     auto* state = static_cast<DecodeState*>(userData);
     if (state == nullptr) { return; }
-    state->frameAvailable.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->frameAvailable.store(true, std::memory_order_release);
+    }
     state->condition.notify_all();
 }
 
@@ -447,7 +450,12 @@ OrientationSelfTestResult RunOnCurrentThread(OrientationSelfTestCodec codec, Nat
         }
         outputIndex = state->outputIndex;
     }
-    if (!state->formatSeen) {
+    bool formatSeen = false;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        formatSeen = state->formatSeen;
+    }
+    if (!formatSeen) {
         OH_AVFormat* description = OH_VideoDecoder_GetOutputDescription(decoder);
         ReadFormat(state.get(), description);
         if (description != nullptr) { OH_AVFormat_Destroy(description); }
@@ -516,14 +524,31 @@ OrientationSelfTestResult RunOnCurrentThread(OrientationSelfTestCodec codec, Nat
     return finish(OrientationSelfTestStage::Done, 0);
 }
 
-std::mutex g_resultsMutex;
-std::mutex g_runMutex;
-std::map<std::pair<int32_t, int32_t>, OrientationSelfTestResult> g_results;
-std::map<std::pair<int32_t, int32_t>, bool> g_running;
-std::atomic<int32_t> g_desktopCorrection[2] = {
-    { static_cast<int32_t>(NativeImageTransformClass::NotSampled) },
-    { static_cast<int32_t>(NativeImageTransformClass::NotSampled) },
+/**
+ * Results, run bookkeeping and the desktop corrections. Allocated once and
+ * never destroyed: a detached test may still finish while the process exits.
+ */
+struct SelfTestRegistry {
+    std::mutex resultsMutex;
+    std::mutex runMutex;
+    std::map<std::pair<int32_t, int32_t>, OrientationSelfTestResult> results;
+    std::map<std::pair<int32_t, int32_t>, bool> running;
+    std::map<std::pair<int32_t, int32_t>, int> attempts;
+    std::map<std::pair<int32_t, int32_t>, std::chrono::steady_clock::time_point> lastAttempt;
+    // Packed DesktopOrientationCorrection per codec: class | textureSpace << 8.
+    std::atomic<int32_t> desktopCorrection[2] = {
+        { static_cast<int32_t>(NativeImageTransformClass::NotSampled) },
+        { static_cast<int32_t>(NativeImageTransformClass::NotSampled) },
+    };
 };
+
+SelfTestRegistry& Registry() {
+    static SelfTestRegistry* registry = new SelfTestRegistry();
+    return *registry;
+}
+
+constexpr int kMaxSelfTestAttempts = 3;
+constexpr auto kSelfTestRetryDelay = std::chrono::seconds(10);
 
 void LogResult(const OrientationSelfTestResult& result) {
     OH_LOG_INFO(LOG_APP,
@@ -561,14 +586,18 @@ void LogResult(const OrientationSelfTestResult& result) {
 }
 
 void Store(const OrientationSelfTestResult& result) {
+    SelfTestRegistry& registry = Registry();
     {
-        std::lock_guard<std::mutex> lock(g_resultsMutex);
-        g_results[{ result.codec, static_cast<int32_t>(result.mode) }] = result;
+        std::lock_guard<std::mutex> lock(registry.resultsMutex);
+        registry.results[{ result.codec, static_cast<int32_t>(result.mode) }] = result;
     }
     if (result.mode == NativeImagePresentationMode::TopLeftProducerTransform &&
         result.stage == OrientationSelfTestStage::Done && result.codec >= 0 && result.codec <= 1) {
-        g_desktopCorrection[result.codec].store(static_cast<int32_t>(result.appliedOrientation),
-                                                std::memory_order_release);
+        // The GPU texture itself is turned when sampling it with no transform already showed it turned.
+        const bool textureSpace = OrientationIsCorrectable(result.identityOrientation);
+        registry.desktopCorrection[result.codec].store(
+            static_cast<int32_t>(result.appliedOrientation) | (textureSpace ? 0x100 : 0),
+            std::memory_order_release);
     }
 }
 
@@ -598,11 +627,18 @@ const char* OrientationSelfTestStageName(OrientationSelfTestStage stage) {
 
 OrientationSelfTestResult RunVideoOrientationSelfTest(OrientationSelfTestCodec codec,
                                                       NativeImagePresentationMode mode) {
-    std::lock_guard<std::mutex> runLock(g_runMutex);
+    std::lock_guard<std::mutex> runLock(Registry().runMutex);
     // The decode runs on a fresh thread so no caller's EGL context is disturbed.
     OrientationSelfTestResult result;
-    std::thread worker([&result, codec, mode]() { result = RunOnCurrentThread(codec, mode); });
-    worker.join();
+    result.codec = static_cast<int32_t>(codec);
+    result.mode = mode;
+    try {
+        std::thread worker([&result, codec, mode]() { result = RunOnCurrentThread(codec, mode); });
+        worker.join();
+    } catch (...) {
+        result.stage = OrientationSelfTestStage::NotRun;
+        result.platformCode = -1;
+    }
     LogResult(result);
     Store(result);
     return result;
@@ -610,37 +646,62 @@ OrientationSelfTestResult RunVideoOrientationSelfTest(OrientationSelfTestCodec c
 
 bool LatestVideoOrientationSelfTest(OrientationSelfTestCodec codec, NativeImagePresentationMode mode,
                                     OrientationSelfTestResult& result) {
-    std::lock_guard<std::mutex> lock(g_resultsMutex);
-    const auto found = g_results.find({ static_cast<int32_t>(codec), static_cast<int32_t>(mode) });
-    if (found == g_results.end()) { return false; }
+    SelfTestRegistry& registry = Registry();
+    std::lock_guard<std::mutex> lock(registry.resultsMutex);
+    const auto found = registry.results.find({ static_cast<int32_t>(codec), static_cast<int32_t>(mode) });
+    if (found == registry.results.end()) { return false; }
     result = found->second;
     return true;
 }
 
 std::vector<OrientationSelfTestResult> AllVideoOrientationSelfTests() {
-    std::lock_guard<std::mutex> lock(g_resultsMutex);
+    SelfTestRegistry& registry = Registry();
+    std::lock_guard<std::mutex> lock(registry.resultsMutex);
     std::vector<OrientationSelfTestResult> results;
-    for (const auto& entry : g_results) { results.push_back(entry.second); }
+    for (const auto& entry : registry.results) { results.push_back(entry.second); }
     return results;
 }
 
-NativeImageTransformClass DesktopOrientationCorrectionClass(int32_t codec) {
-    if (codec < 0 || codec > 1) { return NativeImageTransformClass::NotSampled; }
-    return static_cast<NativeImageTransformClass>(g_desktopCorrection[codec].load(std::memory_order_acquire));
+DesktopOrientationCorrection DesktopOrientationCorrectionFor(int32_t codec) {
+    DesktopOrientationCorrection correction;
+    if (codec < 0 || codec > 1) { return correction; }
+    const int32_t packed = Registry().desktopCorrection[codec].load(std::memory_order_acquire);
+    correction.shown = static_cast<NativeImageTransformClass>(packed & 0xff);
+    correction.textureSpace = (packed & 0x100) != 0;
+    return correction;
 }
 
 void EnsureVideoOrientationSelfTest(OrientationSelfTestCodec codec, NativeImagePresentationMode mode) {
+    SelfTestRegistry& registry = Registry();
     const std::pair<int32_t, int32_t> key { static_cast<int32_t>(codec), static_cast<int32_t>(mode) };
     {
-        std::lock_guard<std::mutex> lock(g_resultsMutex);
-        if (g_results.count(key) != 0 || g_running[key]) { return; }
-        g_running[key] = true;
+        std::lock_guard<std::mutex> lock(registry.resultsMutex);
+        const auto found = registry.results.find(key);
+        if (registry.running[key] ||
+            (found != registry.results.end() && found->second.stage == OrientationSelfTestStage::Done)) {
+            return;
+        }
+        // A test that stopped short (decoder busy, no output in time) is tried again, a few times.
+        const auto now = std::chrono::steady_clock::now();
+        if (registry.attempts[key] >= kMaxSelfTestAttempts ||
+            (registry.attempts[key] > 0 && now - registry.lastAttempt[key] < kSelfTestRetryDelay)) {
+            return;
+        }
+        registry.attempts[key] += 1;
+        registry.lastAttempt[key] = now;
+        registry.running[key] = true;
     }
-    std::thread([codec, mode, key]() {
-        RunVideoOrientationSelfTest(codec, mode);
-        std::lock_guard<std::mutex> lock(g_resultsMutex);
-        g_running[key] = false;
-    }).detach();
+    try {
+        std::thread([codec, mode, key]() {
+            RunVideoOrientationSelfTest(codec, mode);
+            SelfTestRegistry& owner = Registry();
+            std::lock_guard<std::mutex> lock(owner.resultsMutex);
+            owner.running[key] = false;
+        }).detach();
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(registry.resultsMutex);
+        registry.running[key] = false;
+    }
 }
 
 } // namespace Render

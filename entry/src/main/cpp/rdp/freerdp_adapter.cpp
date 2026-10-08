@@ -941,7 +941,8 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
 RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, int port,
                                                      const std::string& serverName,
                                                      const std::function<bool()>& cancelled,
-                                                     bool legacyTls, std::string& connectedAddress) {
+                                                     bool legacyTls, std::string& connectedAddress,
+                                                     bool& tlsAlertFailure) {
     const int effectivePort = port > 0 ? port : kDefaultRdpPort;
     const std::string verifyName = serverName.empty() ? host : serverName;
     const std::string logHost = SafeLog::MaskHost(host);
@@ -993,6 +994,7 @@ RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, in
         return makeProbeError(host, effectivePort, -12, "Unable to connect to RDP host");
     }
     connectedAddress = connection.numericAddress;
+    tlsAlertFailure = false;
     const int fd = connection.descriptor;
     timeval tv {};
     tv.tv_sec = 8;
@@ -1224,6 +1226,11 @@ RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, in
                     "[RDP-CERT] tls handshake failed host=%{public}s:%{public}d sslError=%{public}d errno=%{public}d detail=%{public}s",
                     logHost.c_str(), effectivePort, sslError, socketError,
                     message.str().c_str());
+        // A refusal inside TLS itself (protocol version, ciphers, key sizes) —
+        // not a reset, an end of stream or a timeout — may be a host that only
+        // speaks TLS below our defaults.
+        tlsAlertFailure = sslError == SSL_ERROR_SSL && waitError == 0 &&
+            std::chrono::steady_clock::now() < tlsDeadline;
         return makeProbeError(host, effectivePort, -22, message.str());
     }
     if (rdpProbeCancelled(cancelled)) {
@@ -1320,15 +1327,19 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
                                               const std::string& serverName,
                                               const std::function<bool()>& cancelled) {
     std::string connectedAddress;
+    bool tlsAlertFailure = false;
     RdpCertificateInfo info = probeRdpCertificateOverTlsAttempt(
-        host, port, serverName, cancelled, false, connectedAddress);
+        host, port, serverName, cancelled, false, connectedAddress, tlsAlertFailure);
     info.connectedAddress = connectedAddress;
-    if (info.ok || info.errorCode != -22 || rdpProbeCancelled(cancelled)) {
+    // Only a refusal inside TLS is worth a legacy attempt; resets, ends of
+    // stream and timeouts stay TLS_PROBE_RESET as before.
+    if (info.ok || info.errorCode != -22 || !tlsAlertFailure || rdpProbeCancelled(cancelled)) {
         return info;
     }
     std::string legacyAddress;
+    bool legacyAlert = false;
     RdpCertificateInfo legacy = probeRdpCertificateOverTlsAttempt(
-        host, port, serverName, cancelled, true, legacyAddress);
+        host, port, serverName, cancelled, true, legacyAddress, legacyAlert);
     legacy.connectedAddress = legacyAddress;
     const std::string logHost = SafeLog::MaskHost(host);
     if (!legacy.ok) {

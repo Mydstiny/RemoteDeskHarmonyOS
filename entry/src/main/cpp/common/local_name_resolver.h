@@ -49,7 +49,8 @@ std::string EncodeNetbiosName(const std::string& name, uint8_t suffix);
 /** A broadcast NetBIOS name query (NB, IN) for `name` with `suffix`. */
 std::vector<uint8_t> BuildNetbiosNameQuery(uint16_t id, const std::string& name, uint8_t suffix);
 
-/** IPv4 addresses from a positive NetBIOS name query response with transaction `id`. */
-bool ParseNetbiosNameResponse(const uint8_t* data, size_t size, uint16_t id, std::vector<std::string>& addresses);
+/** IPv4 addresses from a positive NetBIOS name query response with transaction `id` for `name`. */
+bool ParseNetbiosNameResponse(const uint8_t* data, size_t size, uint16_t id, const std::string& name,
+                              std::vector<std::string>& addresses);
 
 } // namespace remotedesk::net

@@ -665,6 +665,7 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     desktopSurfaceCompatibility_ = desktopSurfaceCompatibility;
     presentationMode_.store(presentationMode, std::memory_order_release);
     textureTransform_ = Render::IdentityNativeImageTransform();
+    resolvedTextureTransform_ = Render::IdentityNativeImageTransform();
     orientationCorrectionLogged_ = -1;
     producerExtrasLogged_ = false;
     lastBufferTransform_ = -2;
@@ -673,13 +674,13 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
         streamInspection_ = Render::VideoStreamInspection {};
         streamInspectedFrames_ = 0;
     }
-    // Measure how this device's decoder + NativeImage + GPU path lands on
-    // screen with the known four-colour picture, once per codec and mode in
-    // the process. The PC desktop path composes the measured correction.
-    if (codec == CodecType::H264 || codec == CodecType::H265) {
+    // On the PC desktop path, measure how this device's decoder + NativeImage
+    // + GPU path lands on screen with the known four-colour picture (once per
+    // codec in the process, retried after a failure) and compose the result.
+    if ((codec == CodecType::H264 || codec == CodecType::H265) && desktopSurfaceCompatibility &&
+        presentationMode == Render::NativeImagePresentationMode::TopLeftProducerTransform) {
         Render::EnsureVideoOrientationSelfTest(
-            static_cast<Render::OrientationSelfTestCodec>(static_cast<int>(codec)),
-            desktopSurfaceCompatibility ? presentationMode : Render::NativeImagePresentationMode::Identity);
+            static_cast<Render::OrientationSelfTestCodec>(static_cast<int>(codec)), presentationMode);
     }
     {
         std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
@@ -1657,13 +1658,31 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             const Render::NativeImageTransformClass producerTransformClass =
                 Render::ClassifyNativeImageProducerTransform(
                     transformRet, producerTransform);
+            // `previous` is the last uncorrected transform: a failed read must
+            // not compose the orientation correction a second time.
             const Render::NativeImageTransform resolvedTransform =
                 Render::ResolveNativeImagePresentationTransform(
                     presentationMode, transformRet, producerTransform,
-                    textureTransform_);
+                    resolvedTextureTransform_);
+            resolvedTextureTransform_ = resolvedTransform;
+            // The orientation self-test measured how this device shows the
+            // known picture through the same path; undo a measured flip, in
+            // texture space when the GPU itself showed it flipped, otherwise
+            // in screen space (the producer matrix was the cause).
+            int32_t correction = -1;
+            Render::NativeImageTransform finalTransform = resolvedTransform;
+            if (presentationMode == Render::NativeImagePresentationMode::TopLeftProducerTransform) {
+                const Render::DesktopOrientationCorrection measured =
+                    Render::DesktopOrientationCorrectionFor(static_cast<int32_t>(codecType_));
+                if (Render::OrientationIsCorrectable(measured.shown)) {
+                    correction = static_cast<int32_t>(measured.shown) | (measured.textureSpace ? 0x100 : 0);
+                    finalTransform = Render::CorrectedNativeImageTransform(
+                        resolvedTransform, measured.shown, measured.textureSpace);
+                }
+            }
             const Render::NativeImageTransformClass appliedTransformClass =
                 Render::ClassifyNativeImageProducerTransform(
-                    0, resolvedTransform.data());
+                    0, finalTransform.data());
             bool transformChanged = false;
             {
                 std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
@@ -1690,36 +1709,18 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 producerTransformClassMask_ |=
                     1U << static_cast<uint32_t>(producerTransformClass);
                 producerTransformMatrix_ = sampledTransform;
-                appliedTextureTransform_ = resolvedTransform;
+                appliedTextureTransform_ = finalTransform;
                 appliedTransformClass_ = appliedTransformClass;
             }
-            // The orientation self-test measured how this device shows the
-            // known picture through the same path; undo a measured flip.
-            int32_t correction = -1;
-            if (presentationMode == Render::NativeImagePresentationMode::TopLeftProducerTransform) {
-                const Render::NativeImageTransformClass measured =
-                    Render::DesktopOrientationCorrectionClass(static_cast<int32_t>(codecType_));
-                if (Render::OrientationIsCorrectable(measured)) {
-                    correction = static_cast<int32_t>(measured);
-                    const Render::NativeImageTransform corrected =
-                        Render::CorrectedNativeImageTransform(resolvedTransform, measured);
-                    std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
-                    appliedTextureTransform_ = corrected;
-                    appliedTransformClass_ = Render::ClassifyNativeImageProducerTransform(0, corrected.data());
-                    textureTransform_ = corrected;
-                } else {
-                    textureTransform_ = resolvedTransform;
-                }
-            } else {
-                textureTransform_ = resolvedTransform;
-            }
+            textureTransform_ = finalTransform;
             if (correction != orientationCorrectionLogged_) {
                 orientationCorrectionLogged_ = correction;
                 OH_LOG_INFO(LOG_APP,
-                            "[Decoder] desktop orientation correction codec=%{public}d measured=%{public}s",
+                            "[Decoder] desktop orientation correction codec=%{public}d measured=%{public}s space=%{public}s",
                             static_cast<int>(codecType_), correction < 0 ? "none" :
                             Render::NativeImageTransformClassName(
-                                static_cast<Render::NativeImageTransformClass>(correction)));
+                                static_cast<Render::NativeImageTransformClass>(correction & 0xff)),
+                            correction < 0 ? "-" : ((correction & 0x100) != 0 ? "texture" : "screen"));
                 Render::DecoderAttemptDiagnostics::Instance().update(callbackOwner_,
                     diagnosticAttemptSerial_, [=](Render::DecoderAttemptDiagnostic& value) {
                         value.orientationCorrection = correction;

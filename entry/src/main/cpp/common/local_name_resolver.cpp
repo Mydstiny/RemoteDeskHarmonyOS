@@ -87,6 +87,13 @@ bool UsableIpv6(const in6_addr& address) {
         std::memcmp(&address, &loopback, sizeof(address)) != 0;
 }
 
+/** An IPv4 answer that can be a remote host: not 0/8, loopback, multicast, reserved or broadcast. */
+bool UsableIpv4(const in_addr& address) {
+    const uint32_t value = ntohl(address.s_addr);
+    const uint32_t first = value >> 24;
+    return first != 0 && first != 127 && first < 224 && value != 0xffffffffU;
+}
+
 void AddUnique(std::vector<std::string>& addresses, const std::string& address) {
     if (!address.empty() && std::find(addresses.begin(), addresses.end(), address) == addresses.end()) {
         addresses.push_back(address);
@@ -258,7 +265,7 @@ bool ParseDnsAnswers(const uint8_t* data, size_t size, uint16_t id, bool anyId, 
             if (type == kTypeA && length == 4) {
                 in_addr address {};
                 std::memcpy(&address, data + rdata, 4);
-                if (::inet_ntop(AF_INET, &address, text, sizeof(text)) != nullptr) {
+                if (UsableIpv4(address) && ::inet_ntop(AF_INET, &address, text, sizeof(text)) != nullptr) {
                     AddUnique(addresses, text);
                     found = true;
                 }
@@ -308,8 +315,11 @@ std::vector<uint8_t> BuildNetbiosNameQuery(uint16_t id, const std::string& name,
     return out;
 }
 
-bool ParseNetbiosNameResponse(const uint8_t* data, size_t size, uint16_t id, std::vector<std::string>& addresses) {
+bool ParseNetbiosNameResponse(const uint8_t* data, size_t size, uint16_t id, const std::string& name,
+                              std::vector<std::string>& addresses) {
     if (data == nullptr || size < 12 || Get16(data) != id) { return false; }
+    // The answer must be for the name asked, with any suffix byte.
+    const std::string expected = EncodeNetbiosName(name, 0).substr(0, 30);
     const uint16_t flags = Get16(data + 2);
     if ((flags & 0x8000) == 0 || (flags & 0x000f) != 0) { return false; }
     const uint16_t answers = Get16(data + 6);
@@ -328,12 +338,13 @@ bool ParseNetbiosNameResponse(const uint8_t* data, size_t size, uint16_t id, std
         const uint16_t length = Get16(data + next + 8);
         const size_t rdata = next + 10;
         if (rdata + length > size) { break; }
-        if (type == kTypeNb) {
+        const bool sameName = field.size() == 32 && field.compare(0, 30, expected) == 0;
+        if (type == kTypeNb && sameName) {
             for (size_t entry = 0; entry + 6 <= length; entry += 6) {
                 in_addr address {};
                 std::memcpy(&address, data + rdata + entry + 2, 4);
                 char text[INET_ADDRSTRLEN] = {};
-                if (address.s_addr != 0 && ::inet_ntop(AF_INET, &address, text, sizeof(text)) != nullptr) {
+                if (UsableIpv4(address) && ::inet_ntop(AF_INET, &address, text, sizeof(text)) != nullptr) {
                     AddUnique(addresses, text);
                     found = true;
                 }
@@ -409,8 +420,8 @@ LocalNameResolution ResolveLocalHostName(const std::string& rawName, std::chrono
                         ParseDnsAnswers(buffer, length, llmnrIdAaaa, false, label, result.addresses);
                     if (got && result.method.empty()) { result.method = "llmnr"; }
                 } else {
-                    got = ParseNetbiosNameResponse(buffer, length, netbiosId20, result.addresses) ||
-                        ParseNetbiosNameResponse(buffer, length, netbiosId00, result.addresses);
+                    got = ParseNetbiosNameResponse(buffer, length, netbiosId20, label, result.addresses) ||
+                        ParseNetbiosNameResponse(buffer, length, netbiosId00, label, result.addresses);
                     if (got && result.method.empty()) { result.method = "netbios"; }
                 }
                 if (got && !answered) {
