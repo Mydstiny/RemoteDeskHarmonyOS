@@ -2061,7 +2061,10 @@ impl RustDeskConnector {
     /// window, and then never starts its connection manager, which serves every file-system request except
     /// downloads on macOS and Linux peers.
     pub(crate) fn file_peer_prelogin(&self) -> bool {
-        self.session.peer_info().is_some_and(|info| info.get_username().is_empty())
+        // Desktop peers only: an Android peer has no console user to report.
+        self.session.peer_info().is_some_and(|info| {
+            info.get_username().is_empty() && !info.get_platform().eq_ignore_ascii_case("android")
+        })
     }
 
     pub(crate) fn file_peer_platform(&self) -> String {
@@ -2070,7 +2073,7 @@ impl RustDeskConnector {
 
     /// How long a file request may go without any answer from the peer's file service before it is reported as
     /// not running (the peer's connection itself stays alive; its own timeout is 30 s).
-    const FILE_SERVICE_SILENCE: Duration = if cfg!(test) { Duration::from_millis(400) } else { Duration::from_secs(12) };
+    const FILE_SERVICE_SILENCE: Duration = if cfg!(test) { Duration::from_millis(400) } else { Duration::from_secs(20) };
 
     fn echo_file_test_delay(
         crypto: &mut CryptoChannel,
@@ -2112,14 +2115,11 @@ impl RustDeskConnector {
         {
             return io::Error::new(ErrorKind::NotFound, "remote_path_not_found");
         }
-        if lower.contains("permission denied") || lower.contains("not permitted") || lower.contains("access is denied")
-            || lower.contains("os error 1)") || lower.contains("os error 5)") || lower.contains("os error 13)")
-        {
+        // Text only: bare error numbers mean different things on Windows and Unix peers.
+        if lower.contains("permission denied") || lower.contains("not permitted") || lower.contains("access is denied") {
             return io::Error::new(ErrorKind::PermissionDenied, "remote_permission_denied");
         }
-        if lower.contains("no space") || lower.contains("disk full") || lower.contains("os error 28)")
-            || lower.contains("os error 112)")
-        {
+        if lower.contains("no space") || lower.contains("disk full") || lower.contains("not enough space") {
             return io::Error::new(ErrorKind::Other, "remote_disk_full");
         }
         io::Error::new(fallback_kind, fallback)
@@ -7654,6 +7654,8 @@ mod tests {
         assert_eq!(code("one-way-file-transfer-tip"), "remote_one_way_transfer");
         assert_eq!(code("No space left on device (os error 28)"), "remote_disk_full");
         assert_eq!(code("something else"), "fallback");
+        // Bare numbers differ between platforms: EIO (5) on Unix is not a permission problem.
+        assert_eq!(code("Input/output error (os error 5)"), "fallback");
         assert!(RustDeskConnector::directory_reply_matches("", "/anything"));
         assert!(RustDeskConnector::directory_reply_matches("/data", "/data/"));
         assert!(RustDeskConnector::directory_reply_matches("C:\\Users", "c:/users"));

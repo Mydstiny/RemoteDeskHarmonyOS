@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { rustDeskFileFailureText, transferFailureReason, transferTaskCancellable,
+import { rustDeskFileFailureText, rustDeskTransferFailureCode, transferFailureReason, transferTaskCancellable,
   transferTaskDescription } from '../main/ets/services/TransferUserTextPolicy';
 import { managedTransferSettled, managedTransferTerminal, recoverManagedTransferRecord,
   ManagedTransferRecord } from '../main/ets/services/ManagedTransferTaskPolicy';
@@ -36,6 +36,9 @@ export default function transferUserTextPolicyTest(): void {
       expect(rustDeskFileFailureText('file_transfer:remote_permission_denied', 'macos')
         .indexOf('完全磁盘访问权限') >= 0).assertTrue();
       expect(rustDeskFileFailureText('lost', 'unknown')).assertEqual('读取远端目录失败，请稍后重试。');
+      expect(rustDeskTransferFailureCode('file_transfer:remote_disk_full', 'download_incomplete')).assertEqual('remote_disk_full');
+      expect(rustDeskTransferFailureCode('file_transfer:TimedOut', 'download_incomplete')).assertEqual('download_incomplete');
+      expect(rustDeskTransferFailureCode('file_transfer:AlreadyExists', 'x')).assertEqual('target_exists');
     });
 
     it('records_found_at_start_are_settled', 0, (): void => {

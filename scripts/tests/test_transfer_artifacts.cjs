@@ -210,6 +210,19 @@ test('export cancellation after target write removes the half-written file and p
   assert.equal(fs.existsSync(destination), false); assert.ok(fs.existsSync(artifact.path)); assert.ok(fs.existsSync(source));
   assert.equal(env.descriptors.size, 0);
 }));
+test('a second release after maintenance removed an empty batch changes nothing', () => using(async env => {
+  const batch = env.batch('received'); batch.release();
+  assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 0)).removedBatches, 1);
+  assert.equal(fs.existsSync(batch.directory), false); assert.doesNotThrow(() => batch.release());
+}));
+test('the file a save dialog created is removed when the save fails, even when replacing was allowed', () => using(async env => {
+  const source = env.source('source', crypto.randomBytes(100)), batch = env.batch('received');
+  const artifact = await batch.stage(source, 'file', 100, () => true, () => {}), destination = path.join(env.directory, 'created');
+  fs.writeFileSync(destination, '');
+  let active = true; env.limitWrite(5); env.onWrite(name => { if (name === destination) active = false; });
+  const result = await env.api.exportTransferArtifact(artifact, destination, () => active, () => {}, true);
+  assert.equal(result.diagnosticCode, 'export_destination_cleared'); assert.equal(fs.existsSync(destination), false);
+}));
 test('a failed replace empties the chosen file but never deletes it', () => using(async env => {
   const source = env.source('source', crypto.randomBytes(100)), batch = env.batch('received');
   const artifact = await batch.stage(source, 'file', 100, () => true, () => {}), destination = path.join(env.directory, 'chosen');

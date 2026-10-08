@@ -494,6 +494,8 @@ export class TransferArtifactBatch {
     this.manifest.holders.push(ownerId); this.localHolders.add(ownerId); this.saveManifest();
   }
   release(ownerId: string = 'creator'): void {
+    // Released before (a runner's finally and its finalizer both release): nothing to change, and the batch may be gone.
+    if (!this.localHolders.has(ownerId) && this.manifest.holders.indexOf(ownerId) < 0) { return; }
     this.acquireMutationLock();
     if (this.manifest.holders.indexOf(ownerId) >= 0 && !this.localHolders.has(ownerId)) {
       this.releaseMutationIfIdle(); throw new Error('transfer_holder_owner_unknown'); }
@@ -960,6 +962,8 @@ export class TransferArtifactBatch {
     checkCurrent(isCurrent); const previous: ArtifactManifestEntry[] = this.manifest.artifacts;
     this.manifest.artifacts = previous.concat(additions);
     try { this.saveManifest(); } catch (_error) { this.manifest.artifacts = previous; throw new Error('transfer_manifest_write_failed'); }
+    countMeasuredArtifactBytes(this.filesDir, additions.reduce((sum: number, entry: ArtifactManifestEntry): number =>
+      sum + (entry.directory ? 0 : entry.size), 0));
     return additions.map((entry: ArtifactManifestEntry): TransferArtifact => this.toArtifact(entry));
   }
 
@@ -1108,6 +1112,8 @@ export class TransferArtifactBatch {
     }
     await fileIo.rename(partial, path);
     entry.size = bytes; entry.sha256 = sha256; entry.mtime = mtime; entry.state = 'complete';
+    // A finished file is counted at once, so the cached store size never lets the quota be overrun.
+    countMeasuredArtifactBytes(this.filesDir, bytes);
     try { this.saveManifest(); }
     catch (error) {
       // Rename belongs to this attempt; preserve no unrecorded success for callers.
@@ -1123,8 +1129,6 @@ export class TransferArtifactBatch {
     try { this.saveManifest(); } catch (_manifestError) {}
   }
   finishWriter(reservedBytes: number): void {
-    // The reservation now lies on disk (or was released): count it until the next measurement.
-    countMeasuredArtifactBytes(this.filesDir, reservedBytes);
     TransferArtifactBatch.reservedBytes = Math.max(0, TransferArtifactBatch.reservedBytes - reservedBytes);
     this.reservedForBatch = Math.max(0, this.reservedForBatch - reservedBytes);
     this.staging = false; this.releaseMutationIfIdle();
@@ -1596,7 +1600,7 @@ function managedArtifactBytes(filesDir: string): number {
 }
 /** After files were removed the next reservation measures again. */
 function forgetMeasuredArtifactBytes(): void { measuredBytesAt = 0; }
-/** A finished write is counted at once, so the cached measurement never lets the quota be overrun. */
+/** Bytes a finished write put on disk are added to the cached measurement until the next one. */
 function countMeasuredArtifactBytes(filesDir: string, bytes: number): void {
   if (measuredBytesDir === filesDir && measuredBytesAt > 0 && validCount(bytes)) { measuredBytes += bytes; }
 }
@@ -1740,6 +1744,7 @@ async function exportTransferArtifactImpl(artifact: TransferArtifact, pickerUri:
   let source: fileIo.File | null = null;
   let destination: fileIo.File | null = null;
   let destinationTouched: boolean = false;
+  let targetCreatedForExport: boolean = false;
   const holder: string = 'export:' + util.generateRandomUUID(false);
   try {
     checkCurrent(isCurrent);
@@ -1758,6 +1763,8 @@ async function exportTransferArtifactImpl(artifact: TransferArtifact, pickerUri:
     if (!targetInfo.isFile() || targetInfo.ino === sourceInfo.ino || (targetInfo.size > 0 && !allowOverwrite)) {
       throw new Error('transfer_export_target_unavailable');
     }
+    // An empty target is the file the save dialog created for this export; one with content was chosen to replace.
+    targetCreatedForExport = targetInfo.size === 0;
     checkCurrent(isCurrent);
     if (allowOverwrite) { destinationTouched = true; await fileIo.truncate(targetFd, 0); }
     const digest = cryptoFramework.createMd('SHA256');
@@ -1797,7 +1804,7 @@ async function exportTransferArtifactImpl(artifact: TransferArtifact, pickerUri:
     if (emptied) {
       try { await fileIo.close(destination as fileIo.File); } catch (_closeError) {}
       destination = null;
-      if (!allowOverwrite) {
+      if (targetCreatedForExport) {
         try {
           await fileIo.unlink(pickerUri.startsWith('file://') ? new fileUri.FileUri(pickerUri).path : pickerUri);
           removed = true;

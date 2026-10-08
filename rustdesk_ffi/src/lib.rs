@@ -4392,6 +4392,8 @@ fn start_file_operation(
                     let mut connected = None;
                     let mut route_errors = Vec::new();
                     let mut last_route_kind = std::io::ErrorKind::NotConnected;
+                    // A reason the app explains (file transfer disabled, peer at the login window) is returned as is.
+                    let mut reported_error: Option<std::io::Error> = None;
                     for conn_type in route_types {
                         let mut candidate =
                             connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
@@ -4439,10 +4441,16 @@ fn start_file_operation(
                                 // fallback. Never retry an authentication, peer-key,
                                 // permission, or upload failure as DEFAULT_CONN.
                                 if !fallback {
+                                    if file_transfer::REPORTED_FILE_ERRORS.contains(&err.to_string().as_str()) {
+                                        reported_error = Some(err);
+                                    }
                                     break;
                                 }
                             }
                         }
+                    }
+                    if let Some(error) = reported_error {
+                        return Err(error);
                     }
                     connected.ok_or_else(|| {
                         std::io::Error::new(

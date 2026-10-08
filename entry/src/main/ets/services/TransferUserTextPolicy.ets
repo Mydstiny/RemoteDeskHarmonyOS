@@ -55,6 +55,25 @@ reason('directory_target_unavailable', '目标文件夹不可用，请换一个�
 reason('directory_path_invalid', '目标路径无效');
 reason('directory_create_unconfirmed', '远端没有确认已创建文件夹');
 reason('target_write_unconfirmed', '');
+reason('peer_prelogin', '被控端 RustDesk 认为当前没有用户登录桌面，文件服务没有启动');
+reason('peer_file_service_unavailable', '被控端 RustDesk 的文件服务没有响应，可能没有运行');
+reason('remote_file_transfer_disabled', '被控端关闭了文件传输');
+reason('remote_one_way_transfer', '被控端设置为单向文件传输');
+reason('remote_path_not_found', '远端没有这个文件或文件夹');
+reason('remote_permission_denied', '被控端没有权限访问这个位置');
+reason('remote_disk_full', '被控端磁盘空间不足');
+
+/** Reasons the RustDesk native layer reports as "file_transfer:<code>" (see file_transfer::REPORTED_FILE_ERRORS). */
+const RUSTDESK_REPORTED_CODES: string[] = ['peer_prelogin', 'peer_file_service_unavailable',
+  'remote_file_transfer_disabled', 'remote_one_way_transfer', 'remote_path_not_found', 'remote_permission_denied',
+  'remote_disk_full'];
+
+/** A RustDesk job's diagnostic as the task's code: a reason the user can act on, or `fallback`. */
+export function rustDeskTransferFailureCode(diagnostic: string, fallback: string): string {
+  if (diagnostic === 'file_transfer:AlreadyExists') { return 'target_exists'; }
+  const code: string = diagnostic.startsWith('file_transfer:') ? diagnostic.substring('file_transfer:'.length) : '';
+  return RUSTDESK_REPORTED_CODES.indexOf(code) >= 0 ? code : fallback;
+}
 
 /** The sentence for a diagnostic code, or '' when it has none. */
 export function transferFailureReason(code: string): string {
@@ -134,7 +153,8 @@ export function rustDeskFileFailureText(diagnostic: string, platformCategory: st
     case 'peer_prelogin':
       return '被控端 RustDesk 认为当前没有用户登录桌面，文件服务没有启动。' + rustDeskFileServiceAdvice(platformCategory);
     case 'peer_file_service_unavailable':
-      return '被控端 RustDesk 没有响应文件请求，它的文件服务没有运行。' + rustDeskFileServiceAdvice(platformCategory);
+      return '被控端 RustDesk 没有响应文件请求，它的文件服务可能没有运行。请稍后点「刷新」重试；若一直如此，' +
+        rustDeskFileServiceAdvice(platformCategory);
     case 'remote_file_transfer_disabled':
       return '被控端关闭了文件传输，请在被控端 RustDesk 的设置里允许文件传输。';
     case 'remote_one_way_transfer':

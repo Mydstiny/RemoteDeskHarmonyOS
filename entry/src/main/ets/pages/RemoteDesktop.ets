@@ -310,7 +310,7 @@ import { RustDeskTransferClient } from '../services/RustDeskTransferClient';
 import { TransferArtifactPublicationService } from '../services/TransferArtifactPublicationService';
 import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, TransferArtifactBatchInfo, TransferPlatformIncomingDirectory, recoverTransferArtifactInventory, cleanupOwnedTransferArtifactBatch, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey, transferStorageFailureCode } from '../services/TransferArtifactStore';
 import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
-import { rustDeskFileFailureText } from '../services/TransferUserTextPolicy';
+import { rustDeskFileFailureText, rustDeskTransferFailureCode } from '../services/TransferUserTextPolicy';
 import { ManagedTransferTaskService, ManagedTransferControl } from '../services/ManagedTransferTaskService';
 import { FileTransferTaskList } from '../components/FileTransferTaskList';
 import { renamedRemoteTransferFileName, joinRemoteTransferPath, remoteTransferPathIsAbsolute, parentRemoteTransferPath, remoteTransferEntryPath } from '../services/TransferRemotePathPolicy';
@@ -19996,7 +19996,7 @@ struct RemoteDesktop {
             if (state === 4 || state === 5) {
               drained = true;
               return { stage: state === 5 ? 'cancelled' : 'failed', evidence: 'none',
-                diagnosticCode: status.diagnosticCode === 'file_transfer:AlreadyExists' ? 'target_exists' : 'native_transfer_ended' };
+                diagnosticCode: rustDeskTransferFailureCode(status.diagnosticCode, 'native_transfer_ended') };
             }
             if (!control.isCurrent()) {
               const finalStatus: SessionTransferStatus | null = await this.cancelAndDrainNativeTransfer(lease, transferId);
@@ -20452,7 +20452,7 @@ struct RemoteDesktop {
             if (status.rustdeskTransferState === 4 || status.rustdeskTransferState === 5) {
               drained = true;
               return { stage: status.rustdeskTransferState === 5 ? 'cancelled' : 'failed', evidence: 'none',
-                diagnosticCode: 'download_incomplete' };
+                diagnosticCode: rustDeskTransferFailureCode(status.diagnosticCode, 'download_incomplete') };
             }
             if (!control.isCurrent() || status.rustdeskTransferState === 0) {
               drained = (await this.cancelAndDrainNativeTransfer(lease, id)) !== null;
