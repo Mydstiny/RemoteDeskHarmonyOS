@@ -18270,6 +18270,13 @@ struct RemoteDesktop {
     if (this.cleanupStarted) {
       return;
     }
+    // The session is being (or has been) handed to its own window: that window owns it now. The main window goes to
+    // the background while the target takes its split side; preserving here re-registered the transferred session
+    // in the main registry, where it stayed after the window closed and refused every later connection.
+    if (this.pcWindowHandoffStarted || this.pcWindowHandoffComplete) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: skipped during independent-window handoff');
+      return;
+    }
     const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
       getContext(this) as common.Context);
     if (!accountScopeReady) {

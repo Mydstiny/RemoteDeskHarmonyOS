@@ -231,4 +231,12 @@ check('an RDP window handed off beside another session admits input on its own w
   assert.match(page, /this\.syncHarmonyShortcutCapture\('ability-foreground'\);\s*this\.rearmRdpInputStabilityAfterForeground\(\);/);
 });
 
+check('a handed-off session never stays registered in the main window', () => {
+  const detach = methodBody(page, '  private async detachForBackground(): Promise<void> {');
+  assert.ok(detach.indexOf('if (this.pcWindowHandoffStarted || this.pcWindowHandoffComplete) {') <
+    detach.indexOf('this.recordActiveSession('));
+  const coordinator = read('services/RemoteSessionWindowCoordinator.ets');
+  assert.match(coordinator, /ActiveRemoteSessionRegistry\.getInstance\(\)\.clearIfMatches\(closing\.ownerScopeId, closing\.accountGeneration,\s*closing\.sessionId, closing\.protocol\);/);
+});
+
 console.log('PASS ' + passed + ' multi picture session checks');

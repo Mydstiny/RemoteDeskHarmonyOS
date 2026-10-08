@@ -466,8 +466,15 @@ export class RemoteSessionWindowRuntime {
     for (let index: number = 0; index < sshSessionIds.length; index++) {
       this.loader.disconnectSshSession(sshSessionIds[index]);
     }
+    const closing: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
     this.loader.disconnect();
     this.activeSessionRegistry.clear('session-window-closed');
+    // A session this window closes can never stay registered in the main window's registry (a stale copy there
+    // refuses every later connection as "another session is live").
+    if (closing !== null) {
+      ActiveRemoteSessionRegistry.getInstance().clearIfMatches(closing.ownerScopeId, closing.accountGeneration,
+        closing.sessionId, closing.protocol);
+    }
   }
 }
 
