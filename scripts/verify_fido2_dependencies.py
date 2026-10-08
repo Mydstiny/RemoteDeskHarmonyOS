@@ -20,7 +20,7 @@ def require(condition, message):
 
 def verify(root):
     lock_path = root / 'docs/compliance/FIDO2_DEPENDENCIES.lock.json'
-    lock = json.loads(lock_path.read_text())
+    lock = json.loads(lock_path.read_text(encoding='utf-8'))
     require(lock.get('schema') == 1, 'Unsupported source lock')
     require({x['name'] for x in lock['sources']} == {'libfido2', 'libcbor'} and len(lock['sources']) == 2,
             'Expected one pinned source for each library')
@@ -31,10 +31,10 @@ def verify(root):
             path = Path(patch['path'])
             require(not path.is_absolute() and '..' not in path.parts, 'Unsafe patch path')
             require(digest(root / path) == patch['sha256'], 'Patch hash mismatch')
-    sbom = json.loads((root / 'docs/compliance/SBOM.spdx.json').read_text())
+    sbom = json.loads((root / 'docs/compliance/SBOM.spdx.json').read_text(encoding='utf-8'))
     files = {entry['fileName'].removeprefix('./'): entry for entry in sbom['files']}
     packages = {entry['SPDXID']: entry for entry in sbom['packages']}
-    artifacts = (root / 'docs/compliance/THIRD_PARTY_ARTIFACTS.sha256').read_text().splitlines()
+    artifacts = (root / 'docs/compliance/THIRD_PARTY_ARTIFACTS.sha256').read_text(encoding='utf-8').splitlines()
     expected_config = {'customIoOnly': True, 'implicitDeviceAccess': False, 'hidapi': False, 'pcsc': False,
                        'nfc': False, 'winhello': False, 'lto': False, 'cStandard': 99}
     owned_hashes = {'libfido2': [], 'libcbor': []}
@@ -43,7 +43,7 @@ def verify(root):
     for abi in ['arm64-v8a', 'x86_64']:
         base = root / 'libs/fido2-ohos' / abi
         manifest_path = base / 'manifest.json'
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
         require(manifest['schema'] == 1 and manifest['architecture'] == abi, 'Wrong ABI manifest')
         require(manifest['generator'] == 'scripts/build_fido2_ohos.py' and
                 manifest['generatorSha256'] == digest(root / manifest['generator']), 'Stale generator hash')
@@ -77,7 +77,7 @@ def verify(root):
                 require(artifacts.count(checksum + ' *' + relative) == 1, 'Missing/duplicate artifact hash')
                 require(file.read_bytes().startswith(b'!<arch>\n'), 'Expected a portable static archive')
             count += 1
-        require(not re.search(r'/Users/|[A-Z]:\\Users\\', manifest_path.read_text()), 'Host path in manifest')
+        require(not re.search(r'/Users/|[A-Z]:\\Users\\', manifest_path.read_text(encoding='utf-8')), 'Host path in manifest')
     for source in lock['sources']:
         name = source['name']
         pid = 'SPDXRef-Package-ProFido-' + name
@@ -97,7 +97,7 @@ def verify(root):
     require(len(public) == 1 and 'public domain' in public[0]['extractedText'].lower(),
             'Missing exact upstream public-domain declarations')
     for path in ['NOTICE', 'THIRD_PARTY_NOTICES.md', 'docs/compliance/SOURCE_OFFER.md']:
-        content = (root / path).read_text()
+        content = (root / path).read_text(encoding='utf-8')
         require('libfido2' in content and 'libcbor' in content, 'Missing notice/source offer: ' + path)
     print('PASS FIDO dependency lock, patch, both ABI manifests, %d files, SPDX and artifact hashes' % count)
 
