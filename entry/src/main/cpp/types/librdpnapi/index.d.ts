@@ -624,6 +624,9 @@ export const VERSION: SessionVersionInfo;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
   export function markXComponentSurfaceDestroyed(): void;
   export function markRendererSurfaceDestroyed(handle: number): void;
+  // The process XComponent surface belongs to one picture page at a time (process-wide, every window).
+  export function claimProcessSurface(pageToken: number): boolean;
+  export function releaseProcessSurface(pageToken: number): void;
   export function requestFrameRefresh(sessionId?: number): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
   export function bindRendererToSession(rendererHandle: number, sessionId: number): boolean;

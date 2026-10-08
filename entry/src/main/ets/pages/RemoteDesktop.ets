@@ -406,7 +406,7 @@ import {
   shouldDeferVncRendererUntilSurface
 } from '../services/VncRendererSurfacePolicy';
 import {
-  RemotePictureSurfaceClaims,
+  pictureSurfaceClaimToken,
   RemotePictureSurfaceMode,
   rendererNeedsOwnSurfaceId
 } from '../services/RemotePictureSurfacePolicy';
@@ -9688,6 +9688,7 @@ struct RemoteDesktop {
           } else if (!wasActive && this.sessionWindowActive) {
             this.restartClipboardBridgeIfActiveForeground();
             this.claimAudioFocus('window-active');
+            this.maybeArmProRemoteContinuation();
           }
         };
         try {
@@ -10519,7 +10520,7 @@ struct RemoteDesktop {
       this.latestSurfaceId = '';
       // The target window takes the process surface, as a single session always did; this page renders nothing from
       // here on and never touches the process surface again (a failed hand-off claims it afresh below).
-      RemotePictureSurfaceClaims.release(this.pageSeq);
+      this.loader.releaseProcessSurface(this.pictureSurfaceToken);
       this.pictureSurfaceMode = 'own';
       if (!this.recordActiveSession(host, sessionId, false)) {
         throw new Error('authenticated session registry update rejected');
@@ -10619,6 +10620,8 @@ struct RemoteDesktop {
   private pageSeq: number = 0;
   /** Whether this page uses the process XComponent surface or only its own (see RemotePictureSurfacePolicy). */
   private pictureSurfaceMode: RemotePictureSurfaceMode = 'unset';
+  /** This page's process-wide claim token (page numbers repeat across session windows). */
+  private pictureSurfaceToken: number = pictureSurfaceClaimToken(Date.now(), Math.random());
 
   /**
    * 多个画面会话同时存在时，只有第一个页面使用进程级画面；之后打开的页面只画到自己的 SurfaceId 上。
@@ -10626,9 +10629,9 @@ struct RemoteDesktop {
    */
   private usesOwnPictureSurface(): boolean {
     if (this.pictureSurfaceMode === 'unset') {
-      this.pictureSurfaceMode = RemotePictureSurfaceClaims.claim(this.pageSeq);
+      this.pictureSurfaceMode = this.loader.claimProcessSurface(this.pictureSurfaceToken) ? 'process' : 'own';
       hilog.info(RD_DOMAIN, RD_TAG, 'page #' + this.pageSeq.toString() + ' picture surface=' +
-        this.pictureSurfaceMode);
+        this.pictureSurfaceMode + ' token=' + this.pictureSurfaceToken.toString());
     }
     return this.pictureSurfaceMode === 'own';
   }
@@ -11105,7 +11108,7 @@ struct RemoteDesktop {
   aboutToDisappear(): void {
     hilog.info(RD_DOMAIN, RD_TAG, 'page #' + this.pageSeq.toString() + ' disappear connected=' +
       (this.connected ? '1' : '0') + ' session=' + this.sessionId.toString());
-    RemotePictureSurfaceClaims.release(this.pageSeq);
+    this.loader.releaseProcessSurface(this.pictureSurfaceToken);
     this.stopRustDeskQualityConfirmation();
     this.stopProRemoteContinuation();
     this.proRdpPageLive = false;
@@ -15742,6 +15745,9 @@ struct RemoteDesktop {
       return;
     }
     if (armed || Date.now() < this.proRemoteRetryAt) { return; }
+    // Several picture sessions may be live, and continuation offers one at a time: it follows the focused window. A
+    // page that is not focused never takes it from another live session (each would take it back without end).
+    if (!this.sessionWindowActive && service.hasCurrentSource()) { return; }
     void this.armProRemoteContinuation().then((ok: boolean): void => {
       if (!ok) { this.proRemoteRetryAt = Date.now() + 30000; }
     });
@@ -18664,7 +18670,7 @@ struct RemoteDesktop {
     this.nativeHandles.markAsyncTeardownTransferred();
     this.pcWindowHandoffComplete = true;
     // The page that took the session over renders it; this one never touches the process surface again.
-    RemotePictureSurfaceClaims.release(this.pageSeq);
+    this.loader.releaseProcessSurface(this.pictureSurfaceToken);
     this.pictureSurfaceMode = 'own';
     hilog.warn(RD_DOMAIN, RD_TAG,
       'registry restore superseded; local page relinquished without native disconnect');

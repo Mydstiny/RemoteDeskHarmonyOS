@@ -122,6 +122,9 @@ public:
     /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
     RdpPresentationMetricsSnapshot GetPresentationStats();
 
+    /** Keep the drawing window's buffers at the rendered size (a window made from a SurfaceId keeps its first size). */
+    void ApplyBufferGeometryLocked(int width, int height);
+
     /** 销毁渲染器，释放所有 GL 资源 */
     void Destroy();
 
@@ -274,6 +277,8 @@ private:
     void* explicitNativeWindow_;
     bool usesProcessSurface_;
     bool followsProcessSurface_ = false;
+    // The native window this renderer's EGL surface draws into (explicit or the process one at init).
+    void* eglNativeWindow_ = nullptr;
     std::atomic<bool> ownSurfaceDetached_ {false};
     bool initialized_;
     bool destroying_;

@@ -7,7 +7,8 @@
  */
 export type RemotePictureSurfaceMode = 'unset' | 'process' | 'own';
 
-/** The mode a page gets when it first needs its surface, given the page currently holding the process surface. */
+/** The mode a page gets when it first needs its surface, given the page currently holding the process surface
+ * (the native claim applies the same rule process-wide). */
 export function pictureSurfaceModeForClaim(holderPageSeq: number, pageSeq: number): RemotePictureSurfaceMode {
   return holderPageSeq <= 0 || holderPageSeq === pageSeq ? 'process' : 'own';
 }
@@ -17,23 +18,10 @@ export function rendererNeedsOwnSurfaceId(isVnc: boolean, mode: RemotePictureSur
   return isVnc || mode === 'own';
 }
 
-/** Process-wide: every session window lives in this process, so one holder is shared by all of them. */
-export class RemotePictureSurfaceClaims {
-  private static holderPageSeq: number = 0;
-
-  static claim(pageSeq: number): RemotePictureSurfaceMode {
-    const mode: RemotePictureSurfaceMode =
-      pictureSurfaceModeForClaim(RemotePictureSurfaceClaims.holderPageSeq, pageSeq);
-    if (mode === 'process') {
-      RemotePictureSurfaceClaims.holderPageSeq = pageSeq;
-    }
-    return mode;
-  }
-
-  /** The holder's page went away; the next page to open uses the process surface again. */
-  static release(pageSeq: number): void {
-    if (RemotePictureSurfaceClaims.holderPageSeq === pageSeq) {
-      RemotePictureSurfaceClaims.holderPageSeq = 0;
-    }
-  }
+/**
+ * A page's claim token: unique across every window of the process (each session window has its own ArkTS module
+ * instances, so page numbers repeat; the holder itself lives in native code, see claimProcessSurface).
+ */
+export function pictureSurfaceClaimToken(nowMs: number, random: number): number {
+  return Math.floor(nowMs) * 1000 + Math.floor(Math.max(0, Math.min(random, 0.999)) * 1000) + 1;
 }

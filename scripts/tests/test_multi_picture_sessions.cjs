@@ -44,15 +44,11 @@ check('the first picture page uses the process surface; a page opened while it l
   assert.equal(surface.pictureSurfaceModeForClaim(0, 7), 'process');
   assert.equal(surface.pictureSurfaceModeForClaim(7, 7), 'process');
   assert.equal(surface.pictureSurfaceModeForClaim(7, 8), 'own');
-  const claims = surface.RemotePictureSurfaceClaims;
-  assert.equal(claims.claim(1), 'process');
-  assert.equal(claims.claim(2), 'own');
-  assert.equal(claims.claim(1), 'process');
-  claims.release(2);
-  assert.equal(claims.claim(3), 'own');
-  claims.release(1);
-  assert.equal(claims.claim(4), 'process');
-  claims.release(4);
+  // Page tokens are unique across windows (page numbers repeat per window), positive and safe integers.
+  const a = surface.pictureSurfaceClaimToken(1791443339084, 0.5);
+  const b = surface.pictureSurfaceClaimToken(1791443339084, 0.501);
+  assert.ok(a > 0 && Number.isSafeInteger(a) && a !== b);
+  assert.ok(Number.isSafeInteger(surface.pictureSurfaceClaimToken(Date.now(), 0.9999)));
   assert.equal(surface.rendererNeedsOwnSurfaceId(true, 'process'), true);
   assert.equal(surface.rendererNeedsOwnSurfaceId(false, 'own'), true);
   assert.equal(surface.rendererNeedsOwnSurfaceId(false, 'process'), false);
@@ -121,7 +117,15 @@ check('RemoteDesktop: a page on its own surface never binds or detaches the proc
   assert.equal((page.match(/this\.sessionId, !this\.usesOwnPictureSurface\(\)\);/g) || []).length, 2);
   assert.match(page, /this\.sessionId,\s*!this\.usesOwnPictureSurface\(\)\);/);
   assert.match(page, /this\.usesOwnPictureSurface\(\) \|\| rdpnapi\.setXComponentSurfaceId\(/);
-  assert.match(methodBody(page, '  aboutToDisappear(): void {'), /RemotePictureSurfaceClaims\.release\(this\.pageSeq\);/);
+  assert.match(methodBody(page, '  aboutToDisappear(): void {'), /this\.loader\.releaseProcessSurface\(this\.pictureSurfaceToken\);/);
+  // The holder is process-wide (native): every session window has its own ArkTS module instances.
+  assert.match(page, /this\.pictureSurfaceMode = this\.loader\.claimProcessSurface\(this\.pictureSurfaceToken\) \? 'process' : 'own';/);
+  const gl = readCpp('render/gl_renderer.cpp');
+  assert.match(gl, /napi_value NapiClaimProcessSurface\(/);
+  assert.match(gl, /if \(token > 0 && \(g_processSurfaceHolder <= 0 \|\| g_processSurfaceHolder == token\)\) \{/);
+  // A resized window's buffers follow the rendered size (a split window going full screen was stretched).
+  assert.match(gl, /CommitRendererResizeGeometry\(\s*width_, height_, width, height\)\) \{\s*return false;\s*\}\s*\/\/[^\n]*\n[^\n]*\n\s*ApplyBufferGeometryLocked\(width_, height_\);/);
+  assert.match(gl, /OH_NativeWindow_NativeWindowHandleOpt\(\s*static_cast<OHNativeWindow\*>\(eglNativeWindow_\), SET_BUFFER_GEOMETRY, width, height\);/);
 });
 
 check('RemoteDesktop: sound follows the focused window; limit errors are explained', () => {
@@ -214,7 +218,7 @@ check('review fixes: private epochs, owner-named software fallback, exclusive ow
   assert.match(page, /if \(this\.rendererHandle > 0 && !this\.loader\.bindRendererToSession\(this\.rendererHandle, sid\)\) \{/);
   assert.match(page, /rendererSurface, pageSurface\.width, pageSurface\.height, sid\);\s*if \(ownRenderer <= 0 \|\| !this\.loader\.bindRendererToSession\(ownRenderer, sid\)\) \{/);
   assert.match(page, /if \(!ownPictureSurface && this\.latestSurfaceId\.trim\(\)\.length > 0\) \{\s*rdpnapi\.setXComponentSurfaceId\(this\.latestSurfaceId\.trim\(\), pageSurface\.width, pageSurface\.height\);/);
-  assert.equal((page.match(/RemotePictureSurfaceClaims\.release\(this\.pageSeq\);\s*this\.pictureSurfaceMode = 'own';/g) || []).length, 2);
+  assert.equal((page.match(/this\.loader\.releaseProcessSurface\(this\.pictureSurfaceToken\);\s*this\.pictureSurfaceMode = 'own';/g) || []).length, 2);
   assert.match(page, /if \(!this\.pcWindowHandoffComplete\) \{\s*this\.pictureSurfaceMode = 'unset';/);
 });
 

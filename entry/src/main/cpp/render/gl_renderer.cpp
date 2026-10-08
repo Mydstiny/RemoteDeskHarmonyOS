@@ -760,6 +760,10 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
     }
     bool windowSurfaceCreated = false;
     if (surfaceReady && nativeWindow != 0) {
+        eglNativeWindow_ = reinterpret_cast<void*>(nativeWindow);
+        if (explicitSurface) {
+            ApplyBufferGeometryLocked(width_, height_);
+        }
         eglSurface_ = eglCreateWindowSurface(eglDisplay_, eglConfig_, nativeWindow, nullptr);
         if (eglSurface_ == EGL_NO_SURFACE) {
             OH_LOG_WARN(LOG_APP, "[GL] eglCreateWindowSurface 失败(%{public}x), 回退 Pbuffer", eglGetError());
@@ -1097,6 +1101,24 @@ RdpPresentMetrics GLRenderer::PresentRawBGRARectCompact(
     return RenderRawBGRAInternal(bgraData, width, height, stride, true,
                                  dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation,
                                  size, true);
+}
+
+void GLRenderer::ApplyBufferGeometryLocked(int width, int height) {
+    if (width <= 0 || height <= 0 || eglNativeWindow_ == nullptr) {
+        return;
+    }
+    if (usesProcessSurface_) {
+        // Only while the process window is still the one this renderer draws into.
+        std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+        if (reinterpret_cast<void*>(g_nativeWindow) != eglNativeWindow_ ||
+            g_surfaceDetached.load(std::memory_order_acquire)) {
+            return;
+        }
+    }
+    const int32_t result = OH_NativeWindow_NativeWindowHandleOpt(
+        static_cast<OHNativeWindow*>(eglNativeWindow_), SET_BUFFER_GEOMETRY, width, height);
+    OH_LOG_INFO(LOG_APP, "[GL] buffer geometry %{public}dx%{public}d explicit=%{public}d result=%{public}d",
+                width, height, usesProcessSurface_ ? 0 : 1, result);
 }
 
 bool GLRenderer::IsPresentationReady() {
@@ -1455,6 +1477,9 @@ void GLRenderer::Resize(int width, int height) {
                     width_, height_, width, height)) {
                 return false;
             }
+            // The window's buffers follow the new size; otherwise the compositor stretches the old buffer over the
+            // resized view (a split window that becomes full screen).
+            ApplyBufferGeometryLocked(width_, height_);
             ApplyPendingCanvasTransformLocked();
             // Resize recalculates the logical remote viewport. Decoder dimensions are
             // only fallbacks while the first logical frame is still unavailable.
@@ -1895,6 +1920,7 @@ void GLRenderer::Destroy() {
             g_surfaceOwnerHandle.store(0, std::memory_order_release);
         }
     }
+    eglNativeWindow_ = nullptr;
     if (!usesProcessSurface_ && explicitNativeWindow_ != nullptr) {
         OH_NativeWindow_DestroyNativeWindow(
             static_cast<OHNativeWindow*>(explicitNativeWindow_));
@@ -2472,6 +2498,56 @@ napi_value NapiSetXComponentSurfaceId(napi_env env, napi_callback_info info) {
 napi_value NapiMarkXComponentSurfaceDestroyed(napi_env env, napi_callback_info info) {
     (void)info;
     MarkXComponentSurfaceDestroyed("NapiMarkXComponentSurfaceDestroyed");
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// The process XComponent surface belongs to one picture page at a time. Every session window has its own ArkTS
+// module instances, so the holder lives here, where all windows of the process see the same one.
+static std::mutex g_processSurfaceClaimMutex;
+static double g_processSurfaceHolder = 0;
+
+/**
+ * NAPI: claimProcessSurface(pageToken: number): boolean
+ * true: this page uses the process surface (no other live page holds it); false: it renders to its own surface.
+ */
+napi_value NapiClaimProcessSurface(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    double token = 0;
+    if (argc > 0) {
+        napi_get_value_double(env, args[0], &token);
+    }
+    bool granted = false;
+    {
+        std::lock_guard<std::mutex> lock(g_processSurfaceClaimMutex);
+        if (token > 0 && (g_processSurfaceHolder <= 0 || g_processSurfaceHolder == token)) {
+            g_processSurfaceHolder = token;
+            granted = true;
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, granted, &result);
+    return result;
+}
+
+/** NAPI: releaseProcessSurface(pageToken: number): void — the holder's page went away. */
+napi_value NapiReleaseProcessSurface(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    double token = 0;
+    if (argc > 0) {
+        napi_get_value_double(env, args[0], &token);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_processSurfaceClaimMutex);
+        if (token > 0 && g_processSurfaceHolder == token) {
+            g_processSurfaceHolder = 0;
+        }
+    }
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -3848,6 +3924,14 @@ napi_value RendererNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "markRendererSurfaceDestroyed", NAPI_AUTO_LENGTH,
                          NapiMarkRendererSurfaceDestroyed, nullptr, &fn);
     napi_set_named_property(env, exports, "markRendererSurfaceDestroyed", fn);
+
+    napi_create_function(env, "claimProcessSurface", NAPI_AUTO_LENGTH,
+                         NapiClaimProcessSurface, nullptr, &fn);
+    napi_set_named_property(env, exports, "claimProcessSurface", fn);
+
+    napi_create_function(env, "releaseProcessSurface", NAPI_AUTO_LENGTH,
+                         NapiReleaseProcessSurface, nullptr, &fn);
+    napi_set_named_property(env, exports, "releaseProcessSurface", fn);
 
     napi_create_function(env, "getRendererViewport", NAPI_AUTO_LENGTH,
                          NapiGetRendererViewport, nullptr, &fn);

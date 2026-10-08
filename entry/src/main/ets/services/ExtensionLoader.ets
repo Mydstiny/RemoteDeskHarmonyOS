@@ -2747,6 +2747,28 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     }
   }
 
+  /**
+   * Whether the page holding `pageToken` uses the process XComponent surface (no other live page holds it). The
+   * holder is native, so every session window of the process sees the same one. Fails open to the process surface,
+   * which is what a single session always used.
+   */
+  claimProcessSurface(pageToken: number): boolean {
+    try {
+      return rdpnapi.claimProcessSurface(pageToken) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] claimProcessSurface: ' + JSON.stringify(err));
+      return true;
+    }
+  }
+
+  releaseProcessSurface(pageToken: number): void {
+    try {
+      rdpnapi.releaseProcessSurface(pageToken);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] releaseProcessSurface: ' + JSON.stringify(err));
+    }
+  }
+
   /** A concurrent picture session's page lost its own surface: stop its renderer without touching the process one. */
   markRendererSurfaceDestroyed(rendererHandle: number): void {
     if (rendererHandle <= 0) {

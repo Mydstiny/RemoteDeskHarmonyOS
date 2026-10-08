@@ -199,6 +199,8 @@ export class ProContinuationService {
   }
   /** Whether a source window currently offers continuation. */
   armed(windowId: number): boolean { return windowId > 0 && this.source?.windowId === windowId && this.sourceCurrent(); }
+  /** Whether any window currently offers continuation (one source at a time). */
+  hasCurrentSource(): boolean { return this.source !== null && this.sourceCurrent(); }
   /**
    * persistent: the always-on Pro mode. It stays armed while the session is current (no two-minute
    * window) and never raises the permission dialog on its own; the explicit menu action does.
