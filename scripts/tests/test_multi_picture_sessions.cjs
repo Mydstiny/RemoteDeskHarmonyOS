@@ -222,4 +222,13 @@ check('review fixes: private epochs, owner-named software fallback, exclusive ow
   assert.match(page, /if \(!this\.pcWindowHandoffComplete\) \{\s*this\.pictureSurfaceMode = 'unset';/);
 });
 
+check('an RDP window handed off beside another session admits input on its own window state', () => {
+  // The main window goes to the background when the session window takes its split side; the stability gate of the
+  // window page must not read the main window's flag (the hand-off then timed out and the session was dropped).
+  const gate = methodBody(page, '  private armRdpInputStabilityGate(');
+  assert.match(gate, /this\.currentAbilityBackgroundState\(\)\) \{\s*return;\s*\}\s*this\.rdpInputStabilityGateReady = true;/);
+  assert.equal(/this\.remoteDesktopBgFlag \|\| this\.sessionWindowBackground/.test(gate), false);
+  assert.match(page, /this\.syncHarmonyShortcutCapture\('ability-foreground'\);\s*this\.rearmRdpInputStabilityAfterForeground\(\);/);
+});
+
 console.log('PASS ' + passed + ' multi picture session checks');

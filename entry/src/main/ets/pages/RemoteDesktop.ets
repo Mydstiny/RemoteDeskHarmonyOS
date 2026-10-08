@@ -7115,14 +7115,24 @@ struct RemoteDesktop {
     }
     this.rdpInputStabilityTimer = setTimeout((): void => {
       this.rdpInputStabilityTimer = -1;
+      // This window's own background state: a session window must not wait on the main window's flag (the main
+      // window goes to the background when the session's window takes its split side). A gate that fires in the
+      // background is re-armed when the window comes back (rearmRdpInputStabilityAfterForeground).
       if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
         !this.connected || !this.isRdpRemoteSession() || this.cleanupStarted ||
-        this.remoteDesktopBgFlag || this.sessionWindowBackground) {
+        this.currentAbilityBackgroundState()) {
         return;
       }
       this.rdpInputStabilityGateReady = true;
       this.refreshRdpInputForwardReadiness('video-stability-gate');
     }, delayMs);
+  }
+
+  private rearmRdpInputStabilityAfterForeground(): void {
+    if (this.isRdpRemoteSession() && this.connected && this.sessionId > 0 && !this.cleanupStarted &&
+      !this.rdpInputStabilityGateReady && this.rdpInputStabilityTimer < 0) {
+      this.armRdpInputStabilityGate(this.sessionId, this.connectAttemptId);
+    }
   }
 
   private applyRustDeskDisplayGeometry(display: RustDeskDisplayInfo): void {
@@ -9948,6 +9958,7 @@ struct RemoteDesktop {
       this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     } else {
       this.syncHarmonyShortcutCapture('ability-foreground');
+      this.rearmRdpInputStabilityAfterForeground();
     }
     if (isBackground) {
       this.cancelPendingDisappearDecision();
