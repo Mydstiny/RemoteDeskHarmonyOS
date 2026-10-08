@@ -2,7 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const ts=require(process.env.TRANSFER_TYPESCRIPT_PATH||'typescript');
 const root=path.resolve(__dirname,'../..'),source=fs.readFileSync(path.join(root,'entry/src/main/ets/pages/RemoteDesktop.ets'),'utf8');
-const names=['transferRouteIdentity','captureTransferLease','clipboardSessionLeaseIsCurrent','withClipboardAuthority','startClipboardBridgeBestEffort','stopClipboardBridge','restartClipboardBridgeIfActiveForeground','publishClipboardForLease','waitClipboardPublication','publishContinuousLocalContent'];
+const names=['transferRouteIdentity','captureTransferLease','clipboardSessionLeaseIsCurrent','withClipboardAuthority','startClipboardBridgeBestEffort','stopClipboardBridge','restartClipboardBridgeIfActiveForeground','publishClipboardForLease','waitClipboardPublication','publishContinuousLocalContent','showClipboardFileStatus'];
 const methods=names.map(name=>{const match=new RegExp('^  private (?:async )?'+name+'\\(','m').exec(source);assert.ok(match,name);const end=source.indexOf('\n  private ',match.index+1);assert.ok(end>match.index);return source.slice(match.index,end)});
 const code=ts.transpileModule('export class Harness {\n'+methods.join('\n')+'\n}',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
 function fixture(){
@@ -12,7 +12,7 @@ function fixture(){
  vm.runInNewContext(code,{module,exports:module.exports,ClipboardCoordinator:{getInstance:()=>coordinator},AccountSessionCoordinator:{getInstance:()=>({currentScope:()=>state.scope})},rdpRouteIdentity:host=>'rdp:'+host.host,
   pasteboard:{MIMETYPE_TEXT_URI:'uri',getSystemPasteboard:()=>({getChangeCount:()=>state.count})},
   SystemClipboardFileProvider:class{async read(){state.fileReads++;if(state.failFileRead)throw Error('synthetic temporary error');return ['file://owned']}},
-  util:{TextEncoder},Date,setTimeout:callback=>{state.timers.push(callback);return state.timers.length},hilog:{warn(){}},recordSessionClipboard(){},CLIPBOARD_AUTHORITY_BUSY:1,CLIPBOARD_STARTED:0,
+  util:{TextEncoder},Date,setTimeout:callback=>{state.timers.push(callback);return state.timers.length},clearTimeout:()=>{},hilog:{warn(){}},recordSessionClipboard(){},CLIPBOARD_AUTHORITY_BUSY:1,CLIPBOARD_STARTED:0,
   CLIPBOARD_READ_PERMISSION_MISSING:2,CLIPBOARD_START_ERROR:4});
  const page=new module.exports.Harness();
  Object.assign(page,{connected:true,cleanupStarted:false,sessionId:7,connectAttemptId:3,hostId:'host',sessionWindowId:'window',harmonyShortcutCaptureOwner:'capture',sessionWindowActive:true,sessionWindowMinimized:false,

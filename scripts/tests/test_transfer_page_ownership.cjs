@@ -87,7 +87,7 @@ function fixture() {
     ensurePasteboardReadPermission:()=>state.permission,transferSourcesFromUnifiedData:data=>data.sources,transferSourcesFromUris:uris=>uris.map(uri=>({uri,name:'current',size:4})),
     currentProtocolName(){return this.pendingHost.protocol;},currentAbilityBackgroundState:()=>false,
     clipboardBridgeEnabledForSession:()=>true,currentSessionCapabilities:()=>({clipboardSend:{enabled:true},clipboardReceive:{enabled:true},fileUpload:{enabled:true},fileDownload:{enabled:true}}),
-    getFileTransferContext:()=>state.context,setFileTransferStatus:(_status,_progress,busy)=>{state.busyStates??=[];state.busyStates.push(busy);},formatTransferSize:String,yieldUi:async()=>{},
+    getFileTransferContext:()=>state.context,setFileTransferStatus:(_status,_progress,busy)=>{state.busyStates??=[];state.busyStates.push(busy);},showClipboardFileStatus:(_status,busy,_progress)=>{state.clipboardFileStates??=[];state.clipboardFileStates.push(busy);},formatTransferSize:String,yieldUi:async()=>{},
     openFileTransferPanel:()=>state.openPanel++,fileBaseName:()=> 'test.bin',
     rdpFileTransferEnabledForSession:(sid=page.sessionId,attempt=page.connectAttemptId)=>page.currentProtocolName()==='rdp' && sid===page.sessionId&&attempt===page.connectAttemptId,
     createRdpClipboardBatchDir:()=>'/private/batch',transferArtifactBatches:new Map([['/private/batch',{
