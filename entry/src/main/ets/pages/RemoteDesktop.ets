@@ -16944,6 +16944,10 @@ struct RemoteDesktop {
       if (!isVnc) {
         const desktopRustDeskSurfaceCompatibility: boolean =
           host.protocol === 'rustdesk' && this.isDesktopDevice;
+        if (host.protocol === 'rustdesk') {
+          // Measured in the background while the stream starts; the PC path corrects with it.
+          this.loader.ensureVideoOrientationSelfTest(desktopRustDeskSurfaceCompatibility);
+        }
         const dHandle: number = this.loader.initDecoder(
           w, h, decoderCodec, this.rendererHandle,
           desktopRustDeskSurfaceCompatibility);

@@ -31,6 +31,29 @@ struct DecoderAttemptDiagnostic {
     int32_t outputPixelFormat = -1;
     uint64_t asyncErrors = 0;
     int32_t lastAsyncError = 0;
+    // Output description as the decoder reported it (-1 when not reported).
+    int32_t outputStride = -1;
+    int32_t outputSliceHeight = -1;
+    int32_t outputCropTop = -1;
+    int32_t outputCropBottom = -1;
+    int32_t outputCropLeft = -1;
+    int32_t outputCropRight = -1;
+    int32_t outputRotation = -1;
+    int32_t outputTransformType = -1;
+    // NativeImage facts of the presented frames (desktop path; -1 when not sampled).
+    int32_t bufferTransform = -1;
+    int32_t producerV1Class = -1;
+    // NativeImageTransformClass the orientation self-test corrected for (-1 none).
+    int32_t orientationCorrection = -1;
+    // First key frames: NAL types seen (bits 0..31 and 32..63), SEI payload types
+    // seen (bits 0..31 and 32..63) and a display-orientation SEI, packed as
+    // cancel | horFlip << 1 | verFlip << 2 | rotation16 << 3 (-1 when absent).
+    int64_t streamNalMaskLow = 0;
+    int64_t streamNalMaskHigh = 0;
+    int64_t streamSeiMaskLow = 0;
+    int64_t streamSeiMaskHigh = 0;
+    int64_t streamDisplayOrientation = -1;
+    int32_t streamInspectedFrames = 0;
 };
 
 // Keep failure evidence independently of the codec object's lifetime. Entries

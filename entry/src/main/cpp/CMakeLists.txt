@@ -76,6 +76,7 @@ set(PROTOCOL_SOURCES
 set(RENDER_SOURCES
     render/gl_renderer.cpp
     render/hw_decoder.cpp
+    render/video_orientation_self_test.cpp
     render/software_decoder.cpp
     video/video_activity_state.cpp
     render/video_backpressure_controller.cpp
@@ -390,6 +391,7 @@ if(RDP_BUILD_TESTS)
         test/endpoint_address_policy_test.cpp
         test/connection_port_policy_test.cpp
         test/happy_eyeballs_connector_test.cpp
+        test/video_orientation_policy_test.cpp
         test/network_generation_fence_test.cpp
         test/native_network_observer_state_test.cpp
         test/moonlight_host_api_test.cpp

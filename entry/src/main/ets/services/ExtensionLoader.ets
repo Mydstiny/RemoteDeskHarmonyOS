@@ -2266,6 +2266,16 @@ export class ExtensionLoader implements RustDeskClipboardNative {
 
   // ====== 渲染管线操作 ======
 
+  /** Start the background orientation self-test for H.264 / H.265 on this device's decode path. */
+  ensureVideoOrientationSelfTest(desktop: boolean): void {
+    try {
+      rdpnapi.ensureVideoOrientationSelfTest(0, desktop);
+      rdpnapi.ensureVideoOrientationSelfTest(1, desktop);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] ensureVideoOrientationSelfTest: ' + JSON.stringify(err));
+    }
+  }
+
   bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean {
     try {
       const bound: boolean = rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;

@@ -1,12 +1,31 @@
-import { DecoderAttemptEvidence, VideoDiagnosticEvidence, NativeVideoDiagnosticEvidence } from '../types/VideoDiagnosticEvidence';
-export { DecoderAttemptEvidence, VideoDiagnosticEvidence, NativeVideoDiagnosticEvidence };
+import {
+  DecoderAttemptEvidence,
+  NativeOrientationSelfTest,
+  NativeVideoDiagnosticEvidence,
+  OrientationSelfTestEvidence,
+  VideoDiagnosticEvidence
+} from '../types/VideoDiagnosticEvidence';
+export {
+  DecoderAttemptEvidence,
+  NativeOrientationSelfTest,
+  NativeVideoDiagnosticEvidence,
+  OrientationSelfTestEvidence,
+  VideoDiagnosticEvidence
+};
+
+const VIDEO_EVIDENCE_VERSION: number = 2;
+const PLATFORM_TEXT: RegExp = /^[A-Za-z0-9 ._()\/-]{0,64}$/;
+
+function platformText(value: string | undefined): string {
+  return typeof value === 'string' && PLATFORM_TEXT.test(value) ? value : '';
+}
 
 function bounded(value: number | undefined, fallback: number = -1): number {
   return value !== undefined && Number.isSafeInteger(value) ? value : fallback;
 }
 export function videoDiagnosticEvidence(source: NativeVideoDiagnosticEvidence): VideoDiagnosticEvidence {
   return {
-    evidenceVersion: 1,
+    evidenceVersion: VIDEO_EVIDENCE_VERSION,
     queuedCodecPreference: bounded(source.queuedCodecPreference),
     requestedVisualFlipX: bounded(source.requestedVisualFlipX),
     requestedVisualFlipY: bounded(source.requestedVisualFlipY),
@@ -39,7 +58,46 @@ export function videoDiagnosticEvidence(source: NativeVideoDiagnosticEvidence): 
     flipSource: 0,
     observedOrientation: 0,
     finalSamplingCorners: [],
-    decoderAttempts: (source.decoderAttempts ?? []).slice(-4).map(copyDecoderAttempt)
+    decoderAttempts: (source.decoderAttempts ?? []).slice(-4).map(copyDecoderAttempt),
+    orientationSelfTests: (source.orientationSelfTests ?? []).slice(0, 4).map(nativeSelfTest)
+  };
+}
+
+function nativeSelfTest(source: NativeOrientationSelfTest): OrientationSelfTestEvidence {
+  return {
+    codec: bounded(source.codec),
+    mode: bounded(source.mode),
+    stage: bounded(source.stage),
+    platformCode: bounded(source.platformCode),
+    hardware: bounded(source.hardware),
+    outputPixelFormat: bounded(source.outputPixelFormat),
+    outputRotation: bounded(source.outputRotation),
+    outputTransformType: bounded(source.outputTransformType),
+    bufferTransform: bounded(source.bufferTransform),
+    v2Class: bounded(source.v2Class),
+    v1Class: bounded(source.v1Class),
+    identityOrientation: bounded(source.identityOrientation),
+    appliedOrientation: bounded(source.appliedOrientation),
+    identityCorners: [bounded(source.identityCorners0, 0), bounded(source.identityCorners1, 0),
+      bounded(source.identityCorners2, 0), bounded(source.identityCorners3, 0)],
+    appliedCorners: [bounded(source.appliedCorners0, 0), bounded(source.appliedCorners1, 0),
+      bounded(source.appliedCorners2, 0), bounded(source.appliedCorners3, 0)],
+    elapsedMs: bounded(source.elapsedMs),
+    decoderName: platformText(source.decoderName),
+    glVendor: platformText(source.glVendor),
+    glRenderer: platformText(source.glRenderer)
+  };
+}
+
+function copySelfTest(source: OrientationSelfTestEvidence): OrientationSelfTestEvidence {
+  return {
+    codec: source.codec, mode: source.mode, stage: source.stage, platformCode: source.platformCode,
+    hardware: source.hardware, outputPixelFormat: source.outputPixelFormat, outputRotation: source.outputRotation,
+    outputTransformType: source.outputTransformType, bufferTransform: source.bufferTransform,
+    v2Class: source.v2Class, v1Class: source.v1Class, identityOrientation: source.identityOrientation,
+    appliedOrientation: source.appliedOrientation, identityCorners: source.identityCorners.slice(),
+    appliedCorners: source.appliedCorners.slice(), elapsedMs: source.elapsedMs,
+    decoderName: source.decoderName, glVendor: source.glVendor, glRenderer: source.glRenderer
   };
 }
 
@@ -59,7 +117,24 @@ function copyDecoderAttempt(source: DecoderAttemptEvidence): DecoderAttemptEvide
     outputHeight: bounded(source.outputHeight),
     outputPixelFormat: bounded(source.outputPixelFormat),
     asyncErrors: bounded(source.asyncErrors),
-    lastAsyncError: bounded(source.lastAsyncError)
+    lastAsyncError: bounded(source.lastAsyncError),
+    outputStride: bounded(source.outputStride),
+    outputSliceHeight: bounded(source.outputSliceHeight),
+    outputCropTop: bounded(source.outputCropTop),
+    outputCropBottom: bounded(source.outputCropBottom),
+    outputCropLeft: bounded(source.outputCropLeft),
+    outputCropRight: bounded(source.outputCropRight),
+    outputRotation: bounded(source.outputRotation),
+    outputTransformType: bounded(source.outputTransformType),
+    bufferTransform: bounded(source.bufferTransform),
+    producerV1Class: bounded(source.producerV1Class),
+    orientationCorrection: bounded(source.orientationCorrection),
+    streamNalMaskLow: bounded(source.streamNalMaskLow, 0),
+    streamNalMaskHigh: bounded(source.streamNalMaskHigh, 0),
+    streamSeiMaskLow: bounded(source.streamSeiMaskLow, 0),
+    streamSeiMaskHigh: bounded(source.streamSeiMaskHigh, 0),
+    streamDisplayOrientation: bounded(source.streamDisplayOrientation),
+    streamInspectedFrames: bounded(source.streamInspectedFrames, 0)
   };
 }
 
@@ -98,7 +173,8 @@ export function copyVideoDiagnosticEvidence(source: VideoDiagnosticEvidence): Vi
     flipSource: source.flipSource,
     observedOrientation: source.observedOrientation,
     finalSamplingCorners: source.finalSamplingCorners.slice(),
-    decoderAttempts: source.decoderAttempts.map(copyDecoderAttempt)
+    decoderAttempts: source.decoderAttempts.map(copyDecoderAttempt),
+    orientationSelfTests: source.orientationSelfTests.map(copySelfTest)
   };
 }
 
@@ -110,12 +186,14 @@ export function parseVideoDiagnosticEvidence(value: Object): VideoDiagnosticEvid
   if (value === null || typeof value !== 'object' || Array.isArray(value)) { return null; }
   const source: Record<string, Object> = value as Record<string, Object>;
   const fields: string[] = ['queuedCodecPreference', 'requestedVisualFlipX', 'requestedVisualFlipY', 'requestedTransformVersion', 'moonlightNegotiatedCodec', 'moonlightNegotiatedBitDepth', 'moonlightActiveStage', 'moonlightTerminalCode', 'evidenceVersion', 'currentCodecPreference', 'connectionCodecPreference', 'sentCodecPreference', 'wireCodecPreference', 'advertisedDecoderMask', 'peerEncoderMask', 'codecOptionStage', 'loginOptionSends', 'runtimeOptionSubmissions', 'codecOptionSendFailures', 'firstFrameCodec', 'codecChanges', 'lastDecodeResult', 'decodeRetNotReady', 'decodeRetBadCodec', 'decodeRetMismatch', 'decodeRetOther', 'decodedFrames', 'presentedFrames', 'controlFlipX', 'controlFlipY', 'flipSource', 'observedOrientation'];
-  if (!exactKeys(source, fields.concat(['finalSamplingCorners', 'decoderAttempts']))) { return null; }
+  if (!exactKeys(source, fields.concat(['finalSamplingCorners', 'decoderAttempts', 'orientationSelfTests']))) {
+    return null;
+  }
   for (let index: number = 0; index < fields.length; index++) {
     const n: Object = source[fields[index]];
     if (typeof n !== 'number' || !Number.isSafeInteger(n as number)) { return null; }
   }
-  if (source['evidenceVersion'] !== 1) { return null; }
+  if (source['evidenceVersion'] !== VIDEO_EVIDENCE_VERSION) { return null; }
   const corners: Object = source['finalSamplingCorners'];
   if (!Array.isArray(corners)) { return null; }
   const numbers: Object[] = corners as Object[];
@@ -127,7 +205,12 @@ export function parseVideoDiagnosticEvidence(value: Object): VideoDiagnosticEvid
   if (!Array.isArray(source['decoderAttempts'])) { return null; }
   const attempts: Object[] = source['decoderAttempts'] as Object[];
   if (attempts.length > 4) { return null; }
-  const attemptFields: string[] = ['serial', 'decoderGeneration', 'codec', 'width', 'height', 'stage', 'result', 'platformCode', 'capabilityHardware', 'capabilitySizeSupported', 'outputWidth', 'outputHeight', 'outputPixelFormat', 'asyncErrors', 'lastAsyncError'];
+  const attemptFields: string[] = ['serial', 'decoderGeneration', 'codec', 'width', 'height', 'stage', 'result',
+    'platformCode', 'capabilityHardware', 'capabilitySizeSupported', 'outputWidth', 'outputHeight', 'outputPixelFormat',
+    'asyncErrors', 'lastAsyncError', 'outputStride', 'outputSliceHeight', 'outputCropTop', 'outputCropBottom',
+    'outputCropLeft', 'outputCropRight', 'outputRotation', 'outputTransformType', 'bufferTransform', 'producerV1Class',
+    'orientationCorrection', 'streamNalMaskLow', 'streamNalMaskHigh', 'streamSeiMaskLow', 'streamSeiMaskHigh',
+    'streamDisplayOrientation', 'streamInspectedFrames'];
   for (let index: number = 0; index < attempts.length; index++) {
     if (attempts[index] === null || typeof attempts[index] !== 'object') { return null; }
     const attempt: Record<string, Object> = attempts[index] as Record<string, Object>;
@@ -137,7 +220,43 @@ export function parseVideoDiagnosticEvidence(value: Object): VideoDiagnosticEvid
       if (typeof n !== 'number' || !Number.isSafeInteger(n as number)) { return null; }
     }
   }
+  if (!selfTestsAreValid(source['orientationSelfTests'])) { return null; }
   return copyVideoDiagnosticEvidence(value as VideoDiagnosticEvidence);
+}
+
+function selfTestsAreValid(value: Object): boolean {
+  if (!Array.isArray(value)) { return false; }
+  const tests: Object[] = value as Object[];
+  if (tests.length > 4) { return false; }
+  const numberFields: string[] = ['codec', 'mode', 'stage', 'platformCode', 'hardware', 'outputPixelFormat',
+    'outputRotation', 'outputTransformType', 'bufferTransform', 'v2Class', 'v1Class', 'identityOrientation',
+    'appliedOrientation', 'elapsedMs'];
+  const textFields: string[] = ['decoderName', 'glVendor', 'glRenderer'];
+  const cornerFields: string[] = ['identityCorners', 'appliedCorners'];
+  for (let index: number = 0; index < tests.length; index++) {
+    if (tests[index] === null || typeof tests[index] !== 'object' || Array.isArray(tests[index])) { return false; }
+    const test: Record<string, Object> = tests[index] as Record<string, Object>;
+    if (!exactKeys(test, numberFields.concat(textFields, cornerFields))) { return false; }
+    for (let field: number = 0; field < numberFields.length; field++) {
+      const n: Object = test[numberFields[field]];
+      if (typeof n !== 'number' || !Number.isSafeInteger(n as number)) { return false; }
+    }
+    for (let field: number = 0; field < textFields.length; field++) {
+      const text: Object = test[textFields[field]];
+      if (typeof text !== 'string' || !PLATFORM_TEXT.test(text as string)) { return false; }
+    }
+    for (let field: number = 0; field < cornerFields.length; field++) {
+      const corners: Object = test[cornerFields[field]];
+      if (!Array.isArray(corners) || (corners as Object[]).length !== 4) { return false; }
+      const values: Object[] = corners as Object[];
+      for (let corner: number = 0; corner < 4; corner++) {
+        const n: Object = values[corner];
+        if (typeof n !== 'number' || !Number.isSafeInteger(n as number) || (n as number) < 0 ||
+          (n as number) > 0xffffffff) { return false; }
+      }
+    }
+  }
+  return true;
 }
 
 /** Mirror the OES shader's rotation, manual flips, then producer sampling. */

@@ -15,6 +15,7 @@
 #include "callback_admission_context.h"
 #include "extensions/protocol_adapter.h"
 #include "native_image_context_policy.h"
+#include "video_stream_inspection.h"
 #include "decoder_attempt_diagnostics.h"
 #include "video_perf_counters.h"
 #include "video_backpressure_controller.h"
@@ -414,6 +415,15 @@ private:
     Render::NativeImageTransformClass appliedTransformClass_ =
         Render::NativeImageTransformClass::NotSampled;
     std::atomic<bool> textureTransformLogged_ {false};
+    // Orientation self-test correction composed on the PC desktop path, as the
+    // NativeImageTransformClass value it undoes (-1 none); logged on change.
+    int32_t orientationCorrectionLogged_ = -1;
+    bool producerExtrasLogged_ = false;
+    int32_t lastBufferTransform_ = -2;
+    // First key frames of this decoder: NAL / SEI summary for diagnostics.
+    std::mutex streamInspectionMutex_;
+    Render::VideoStreamInspection streamInspection_ {};
+    int32_t streamInspectedFrames_ = 0;
     int             width_ = 0;
     int             height_ = 0;
     CodecType       codecType_ = CodecType::H264;
@@ -503,6 +513,8 @@ private:
 
     /** 获取 OH_AVCodec MIME 类型字符串 */
     static const char* GetMimeType(CodecType codec);
+    void inspectStream(const uint8_t* data, size_t size);
+    void recordProducerExtras();
 
     // OH_AVCodec 回调 (static, 通过 userData → this 转发)
     static void OnError(OH_AVCodec* codec, int32_t errorCode, void* userData);

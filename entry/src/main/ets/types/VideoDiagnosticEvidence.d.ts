@@ -19,6 +19,86 @@ export interface DecoderAttemptEvidence {
   outputPixelFormat: number;
   asyncErrors: number;
   lastAsyncError: number;
+  /** Output description (-1 not reported). */
+  outputStride: number;
+  outputSliceHeight: number;
+  outputCropTop: number;
+  outputCropBottom: number;
+  outputCropLeft: number;
+  outputCropRight: number;
+  outputRotation: number;
+  outputTransformType: number;
+  /** NativeImage buffer transform and V1 matrix class on the desktop path (-1 not sampled). */
+  bufferTransform: number;
+  producerV1Class: number;
+  /** Transform class the orientation self-test correction undid (-1 none). */
+  orientationCorrection: number;
+  /** First key frames: NAL types (bits 0..31 / 32..63), SEI payload types, display-orientation SEI. */
+  streamNalMaskLow: number;
+  streamNalMaskHigh: number;
+  streamSeiMaskLow: number;
+  streamSeiMaskHigh: number;
+  streamDisplayOrientation: number;
+  streamInspectedFrames: number;
+}
+
+/**
+ * The known four-colour picture decoded through this device's decoder →
+ * NativeImage → GPU path. Classes are NativeImageTransformClass values
+ * (0 not sampled, 1 identity, 2 flip x, 3 flip y, 4 rotate 180, 5 rotate 90,
+ * 6 rotate 270, 7 transpose, 8 transverse, 9 other, 10 read failed); mode is
+ * the presentation mode (0 identity, 4 top-left producer). Corners are RGBA
+ * read at TL, TR, BL, BR. Strings are platform names limited to
+ * [A-Za-z0-9 ._()/-], at most 64 characters.
+ */
+export interface OrientationSelfTestEvidence {
+  codec: number;
+  mode: number;
+  stage: number;
+  platformCode: number;
+  hardware: number;
+  outputPixelFormat: number;
+  outputRotation: number;
+  outputTransformType: number;
+  bufferTransform: number;
+  v2Class: number;
+  v1Class: number;
+  identityOrientation: number;
+  appliedOrientation: number;
+  identityCorners: number[];
+  appliedCorners: number[];
+  elapsedMs: number;
+  decoderName: string;
+  glVendor: string;
+  glRenderer: string;
+}
+
+export interface NativeOrientationSelfTest {
+  codec?: number;
+  mode?: number;
+  stage?: number;
+  platformCode?: number;
+  hardware?: number;
+  outputPixelFormat?: number;
+  outputRotation?: number;
+  outputTransformType?: number;
+  bufferTransform?: number;
+  v2Class?: number;
+  v1Class?: number;
+  identityOrientation?: number;
+  appliedOrientation?: number;
+  identityCorners0?: number;
+  identityCorners1?: number;
+  identityCorners2?: number;
+  identityCorners3?: number;
+  appliedCorners0?: number;
+  appliedCorners1?: number;
+  appliedCorners2?: number;
+  appliedCorners3?: number;
+  elapsedMs?: number;
+  decoderName?: string;
+  glVendor?: string;
+  glRenderer?: string;
 }
 
 export interface VideoDiagnosticEvidence {
@@ -56,6 +136,7 @@ export interface VideoDiagnosticEvidence {
   observedOrientation: number;
   finalSamplingCorners: number[];
   decoderAttempts: DecoderAttemptEvidence[];
+  orientationSelfTests: OrientationSelfTestEvidence[];
 }
 
 export interface NativeVideoDiagnosticEvidence {
@@ -87,4 +168,5 @@ export interface NativeVideoDiagnosticEvidence {
   presentedFrames?: number;
   decodeOk?: number;
   decoderAttempts?: DecoderAttemptEvidence[];
+  orientationSelfTests?: NativeOrientationSelfTest[];
 }

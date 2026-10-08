@@ -14,6 +14,8 @@
 #include "gl_renderer.h"
 #include "opaque_handle_registry.h"
 #include "native_image_context_policy.h"
+#include "video_orientation_policy.h"
+#include "video_orientation_self_test.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <algorithm>
@@ -28,6 +30,7 @@
 #include <thread>
 #include <vector>
 #include <native_image/native_image.h>
+#include <native_window/external_window.h>
 #include <multimedia/player_framework/native_avcodec_base.h>
 #include <multimedia/player_framework/native_avcapability.h>
 #include <multimedia/player_framework/native_avcodec_videodecoder.h>
@@ -360,15 +363,38 @@ void HardwareDecoder::OnStreamChanged(OH_AVCodec* codec, OH_AVFormat* format, vo
 #endif
     if (format) {
         int32_t width = 0, height = 0, pixelFormat = -1;
+        int32_t stride = -1, sliceHeight = -1, rotation = -1, transformType = -1;
+        int32_t cropTop = -1, cropBottom = -1, cropLeft = -1, cropRight = -1;
         OH_AVFormat_GetIntValue(format, OH_MD_KEY_WIDTH, &width);
         OH_AVFormat_GetIntValue(format, OH_MD_KEY_HEIGHT, &height);
         OH_AVFormat_GetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, &pixelFormat);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_STRIDE, &stride);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_SLICE_HEIGHT, &sliceHeight);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_ROTATION, &rotation);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_TRANSFORM_TYPE, &transformType);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_TOP, &cropTop);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_BOTTOM, &cropBottom);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_LEFT, &cropLeft);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_RIGHT, &cropRight);
         Render::DecoderAttemptDiagnostics::Instance().update(target.decoder->callbackOwner_,
             target.decoder->diagnosticAttemptSerial_, [=](Render::DecoderAttemptDiagnostic& value) {
                 value.outputWidth = width;
                 value.outputHeight = height;
                 value.outputPixelFormat = pixelFormat;
+                value.outputStride = stride;
+                value.outputSliceHeight = sliceHeight;
+                value.outputRotation = rotation;
+                value.outputTransformType = transformType;
+                value.outputCropTop = cropTop;
+                value.outputCropBottom = cropBottom;
+                value.outputCropLeft = cropLeft;
+                value.outputCropRight = cropRight;
             });
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] output description size=%{public}dx%{public}d pixfmt=%{public}d stride=%{public}d slice=%{public}d rotation=%{public}d transformType=%{public}d crop=%{public}d,%{public}d,%{public}d,%{public}d desktop=%{public}d",
+                    width, height, pixelFormat, stride, sliceHeight, rotation, transformType,
+                    cropTop, cropBottom, cropLeft, cropRight,
+                    target.decoder->desktopSurfaceCompatibility_ ? 1 : 0);
     }
     OH_LOG_INFO(LOG_APP, "[Decoder] 码流格式变更");
 }
@@ -639,6 +665,22 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     desktopSurfaceCompatibility_ = desktopSurfaceCompatibility;
     presentationMode_.store(presentationMode, std::memory_order_release);
     textureTransform_ = Render::IdentityNativeImageTransform();
+    orientationCorrectionLogged_ = -1;
+    producerExtrasLogged_ = false;
+    lastBufferTransform_ = -2;
+    {
+        std::lock_guard<std::mutex> inspectionLock(streamInspectionMutex_);
+        streamInspection_ = Render::VideoStreamInspection {};
+        streamInspectedFrames_ = 0;
+    }
+    // Measure how this device's decoder + NativeImage + GPU path lands on
+    // screen with the known four-colour picture, once per codec and mode in
+    // the process. The PC desktop path composes the measured correction.
+    if (codec == CodecType::H264 || codec == CodecType::H265) {
+        Render::EnsureVideoOrientationSelfTest(
+            static_cast<Render::OrientationSelfTestCodec>(static_cast<int>(codec)),
+            desktopSurfaceCompatibility ? presentationMode : Render::NativeImagePresentationMode::Identity);
+    }
     {
         std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
         sampledPresentationMode_ = presentationMode;
@@ -960,6 +1002,7 @@ int HardwareDecoder::DecodeOwned(
         return -1;
     }
     std::memcpy(copy, data, size);
+    inspectStream(data, size);
 
     int64_t decodeTimestamp = static_cast<int64_t>(timestamp);
     std::shared_ptr<Render::PhoneFrameTracker> phoneTracker;
@@ -1650,7 +1693,39 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 appliedTextureTransform_ = resolvedTransform;
                 appliedTransformClass_ = appliedTransformClass;
             }
-            textureTransform_ = resolvedTransform;
+            // The orientation self-test measured how this device shows the
+            // known picture through the same path; undo a measured flip.
+            int32_t correction = -1;
+            if (presentationMode == Render::NativeImagePresentationMode::TopLeftProducerTransform) {
+                const Render::NativeImageTransformClass measured =
+                    Render::DesktopOrientationCorrectionClass(static_cast<int32_t>(codecType_));
+                if (Render::OrientationIsCorrectable(measured)) {
+                    correction = static_cast<int32_t>(measured);
+                    const Render::NativeImageTransform corrected =
+                        Render::CorrectedNativeImageTransform(resolvedTransform, measured);
+                    std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
+                    appliedTextureTransform_ = corrected;
+                    appliedTransformClass_ = Render::ClassifyNativeImageProducerTransform(0, corrected.data());
+                    textureTransform_ = corrected;
+                } else {
+                    textureTransform_ = resolvedTransform;
+                }
+            } else {
+                textureTransform_ = resolvedTransform;
+            }
+            if (correction != orientationCorrectionLogged_) {
+                orientationCorrectionLogged_ = correction;
+                OH_LOG_INFO(LOG_APP,
+                            "[Decoder] desktop orientation correction codec=%{public}d measured=%{public}s",
+                            static_cast<int>(codecType_), correction < 0 ? "none" :
+                            Render::NativeImageTransformClassName(
+                                static_cast<Render::NativeImageTransformClass>(correction)));
+                Render::DecoderAttemptDiagnostics::Instance().update(callbackOwner_,
+                    diagnosticAttemptSerial_, [=](Render::DecoderAttemptDiagnostic& value) {
+                        value.orientationCorrection = correction;
+                    });
+            }
+            recordProducerExtras();
             if (transformChanged ||
                 !textureTransformLogged_.exchange(true, std::memory_order_acq_rel)) {
                 OH_LOG_INFO(LOG_APP,
@@ -1691,6 +1766,73 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                     static_cast<unsigned long long>(renderOutputFailureCount_.load()),
                     static_cast<unsigned long long>(updateSurfaceFailureCount_.load()));
     }
+}
+
+void HardwareDecoder::inspectStream(const uint8_t* data, size_t size) {
+    if (codecType_ != CodecType::H264 && codecType_ != CodecType::H265) {
+        return;
+    }
+    Render::VideoStreamInspection snapshot;
+    int32_t frames = 0;
+    {
+        std::lock_guard<std::mutex> lock(streamInspectionMutex_);
+        if (streamInspectedFrames_ >= 3) {
+            return;
+        }
+        Render::InspectAnnexBAccessUnit(data, size, codecType_ == CodecType::H265, streamInspection_);
+        frames = ++streamInspectedFrames_;
+        snapshot = streamInspection_;
+    }
+    Render::DecoderAttemptDiagnostics::Instance().update(callbackOwner_, diagnosticAttemptSerial_,
+        [=](Render::DecoderAttemptDiagnostic& value) {
+            value.streamNalMaskLow = static_cast<int64_t>(snapshot.nalMaskLow);
+            value.streamNalMaskHigh = static_cast<int64_t>(snapshot.nalMaskHigh);
+            value.streamSeiMaskLow = static_cast<int64_t>(snapshot.seiMaskLow);
+            value.streamSeiMaskHigh = static_cast<int64_t>(snapshot.seiMaskHigh);
+            value.streamDisplayOrientation = Render::PackedDisplayOrientation(snapshot);
+            value.streamInspectedFrames = frames;
+        });
+    if (frames == 1 || frames == 3) {
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] stream inspection codec=%{public}d frames=%{public}d annexB=%{public}d nal=%{public}llx/%{public}llx sei=%{public}llx/%{public}llx displayOrientation=%{public}lld",
+                    static_cast<int>(codecType_), frames, snapshot.annexB ? 1 : 0,
+                    static_cast<unsigned long long>(snapshot.nalMaskHigh),
+                    static_cast<unsigned long long>(snapshot.nalMaskLow),
+                    static_cast<unsigned long long>(snapshot.seiMaskHigh),
+                    static_cast<unsigned long long>(snapshot.seiMaskLow),
+                    static_cast<long long>(Render::PackedDisplayOrientation(snapshot)));
+    }
+}
+
+void HardwareDecoder::recordProducerExtras() {
+    // Runs on the GL owner thread right after UpdateSurfaceImage.
+    int32_t bufferTransform = -1;
+    if (nativeWindow_ == nullptr ||
+        OH_NativeWindow_NativeWindowHandleOpt(static_cast<OHNativeWindow*>(nativeWindow_),
+            GET_TRANSFORM, &bufferTransform) != 0) {
+        bufferTransform = -1;
+    }
+    if (producerExtrasLogged_ && bufferTransform == lastBufferTransform_) {
+        return;
+    }
+    producerExtrasLogged_ = true;
+    lastBufferTransform_ = bufferTransform;
+    float v1[16] = {};
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    const int32_t v1Ret = OH_NativeImage_GetTransformMatrix(nativeImage_, v1);
+#pragma clang diagnostic pop
+    const Render::NativeImageTransformClass v1Class =
+        Render::ClassifyNativeImageProducerTransform(v1Ret, v1);
+    Render::DecoderAttemptDiagnostics::Instance().update(callbackOwner_, diagnosticAttemptSerial_,
+        [=](Render::DecoderAttemptDiagnostic& value) {
+            value.bufferTransform = bufferTransform;
+            value.producerV1Class = static_cast<int32_t>(v1Class);
+        });
+    OH_LOG_INFO(LOG_APP,
+                "[Decoder] desktop NativeImage extras bufferTransform=%{public}d v1=%{public}s ret=%{public}d row0=[%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f]",
+                bufferTransform, Render::NativeImageTransformClassName(v1Class), v1Ret,
+                v1[0], v1[4], v1[12], v1[1], v1[5], v1[13]);
 }
 
 void HardwareDecoder::StartRenderThread() {
@@ -5225,6 +5367,25 @@ bool DecoderNapi::RebindActiveVideoPipeline(const DecoderSessionIdentity& owner)
 // DecoderNapi::Init
 // ============================================================
 
+/** NAPI: ensureVideoOrientationSelfTest(codec: number, desktop: boolean): void — once per codec and mode. */
+static napi_value NapiEnsureVideoOrientationSelfTest(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t codec = -1;
+    bool desktop = false;
+    if (argc >= 1) { napi_get_value_int32(env, args[0], &codec); }
+    if (argc >= 2) { napi_get_value_bool(env, args[1], &desktop); }
+    if (codec == 0 || codec == 1) {
+        Render::EnsureVideoOrientationSelfTest(static_cast<Render::OrientationSelfTestCodec>(codec),
+            desktop ? Render::NativeImagePresentationMode::TopLeftProducerTransform :
+                Render::NativeImagePresentationMode::Identity);
+    }
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 napi_value DecoderNapi::Init(napi_env env, napi_value exports) {
     napi_value fn;
 
@@ -5265,6 +5426,10 @@ napi_value DecoderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "rebindActiveVideoPipeline", NAPI_AUTO_LENGTH,
                          NapiRebindActiveVideoPipeline, nullptr, &fn);
     napi_set_named_property(env, exports, "rebindActiveVideoPipeline", fn);
+
+    napi_create_function(env, "ensureVideoOrientationSelfTest", NAPI_AUTO_LENGTH,
+                         NapiEnsureVideoOrientationSelfTest, nullptr, &fn);
+    napi_set_named_property(env, exports, "ensureVideoOrientationSelfTest", fn);
 
     napi_create_function(env, "getHardwareVideoDecoderCapabilities",
                          NAPI_AUTO_LENGTH,

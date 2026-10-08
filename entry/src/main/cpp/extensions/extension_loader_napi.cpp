@@ -4484,6 +4484,7 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         SetObjectInt64(env, result, "runtimeOptionSubmissions", static_cast<int64_t>(c.optionSends));
         SetObjectInt64(env, result, "codecOptionSendFailures", static_cast<int64_t>(c.sendFailures));
         Render::SetDecoderAttemptEvidence(env, result, session->identity());
+        Render::SetOrientationSelfTestEvidence(env, result);
     }
     SetObjectInt32(env, result, "codec", counters ?
         counters->lastCodec.load(std::memory_order_acquire) : nativeStats.codec);

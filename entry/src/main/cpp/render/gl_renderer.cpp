@@ -133,6 +133,16 @@ static void ReleaseSharedEglDisplay(EGLDisplay display, bool safeToTerminate) {
     }
 }
 
+bool AcquireSharedEglDisplayLease(EGLDisplay& display) {
+    EGLint major = 0;
+    EGLint minor = 0;
+    return AcquireSharedEglDisplay(display, major, minor);
+}
+
+void ReleaseSharedEglDisplayLease(EGLDisplay display) {
+    ReleaseSharedEglDisplay(display, true);
+}
+
 static uint64_t AdvanceRendererGeneration() {
     return g_rendererGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
 }

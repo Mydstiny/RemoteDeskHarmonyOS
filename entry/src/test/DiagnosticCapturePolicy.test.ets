@@ -29,8 +29,8 @@ export default function diagnosticCapturePolicyTest(): void {
     it('accepts_only_the_six_fixed_one_to_thirty_minute_options', 0, (): void => {
       expect(diagnosticDurationOptions().join(',')).assertEqual('1,3,5,10,15,30');
       expect(DIAGNOSTIC_DEFAULT_DURATION_MINUTES).assertEqual(10);
-      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(9);
-      expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(4);
+      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(10);
+      expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(5);
       expect(diagnosticDurationIsAllowed(1)).assertTrue();
       expect(diagnosticDurationIsAllowed(30)).assertTrue();
       expect(diagnosticDurationIsAllowed(0)).assertFalse();

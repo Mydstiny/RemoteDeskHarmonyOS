@@ -662,6 +662,12 @@ export const VERSION: SessionVersionInfo;
     av1: HardwareVideoDecoderCapability;
   }
   export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
+  /**
+   * Decode a known four-colour H.264 (0) / H.265 (1) picture through this
+   * device's hardware decoder → NativeImage → GPU path in the background and
+   * keep how it lands on screen; once per codec and mode per process.
+   */
+  export function ensureVideoOrientationSelfTest(codec: number, desktop: boolean): void;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number, sessionId?: number): number;
   export function destroyAudioPlayer(handle: number): void;

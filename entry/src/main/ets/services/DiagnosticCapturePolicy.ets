@@ -258,12 +258,18 @@ export type DiagnosticCaptureProfile = 'selected' | 'full';
 // summary evidence coverage. Catalog v3 adds graphics negotiation, RustDesk
 // image-quality and direct-connection stage events; redaction v4 closes the
 // new graphics/quality/direct fields to fixed catalogs.
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 9;
+// v10: runtime.video evidence v2 — decoder output description, NativeImage
+// buffer transform and V1 class, first-key-frame NAL/SEI summary, and the
+// orientation self-tests; redaction v5 admits only platform decoder/GPU names
+// limited to [A-Za-z0-9 ._()/-] (64 characters).
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 10;
 export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 3;
-export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 4;
+export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 5;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
-export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 8192;
+// 16 KiB: a video snapshot carries up to four decoder attempts with their output
+// description and stream summary plus the orientation self-tests (2026-10-09).
+export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 16384;
 export const DIAGNOSTIC_MAX_CAPTURE_BYTES: number = 8 * 1024 * 1024;
 export const DIAGNOSTIC_MAX_EXPORT_BYTES: number = 12 * 1024 * 1024;
 export const DIAGNOSTIC_MAX_SESSION_REFS: number = 512;

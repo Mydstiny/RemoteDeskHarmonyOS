@@ -1452,6 +1452,7 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
     // Resolve the launch request to its admitted media-session key.
     Render::SetDecoderAttemptEvidence(env, value,
         {result.key.sessionId, result.key.generation, result.key.ownerToken});
+    Render::SetOrientationSelfTestEvidence(env, value);
     const auto negotiation = MoonlightCommonCAdapter::process().snapshot(result.key);
     const auto& selected = negotiation.video;
     const int selectedCodec = !selected.has_value() ? -1 :

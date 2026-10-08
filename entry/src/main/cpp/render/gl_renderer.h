@@ -317,6 +317,15 @@ private:
 // NAPI 包装 (定义在 gl_renderer.cpp)
 // ============================================================
 
+/**
+ * A lease on the process EGL display the renderers share, for private
+ * off-screen tools (the video orientation self-test). The display is never
+ * terminated while any lease or renderer holds it.
+ */
+bool AcquireSharedEglDisplayLease(EGLDisplay& display);
+/** Release a lease taken with AcquireSharedEglDisplayLease, after the caller's contexts are gone. */
+void ReleaseSharedEglDisplayLease(EGLDisplay display);
+
 namespace RendererNapi {
     struct OwnedRendererCreationResult {
         bool ok = false;
