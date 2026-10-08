@@ -155,6 +155,8 @@ export interface RemoteSessionAiToggles {
   reverseWheel: boolean;
   swapMouseButtons: boolean;
   diagnosticsEnabled: boolean;
+  /** The host's 画面翻转 mode (RustDesk on a HarmonyOS PC). */
+  desktopFlipMode: RustDeskDesktopFlipMode;
 }
 
 /**
@@ -186,6 +188,11 @@ export function runRemoteSessionAiAction(action: DiagnosticAiAppActionId, action
     case 'session.reverseWheel': actions.onToggleReverseWheel(!s.reverseWheel); return true;
     case 'session.swapButtons': actions.onToggleSwapMouseButtons(!s.swapMouseButtons); return true;
     case 'session.diagnostics': actions.onToggleDiagnostics(!s.diagnosticsEnabled); return true;
+    // 画面翻转 is the PC's: elsewhere the flip callback says so instead of changing anything.
+    case 'session.flipVertical':
+      actions.onSetRustDeskDesktopFlipMode(toggleRustDeskDesktopFlipAxis(s.desktopFlipMode, 'visual_y')); return true;
+    case 'session.flipReset': actions.onSetRustDeskDesktopFlipMode('reset'); return true;
+    case 'session.markUpsideDown': actions.onObserveVideoOrientation(2); return true;
     case 'session.disconnect': actions.onDisconnect(); return true;
     default: return false;
   }

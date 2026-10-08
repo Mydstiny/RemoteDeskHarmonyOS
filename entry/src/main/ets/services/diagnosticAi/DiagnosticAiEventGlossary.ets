@@ -12,7 +12,18 @@ const GLOSSARY: string[] = [
     '12 账号没有远程登录权限、13 密码过期需修改、0 未分类。code 为 FreeRDP 连接错误码（十进制，如 131085=0x2000D 传输失败、' +
     '131092=0x20014 登录失败）或服务器 ErrorInfo；generation 为 1 连接过程中、2 会话进行中；durationMs 为从开始连接到失败的毫秒数。',
   'rdp_certificate：用户对证书提示的选择，code 1 本次继续、2 信任并保存、3 取消连接、4 跳过预检。',
-  'rdp_preflight：证书/路由预检；failed 表示预检阶段就无法连上（多为网络或端口问题）。',
+  'rdp_preflight：证书/路由预检；failed 表示预检阶段就无法连上（多为网络或端口问题）；count 1 表示这台电脑只接受旧版 TLS' +
+    '（1.0/1.1 或弱加密，常见于未更新的 Windows 7 / Server 2008 R2），用户在证书提示里同意降低安全要求后才会连接。',
+  'rdp_name_resolution：RDP 主机名解析（预检时名称解析失败或解析出的地址连不上才会进行；只有数量和步骤，没有名称和地址）。' +
+    'succeeded 找到地址、failed 都没找到；count 为最终方式：1 DNS、2 DNS 加网络的域名后缀（office-pc → office-pc.corp.local）、' +
+    '3 局域网（xxx.local 用 mDNS，计算机名用 LLMNR 和 NetBIOS，与 mstsc 在局域网里的做法相同）、0 未找到；' +
+    'generation 为尝试过的步骤位：1 DNS、2 域名后缀、4 局域网（名称含点且不以 .local 结尾时不查局域网）；code 为找到的地址数；' +
+    'durationMs 为解析耗时。failed 且 generation 含 4：局域网里没有设备应答这个名称（电脑关机、不在同一网段、' +
+    '防火墙拦截 UDP 5353/5355/137，或名称写错），建议改填 IP 地址。',
+  'rdp_security_choice：用户对单台电脑降低或恢复 RDP 安全要求（只保存在本机，按账号、主机和地址区分）。code：1 同意这台电脑用旧版 TLS、' +
+    '2 这台电脑改用 TLS 登录（不做 NLA）、3 恢复这台电脑的 NLA 登录、4 撤销旧版 TLS、5 删除主机时一并清除、' +
+    '6 在「设置 → Windows RDP → 恢复各电脑的默认安全设置」里全部恢复；failed 表示没能保存（选择没有生效）；' +
+    'count 为之后仍有降级选择的电脑数。',
   'rdp_clipboard / rustdesk_clipboard：剪贴板同步通道，code 0 已启动、1 被另一个连接占用、2 缺少本机剪贴板读取权限（只能远端到本机）、' +
     '3 本次连接没有协商剪贴板通道（需开启剪贴板后重连）、4 启动异常、5 原生层拒绝；count 1 表示本机读取可用。',
   'rdp_drive：驱动器映射，succeeded 已挂载、failed 服务器端不可用（组策略或远端禁止驱动器重定向）、timeout 15 秒内未挂载。',
@@ -80,6 +91,21 @@ const GLOSSARY: string[] = [
     '4 回环、5 链路本地、6 公网 IPv4、7 IPv6 ULA（fc00::/7）、8 IPv6 链路本地、9 IPv6 回环、10 全局 IPv6、0 无效、' +
     '11 不适用（中继路由没有直连地址）。' +
     '地址类别不能证明使用了哪种虚拟网。',
+  'runtime.video（RustDesk、Moonlight 的视频证据；值为 0 的字段不发送）：codec 编号 0 H.264、1 H.265、2 VP8、3 VP9、4 AV1。' +
+    'decoderAttempts 为每次创建解码器的记录：capabilityHardware 1 为硬件解码；bufferTransform 为 NativeImage 缓冲区变换，' +
+    'producerV1Class 为旧版 V1 矩阵的方向类；orientationCorrection 为方向自检纠正掉的方向类（-1 未纠正）；' +
+    'streamDisplayOrientation 为码流里的显示方向 SEI（0 没有）。orientationSelfTests 为方向自检：把已知的四色画面' +
+    '（左上红、右上绿、左下蓝、右下白）用本机真实的解码器 → NativeImage → GPU 路径解码，再读回四角颜色；' +
+    'mode 0 为直接采样（手机、平板、RDP），4 为生产者矩阵模式（鸿蒙 PC 的 RustDesk）；stage 15 为完成，其它为停下的步骤' +
+    '（1 EGL、2 纹理、3 NativeImage、4 NativeWindow、5 创建解码器、6 配置、7 绑定 Surface、8 启动、9 送入码流、10 等待输出、' +
+    '11 等待帧、12 更新纹理、13 渲染、14 读回），platformCode 为该步骤的返回值；identityOrientation 为不加变换采样时的方向，' +
+    'appliedOrientation 为会话实际所用变换下的方向；方向类：1 正常、2 左右镜像、3 上下颠倒、4 旋转 180°、5 旋转 90°、' +
+    '6 旋转 270°、7 转置、8 反转置、9 其它、10 读回失败。mode 4 的 appliedOrientation 为 2–8 时，PC 从下一帧起自动纠正，' +
+    '并在 decoderAttempts.orientationCorrection 记下；glRenderer、decoderName 为 GPU 和解码器名称。' +
+    'observedOrientation 和 rustdesk_orientation_observation 的 code 为用户的日志标记：1 画面正常、2 上下倒置、3 左右镜像；' +
+    'controlFlipX/Y、requestedVisualFlipX/Y 为用户在「画面翻转」里手动打开的翻转（1 开）。判断：自检 appliedOrientation 为 1 ' +
+    '而用户仍标记倒置，问题在自检覆盖的路径之外（码流方向或手动翻转）；已自动纠正而用户又手动翻转时两者叠加，' +
+    '先在「画面翻转」里点「复位」。',
   'rustdesk_preflight 的本地校验失败 code：-20 中继绑定无效、-21 认证绑定已变化、-22 密码仍在加密仓库、-23 未填写设备密码、' +
     '-24 直连选择了请求批准、-25 密码锁定时切换请求批准、-26 连接入口配置校验失败（直连地址/端口无效、链路本地 IPv6、中继缺失等，' +
     '面板尚未打开）、-27 鉴权流程不可用；这些失败的 generation 为 0，表示没有发起原生连接。'

@@ -200,6 +200,11 @@ function diagnosticConnectionEventCode(moduleId: DiagnosticConnectionModule,
   return kind === 'disconnect' ? 'ssh_disconnect' : 'ssh_session_event';
 }
 
+/** rdp_preflight count: 1 when the host could only be reached over legacy TLS (the AI glossary reads it). */
+function rdpPreflightLegacyTlsCount(flags: string[] | undefined): number {
+  return (flags ?? []).indexOf('LEGACY_TLS') >= 0 ? 1 : 0;
+}
+
 function diagnosticRouteTypeCode(value: string): number {
   switch (value.trim().toLowerCase()) {
     case 'direct':
@@ -1594,7 +1599,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         rdpnapi.probeRdpCertificate(host, port, serverName) as RdpCertificateInfo;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
         result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
-        0, 0, 0, undefined, network);
+        0, rdpPreflightLegacyTlsCount(result.riskFlags), 0, undefined, network);
       return result;
     } catch (err) {
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
@@ -1631,7 +1636,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         await rdpnapi.probeRdpCertificateAsync(host, port, serverName) as RdpCertificateInfo;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
         result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
-        0, 0, 0, undefined, network);
+        0, rdpPreflightLegacyTlsCount(result.riskFlags), 0, undefined, network);
       return result;
     } catch (err) {
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
@@ -1679,7 +1684,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
         result.ok ? 'succeeded' : 'failed', 0, result.generation, result.ok ? 0 : -1,
-        0, 0, 0, undefined, network);
+        0, rdpPreflightLegacyTlsCount(result.targetRiskFlags), 0, undefined, network);
       if (gatewayRoute) {
         recordDiagnosticEvent('network.routing', 'routing_rdp_gateway',
           result.ok ? 'succeeded' : 'failed', 0, result.generation,

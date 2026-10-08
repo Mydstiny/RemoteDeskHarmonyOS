@@ -569,7 +569,7 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-07-v22$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-08-v23$/);
   const guide = kb.aiAppGuide();
   for (const words of ['Pi（Pi 编程代理，9445', 'pi-gui', '全部项目（含电脑 App 里的项目）', '修改前询问', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {
@@ -749,6 +749,81 @@ test('a touch that starts on the AI orb or its chat never reaches the remote sid
   assert.equal(tracker.shields(ev(2, 2, 310, 300)), false);
   shield.AiTouchShield.unregister('t');
   assert.equal(tracker.shields(ev(0, 3, 50, 50)), false);
+});
+
+// ---------------------------------------------------------------- file transfer, RDP reach and security, PC orientation
+test('the AI knows and can open the new file transfer, RDP name lookup, RDP security choices and PC orientation tools', () => {
+  const kb = load(D + 'DiagnosticAiKnowledgeBase');
+  const actions = load(D + 'DiagnosticAiAppActionPolicy');
+  const guide = kb.aiAppGuide();
+  for (const words of ['「粘贴到这里」', '「去远端选位置」', '「读取远端剪贴板」', '「自动改名」', '本机保留 7 天', 'C:\\Users',
+    '正在局域网中查找这台电脑', '目标 RDP 地址解析失败', '「改用 TLS 登录」', '「恢复 NLA 登录」', '恢复各电脑的默认安全设置',
+    '方向自检', '日志标记：上下倒置', 'AI 不能代为开启']) {
+    assert.ok(guide.includes(words), 'the guide mentions ' + words);
+  }
+  for (const id of guide.match(/\b(session|settings|rdp)\.[A-Za-z]+/g)) {
+    assert.ok(actions.diagnosticAiAppActionId(id), id + ' is an action');
+  }
+  const snapshot = kb.diagnosticAiKnowledgeSnapshot();
+  assert.ok(snapshot.includes('rdp.restoreSecurity|恢复各电脑的默认 RDP 安全设置|execute|direct'));
+  assert.ok(snapshot.includes('session.markUpsideDown|'));
+
+  const ids = (step) => Array.from(actions.diagnosticAiAppActionsForSteps([step]), (a) => a.id);
+  assert.deepEqual(ids('在设置 → Windows RDP 里点「恢复各电脑的默认安全设置」'), ['settings.rdpSecurity', 'rdp.restoreSecurity']);
+  assert.deepEqual(ids('在 RDP 安全设置里关闭 TLS 兼容登录'), ['settings.rdpSecurity'], 'an RDP sign-in is not the account page');
+  assert.deepEqual(ids('撤销所有降级'), ['rdp.restoreSecurity']);
+  assert.deepEqual(ids('在账号设置里切换华为账号'), ['settings.account']);
+  const session = (step) => ids(step).filter((id) => id.startsWith('session.'));
+  assert.deepEqual(session('画面上下颠倒时，在「画面翻转」里点「画面上下翻转」'), ['session.flipVertical']);
+  assert.deepEqual(session('在「画面翻转」里点「复位」'), ['session.flipReset']);
+  assert.deepEqual(session('复现后在「画面翻转」里点「日志标记：上下倒置」'), ['session.markUpsideDown']);
+  assert.deepEqual(session('在「画面翻转」里点「日志标记：画面正常」'), []);
+  assert.deepEqual(session('画面左右镜像时点「画面左右翻转」'), []);
+  assert.equal(actions.diagnosticAiAppActionMode('session.flipVertical'), 'inline');
+  assert.equal(actions.diagnosticAiAppActionRequiresConfirmation('rdp.restoreSecurity'), false, 'its own dialog asks first');
+
+  // Each action reaches its screen or callback.
+  const host = read('pages/HostListPage.ets');
+  assert.match(host, /case 'settings\.rdpSecurity': this\.openSettingsSectionForAssistant\(SETTINGS_SECTION_RDP\); return;/);
+  assert.match(host, /case 'rdp\.restoreSecurity': this\.restoreRdpSecurityForAssistant\(\); return;/);
+  assert.match(host, /private restoreRdpSecurityForAssistant\(\): void \{\s*this\.refreshRdpSecurityDowngradeHosts\(\);\s*if \(this\.rdpSecurityDowngradeHosts <= 0\) \{[\s\S]*?return;\s*\}\s*this\.confirmRestoreRdpSecurityDowngrades\(\);/);
+  const bar = read('components/RemoteSessionTopBar.ets');
+  assert.match(bar, /case 'session\.flipVertical':\s*actions\.onSetRustDeskDesktopFlipMode\(toggleRustDeskDesktopFlipAxis\(s\.desktopFlipMode, 'visual_y'\)\); return true;/);
+  assert.match(bar, /case 'session\.flipReset': actions\.onSetRustDeskDesktopFlipMode\('reset'\); return true;/);
+  assert.match(bar, /case 'session\.markUpsideDown': actions\.onObserveVideoOrientation\(2\); return true;/);
+  const rdp = read('pages/RemoteDesktop.ets');
+  assert.match(rdp, /desktopFlipMode: this\.rustDeskDesktopFlipMode\s*\}\);/);
+  assert.equal((rdp.match(/default: return this\.sessionAiActionUnavailable\(action\);/g) || []).length, 2,
+    'RDP and VNC say a RustDesk-only action is not there instead of pointing at the host list');
+  const search = load('services/SettingsSearchCatalog');
+  const restore = search.settingsSearchEntries().find((entry) => entry.title === '恢复各电脑的默认安全设置');
+  assert.equal(restore.action, 'rdp.restoreSecurity');
+  assert.match(host, /case 'rdpDowngrades': return this\.rdpSecurityDowngradeHosts > 0;/);
+});
+
+test('the log the AI reads names RDP name lookup, security choices and the orientation self-test', () => {
+  const glossary = load(D + 'DiagnosticAiEventGlossary').diagnosticAiEventGlossary();
+  const facets = load('services/DiagnosticCaptureFacetPolicy');
+  const capture = load('services/DiagnosticCapturePolicy');
+  for (const [code, facet] of [['rdp_name_resolution', 'rdp.connect'], ['rdp_security_choice', 'rdp.security']]) {
+    assert.ok(capture.diagnosticEventIsAllowed('connection.rdp', code), code + ' is in the catalog');
+    assert.ok(facets.diagnosticEventInFacets('connection.rdp', code, [facet]), code + ' belongs to ' + facet);
+    assert.ok(glossary.includes(code + '：'), code + ' is explained');
+  }
+  assert.equal(capture.DIAGNOSTIC_EVENT_CATALOG_VERSION, 4);
+  for (const words of ['orientationSelfTests', 'appliedOrientation', 'orientationCorrection', '3 上下颠倒', 'count 1 表示这台电脑只接受旧版 TLS']) {
+    assert.ok(glossary.includes(words), 'the glossary explains ' + words);
+  }
+  assert.ok(facets.diagnosticFacetsForQuestion('鸿蒙 PC 上 RustDesk 画面上下颠倒').includes('rustdesk.display'));
+  assert.ok(facets.diagnosticFacetsForQuestion('RDP 用计算机名连不上，地址解析失败').includes('rdp.connect'));
+  // Recorded where they happen, with codes only (no name, no address).
+  const dns = read('services/RdpDnsFallback.ets');
+  assert.match(dns, /recordDiagnosticEvent\('connection\.rdp', 'rdp_name_resolution', found > 0 \? 'succeeded' : 'failed',\s*0, tried, found, Math\.max\(0, elapsedMs\), viaCode\);/);
+  assert.equal((dns.match(/return finish\(/g) || []).length, 4, 'every way out of the lookup is recorded');
+  const store = read('services/RdpLegacyTlsConsentStore.ets');
+  assert.match(store, /recordDiagnosticEvent\('connection\.rdp', 'rdp_security_choice', outcome, 0, 0, choice, 0, this\.hostCount\(context\)\);/);
+  const loader = read('services/ExtensionLoader.ets');
+  assert.equal((loader.match(/rdpPreflightLegacyTlsCount\(result\.(riskFlags|targetRiskFlags)\)/g) || []).length, 3);
 });
 
 (async () => {

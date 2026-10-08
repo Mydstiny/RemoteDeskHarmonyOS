@@ -88,6 +88,8 @@ const ENTRIES: SettingsSearchEntry[] = [
   entry(SETTINGS_SECTION_RDP, 'RDP 账号格式', '用户名 邮箱 域 domain 登录'),
   entry(SETTINGS_SECTION_RDP, '跳过连接前证书预检', '证书 预检 安全'),
   entry(SETTINGS_SECTION_RDP, 'TLS 兼容登录', 'nla tls 登录 兼容'),
+  entry(SETTINGS_SECTION_RDP, '恢复各电脑的默认安全设置', '旧版 tls 降级 nla 恢复 撤销 安全 win7 2008', 'rdp.restoreSecurity',
+    'rdpDowngrades'),
   entry(SETTINGS_SECTION_RDP, 'RDP 远端音频', '声音 音频 扬声器'),
   entry(SETTINGS_SECTION_RDP, 'RDP 剪贴板同步', '复制 粘贴 剪贴板'),
   entry(SETTINGS_SECTION_RDP, '性能监视与诊断日志', '诊断 帧率 延迟 gfx'),

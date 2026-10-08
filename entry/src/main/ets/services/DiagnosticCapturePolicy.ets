@@ -263,7 +263,7 @@ export type DiagnosticCaptureProfile = 'selected' | 'full';
 // orientation self-tests; redaction v5 admits only platform decoder/GPU names
 // limited to [A-Za-z0-9 ._()/-] (64 characters).
 export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 10;
-export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 3;
+export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 4;
 export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 5;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
@@ -318,6 +318,8 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rdp', eventCode: 'rdp_drive' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_audio' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_graphics_negotiation' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_name_resolution' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_security_choice' },
 
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_presence' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_preflight' },

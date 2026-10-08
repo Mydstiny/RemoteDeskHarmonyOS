@@ -1,4 +1,5 @@
 import { connection } from '@kit.NetworkKit';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 import { parseEndpointHost } from './EndpointAddressPolicy';
 import { rdpDnsFallbackCandidates, rdpLocalNameEligible, rdpSearchDomainNames } from './RdpDnsFallbackPolicy';
 
@@ -50,6 +51,11 @@ export interface RdpNameResolution {
   via: RdpNameResolutionVia;
 }
 
+/** Steps tried, as the rdp_name_resolution generation bits. */
+const RESOLUTION_TRIED_DNS: number = 1;
+const RESOLUTION_TRIED_SUFFIX: number = 2;
+const RESOLUTION_TRIED_LOCAL: number = 4;
+
 async function networkSearchDomains(): Promise<string> {
   try {
     const handle: connection.NetHandle = await connection.getDefaultNet();
@@ -72,30 +78,48 @@ export async function resolveRdpHostCandidates(
   localResolver: (name: string) => Promise<string[]>,
   onStage: (stage: RdpNameResolutionVia) => void = (_stage: RdpNameResolutionVia): void => {}
 ): Promise<RdpNameResolution> {
+  const startedAt: number = Date.now();
+  let tried: number = 0;
+  const finish = (addresses: string[], via: RdpNameResolutionVia): RdpNameResolution => {
+    recordRdpNameResolution(addresses.length, via, tried, Date.now() - startedAt);
+    return { addresses: addresses, via: via };
+  };
   onStage('dns');
+  tried |= RESOLUTION_TRIED_DNS;
   const direct: string[] = await resolveRdpDnsFallback(host);
   if (direct.length > 0) {
-    return { addresses: direct, via: 'dns' };
+    return finish(direct, 'dns');
   }
   const suffixed: string[] = rdpSearchDomainNames(host, await networkSearchDomains());
   if (suffixed.length > 0) {
     onStage('dns-suffix');
+    tried |= RESOLUTION_TRIED_SUFFIX;
     for (let index = 0; index < suffixed.length; index++) {
       const found: string[] = await resolveRdpDnsFallback(suffixed[index], RDP_SEARCH_DOMAIN_TIMEOUT_MS);
       if (found.length > 0) {
-        return { addresses: found, via: 'dns-suffix' };
+        return finish(found, 'dns-suffix');
       }
     }
   }
   if (!rdpLocalNameEligible(host)) {
-    return { addresses: [], via: '' };
+    return finish([], '');
   }
   onStage('local');
+  tried |= RESOLUTION_TRIED_LOCAL;
   let local: string[] = [];
   try {
     local = rdpDnsFallbackCandidates(await localResolver(host.trim()));
   } catch (_error) {
     local = [];
   }
-  return { addresses: local, via: local.length > 0 ? 'local' : '' };
+  return finish(local, local.length > 0 ? 'local' : '');
+}
+
+/** How a name resolved, for the AI's log reading: counts and step codes only, never the name or an address. */
+function recordRdpNameResolution(found: number, via: RdpNameResolutionVia, tried: number, elapsedMs: number): void {
+  const viaCode: number = via === 'dns' ? 1 : via === 'dns-suffix' ? 2 : via === 'local' ? 3 : 0;
+  try {
+    recordDiagnosticEvent('connection.rdp', 'rdp_name_resolution', found > 0 ? 'succeeded' : 'failed',
+      0, tried, found, Math.max(0, elapsedMs), viaCode);
+  } catch (_error) { /* diagnostics never block a connection */ }
 }

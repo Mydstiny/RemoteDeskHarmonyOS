@@ -12,7 +12,7 @@ export type DiagnosticAiAppActionId =
   | 'settings.keyboard' | 'settings.keyboardBehavior' | 'settings.keyboardShortcuts' | 'settings.keyboardFunctions'
   | 'settings.keyboardCustom' | 'settings.harmonyShortcut' | 'settings.secretVisibility'
   | 'settings.remotePortrait' | 'settings.remoteWheel' | 'settings.remotePinch' | 'settings.controlBar'
-  | 'settings.rdpDisplay' | 'settings.sshSkin' | 'settings.diagnosticAi' | 'settings.aiHosts'
+  | 'settings.rdpDisplay' | 'settings.rdpSecurity' | 'rdp.restoreSecurity' | 'settings.sshSkin' | 'settings.diagnosticAi' | 'settings.aiHosts'
   | 'settings.aiDisplay' | 'settings.aiData' | 'settings.aiInstall' | 'pro.phonePasskey' | 'pro.securityKey'
   | 'settings.appIcon' | 'settings.keyVault' | 'settings.rdpCredentialEditor' | 'settings.proBadge'
   | 'diagnosticAi.assistant' | 'diagnosticAi.usage' | 'diagnosticAi.personalization' | 'diagnosticAi.sessions'
@@ -26,7 +26,8 @@ export type DiagnosticAiAppActionId =
   | 'session.privacy' | 'session.audio' | 'session.clipboard' | 'session.filePaste' | 'session.resetCanvas'
   | 'session.rotate' | 'session.portrait' | 'session.display' | 'session.quality' | 'session.codec'
   | 'session.cursor' | 'session.browseMode' | 'session.relativeMouse' | 'session.reverseWheel'
-  | 'session.swapButtons' | 'session.diagnostics' | 'session.disconnect';
+  | 'session.swapButtons' | 'session.diagnostics' | 'session.flipVertical' | 'session.flipReset'
+  | 'session.markUpsideDown' | 'session.disconnect';
 
 export class DiagnosticAiAppAction {
   id: DiagnosticAiAppActionId;
@@ -86,7 +87,9 @@ const RULES: ActionRule[] = [
   new ActionRule('ai.config', '打开 AI 配置', [['AI', 'ai', '模型', 'Provider', '服务商'], ['配置', '设置', '密钥', 'API Key', 'apikey']],
     'execute', false, ['远程 AI', 'AI 主机', 'Pi 主机', 'pi-gui', '电脑端']),
 
-  new ActionRule('settings.account', '打开账号设置', [['账号', '登录', '账户'], ['设置', '管理', '切换']]),
+  // An RDP sign-in method is not the app's account.
+  new ActionRule('settings.account', '打开账号设置', [['账号', '登录', '账户'], ['设置', '管理', '切换']], 'execute', false,
+    ['TLS 兼容登录', 'TLS 登录', 'NLA 登录']),
   new ActionRule('settings.appearance', '打开外观设置', [['外观', '主题', '颜色', '字体']]),
   new ActionRule('settings.wallpaper', '打开壁纸设置', [['壁纸', '背景']]),
   new ActionRule('settings.haloColor', '打开沉浸光晕设置', [['光晕', '沉浸光感', '光感']]),
@@ -106,6 +109,13 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.remotePinch', '打开双指缩放设置', [['双指', '捏合', '缩放']]),
   new ActionRule('settings.controlBar', '打开会话控制栏设置', [['控制栏', '会话栏', '工具栏显示']]),
   new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP'], ['分辨率', '显示缩放', '显示设置']]),
+  // The Windows RDP section of 设置: certificate preflight, TLS 兼容登录 and restoring per-computer security choices.
+  new ActionRule('settings.rdpSecurity', '打开 Windows RDP 安全设置', [['RDP', 'Windows 远程桌面'],
+    ['TLS 兼容登录', '证书预检', '安全设置', '旧版 TLS', '默认安全设置', '降级']]),
+  // Raises security only; its own dialog asks first, and it says so when nothing was lowered.
+  new ActionRule('rdp.restoreSecurity', '恢复各电脑的默认 RDP 安全设置',
+    [['恢复各电脑的默认安全设置', '恢复默认安全设置', '恢复默认的安全设置', '撤销所有降级', '取消所有降级', '撤销安全降级',
+      '取消安全降级']]),
   new ActionRule('settings.sshSkin', '打开 SSH 外观设置', [['SSH', '终端'], ['皮肤', '外观']]),
   new ActionRule('settings.diagnosticAi', '打开 AI 助理设置', [['AI 助理', 'AI助理', '诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
   // 远程 AI on its own (or its hosts and pairing) is its host page; its other pages take the steps about them.
@@ -174,6 +184,14 @@ const RULES: ActionRule[] = [
   new ActionRule('session.reverseWheel', '切换反向滚轮', [['反向滚轮', '滚轮反向']], 'inline'),
   new ActionRule('session.swapButtons', '切换鼠标按键', [['交换鼠标按键', '左右键']], 'inline'),
   new ActionRule('session.diagnostics', '打开会话诊断', [['会话诊断', '性能面板', '连接诊断']], 'floating'),
+  // 画面翻转 (RustDesk on a HarmonyOS PC): a manual flip, its reset, and the mark that tells the log what the user sees.
+  new ActionRule('session.flipVertical', '画面上下翻转（鸿蒙 PC 的 RustDesk 画面倒置时用，再执行一次恢复）',
+    [['上下翻转', '画面倒置', '画面颠倒', '上下颠倒', '画面倒过来', '翻转画面']], 'inline', false,
+    ['日志标记', '复位', '取消翻转', '左右']),
+  new ActionRule('session.flipReset', '复位画面翻转（取消所有手动翻转）', [['画面翻转', '翻转'], ['复位', '取消翻转', '取消手动翻转']],
+    'inline'),
+  new ActionRule('session.markUpsideDown', '日志标记：画面上下倒置（写入正在抓取的 RustDesk 日志）',
+    [['日志标记', '标记'], ['倒置', '颠倒', '倒过来']], 'inline', false, ['正常', '镜像']),
   new ActionRule('session.disconnect', '断开远程连接', [['断开连接', '退出远程会话']], 'execute', true)
 ];
 

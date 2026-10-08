@@ -10034,6 +10034,16 @@ struct HostListPage {
     }
   }
 
+  /** The AI's 恢复各电脑的默认 RDP 安全设置: the same confirmation as the settings row, or why there is nothing to do. */
+  private restoreRdpSecurityForAssistant(): void {
+    this.refreshRdpSecurityDowngradeHosts();
+    if (this.rdpSecurityDowngradeHosts <= 0) {
+      promptAction.showToast({ message: '没有电脑单独改用旧版 TLS 或 TLS 登录，已经是默认安全设置', duration: 2600 });
+      return;
+    }
+    this.confirmRestoreRdpSecurityDowngrades();
+  }
+
   private confirmRestoreRdpSecurityDowngrades(): void {
     promptAction.showDialog({
       title: '恢复默认安全设置？',
@@ -20554,6 +20564,7 @@ struct HostListPage {
       case 'clone': return this.appCloneLocalOnly && this.appCloneIsClone;
       case 'rdpAdvanced': return this.rdpAdvancedDisplayVisible;
       case 'rdpBasic': return !this.rdpAdvancedDisplayVisible;
+      case 'rdpDowngrades': return this.rdpSecurityDowngradeHosts > 0;
       case 'aiPro': return this.aiProVisible;
       case 'proManager': return this.proManagerVisible;
       case 'aiConfig': return this.diagnosticAiConfigVisible;
@@ -20607,6 +20618,26 @@ struct HostListPage {
   }
 
   /** A sheet opens directly (the same app action the AI uses); an inline setting opens its section in place. */
+  /**
+   * An AI step pointed at a section of 设置 (not a page of its own): open the settings (the settings tab, or the
+   * settings panel on a PC) with that section unfolded.
+   */
+  private openSettingsSectionForAssistant(section: string): void {
+    this.settingsSearchQuery = '';
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      if (!this.showSettingsPanel) {
+        this.settingsValuesRevision++;
+        this.openSheetSafely((): void => { this.showSettingsPanel = true; });
+      }
+    } else {
+      this.curTab = 3;
+      this.tabsCtrl.changeIndex(3);
+    }
+    this.settingsScrollGeneration++;
+    if (!this.settingsSectionExpanded(section)) { this.toggleSettingsSection(section); }
+    this.scrollSettingsSectionIntoView(section, SETTINGS_ACCORDION_ANIMATION_MS + 240);
+  }
+
   private openSettingsSearchEntry(entry: SettingsSearchEntry): void {
     if (entry.action.startsWith('ai:')) {
       this.openDiagnosticAiSection(Number(entry.action.substring(3)));
@@ -22544,6 +22575,8 @@ struct HostListPage {
       case 'settings.remotePinch': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM); return;
       case 'settings.controlBar': this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR); return;
       case 'settings.rdpDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_DISPLAY_PROFILE); return;
+      case 'settings.rdpSecurity': this.openSettingsSectionForAssistant(SETTINGS_SECTION_RDP); return;
+      case 'rdp.restoreSecurity': this.restoreRdpSecurityForAssistant(); return;
       case 'settings.sshSkin': this.openSettingsLeafSheet(SETTINGS_SHEET_SSH_SKIN); return;
       case 'settings.diagnosticAi': this.openDiagnosticAiSection(0); return;
       case 'diagnosticAi.assistant': this.openDiagnosticAiSection(1); return;

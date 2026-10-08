@@ -6528,7 +6528,7 @@ struct RemoteDesktop {
         imageQuality: this.rustdeskImageQuality, codec: this.rustdeskCodec, showLocalCursor: this.rustdeskShowLocalCursor,
         browseMode: this.rustdeskBrowseMode, relativeMouseMode: this.rustdeskRelativeMouseMode,
         reverseWheel: this.reverseWheelForCurrentProtocol(), swapMouseButtons: this.rustdeskSwapMouseButtons,
-        diagnosticsEnabled: this.rustdeskShowDiagnostics
+        diagnosticsEnabled: this.rustdeskShowDiagnostics, desktopFlipMode: this.rustDeskDesktopFlipMode
       });
     }
     if (this.isRdpRemoteSession()) {
@@ -6541,7 +6541,7 @@ struct RemoteDesktop {
         case 'session.portrait': this.toggleRemotePortraitDisplay(); return true;
         case 'session.resetCanvas': this.resetCanvasTransformFromMenu(); return true;
         case 'session.disconnect': this.handleRdpToolbarAction('disconnect'); return true;
-        default: return false;
+        default: return this.sessionAiActionUnavailable(action);
       }
     }
     if (this.currentProtocolName() === 'vnc') {
@@ -6553,10 +6553,17 @@ struct RemoteDesktop {
         case 'session.portrait': vnc.onTogglePortraitDisplay(); return true;
         case 'session.resetCanvas': vnc.onResetCanvas(); return true;
         case 'session.disconnect': vnc.onDisconnect(); return true;
-        default: return false;
+        default: return this.sessionAiActionUnavailable(action);
       }
     }
     return false;
+  }
+
+  /** Another protocol's toolbar action (画面翻转 is RustDesk's): say so here; a page action still goes to the host list. */
+  private sessionAiActionUnavailable(action: DiagnosticAiAppActionId): boolean {
+    if (!action.startsWith('session.')) { return false; }
+    promptAction.showToast({ message: '当前连接没有这个操作', duration: 2000 });
+    return true;
   }
 
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
