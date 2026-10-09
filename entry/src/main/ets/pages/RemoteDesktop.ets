@@ -1,5 +1,16 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
 import { AI_SESSION_ASK, AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
+import {
+  RDP_MULTIMON_FIRST_FRAME_TIMEOUT_MS,
+  RdpMonitorRect,
+  RdpMultimonLayout,
+  nextRdpMonitorFocus,
+  normalizeRdpMultimonCount,
+  rdpMonitorFocusTransform,
+  rdpMonitorLabel,
+  rdpMonitorRects,
+  rdpMultimonLayout
+} from '../services/RdpMultiMonitorPolicy';
 import { SessionScreenshotSheet } from '../components/pro/evidence/SessionScreenshotSheet';
 import {
   PRO_SESSION_EVIDENCE_FEATURE,
@@ -1379,6 +1390,14 @@ struct RemoteDesktop {
   @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
   /** PC 自适应: renegotiate the remote resolution with every window size (off: the whole screen's size). */
   @StorageLink('rdpFollowWindow') rdpFollowWindow: boolean = false;
+  /** Pro 多显示器 (experimental): 0 off, or 2–4 monitors declared to Windows on the next connection. */
+  @StorageLink('rdpMultiMonitorCount') rdpMultiMonitorCount: number = 0;
+  /** The monitor the local view shows in a multi-monitor session (-1: all). */
+  @State rdpMonitorFocus: number = -1;
+  /** The layout of the running multi-monitor session (null: single screen). */
+  @State rdpMultimonActive: RdpMultimonLayout | null = null;
+  private rdpMultimonStartedAt: number = 0;
+  private rdpMultimonFallbackAsked: boolean = false;
   @StorageLink('rdpDesktopScaleMode') rdpDesktopScaleMode: string = 'auto';
   @StorageLink('rdpDesktopScalePercent') rdpDesktopScalePercent: number = 100;
   @StorageLink('rdpDeviceScaleMode') rdpDeviceScaleMode: string = 'auto';
@@ -5809,6 +5828,7 @@ struct RemoteDesktop {
       const savedRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
       this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRemoteUiScale);
       this.rdpFollowWindow = prefs.getSync('rdpFollowWindow', false) === true;
+      this.rdpMultiMonitorCount = normalizeRdpMultimonCount(prefs.getSync('rdpMultiMonitorCount', 0) as number);
       const savedDesktopMode: string = prefs.getSync('rdpDesktopScaleMode', 'auto') as string;
       this.rdpDesktopScaleMode = savedDesktopMode === 'custom' || savedDesktopMode === 'preset' ?
         savedDesktopMode : (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'preset');
@@ -6348,6 +6368,73 @@ struct RemoteDesktop {
     }
   }
 
+  // ---------- 多显示器 (Pro 高级显示, experimental) ----------
+
+  /** Hosts whose multi-monitor connection showed no picture: they connect with one screen until it is set again. */
+  private rdpMultimonFallbackHosts(): string[] {
+    const raw: string = AppStorage.get<string>('rdpMultimonFallbackHosts') ?? '';
+    return raw === '' ? [] : raw.split('|');
+  }
+
+  private rdpMultimonCountFor(host: RemoteHost): number {
+    if (!this.rdpAdvancedDisplayDecision().executable) { return 0; }
+    if (this.rdpMultimonFallbackHosts().indexOf(host.id) >= 0) { return 0; }
+    const saved: number = normalizeRdpMultimonCount(this.rdpMultiMonitorCount);
+    const perHost: number = host.displayConfig.multiMonitor ?
+      normalizeRdpMultimonCount(host.displayConfig.monitorCount >= 2 ? host.displayConfig.monitorCount : 2) : 0;
+    return Math.max(saved, perHost);
+  }
+
+  private setRdpMultimonPreference(count: number): void {
+    this.bumpRdpControlCenterSelectionRevision();
+    this.rdpMultiMonitorCount = normalizeRdpMultimonCount(count);
+    this.persistSessionPref('rdpMultiMonitorCount', this.rdpMultiMonitorCount);
+    // Choosing it again also clears the one-screen fallback of every host.
+    AppStorage.setOrCreate<string>('rdpMultimonFallbackHosts', '');
+    promptAction.showToast({ message: this.rdpMultiMonitorCount >= 2 ?
+      '下次连接时向 Windows 声明 ' + this.rdpMultiMonitorCount.toString() + ' 块屏幕' : '下次连接改回单屏',
+      duration: 1800 });
+  }
+
+  /** The local view shows one monitor (or all of them, -1); input follows the same transform. */
+  private setRdpMonitorFocus(index: number): void {
+    const layout: RdpMultimonLayout | null = this.rdpMultimonActive;
+    if (layout === null || this.rendererHandle <= 0) { return; }
+    const rects: RdpMonitorRect[] = rdpMonitorRects(layout);
+    const rect: RdpMonitorRect | null = index >= 0 && index < rects.length ? rects[index] : null;
+    this.rdpMonitorFocus = rect === null ? -1 : index;
+    const viewport: CanvasViewport = this.currentCanvasViewport(true);
+    this.canvasTransform = rdpMonitorFocusTransform(viewport, rect);
+    this.canvasTransformInitialized = true;
+    this.refreshCanvasTransformModified(viewport);
+    this.applyCanvasTransform();
+    promptAction.showToast({ message: rdpMonitorLabel(this.rdpMonitorFocus), duration: 1000 });
+  }
+
+  private cycleRdpMonitorFocus(): void {
+    const layout: RdpMultimonLayout | null = this.rdpMultimonActive;
+    if (layout === null) { return; }
+    this.setRdpMonitorFocus(nextRdpMonitorFocus(this.rdpMonitorFocus, layout.count));
+  }
+
+  /** No picture 15 s after connecting with several monitors: offer to go back and use one screen. */
+  private async offerRdpMultimonFallback(): Promise<void> {
+    if (this.rdpMultimonFallbackAsked || this.pendingHost === null) { return; }
+    this.rdpMultimonFallbackAsked = true;
+    const host: RemoteHost = this.pendingHost;
+    const answer = await this.getUIContext().getPromptAction().showDialog({
+      title: '多显示器没有出画面',
+      message: '这台 Windows 在声明多块屏幕后还没有发来画面。有些 Windows 版本不支持远程多显示器。可以返回并改用单屏重新连接这台主机。',
+      buttons: [{ text: '继续等待', color: this.pal().text2 }, { text: '返回并改用单屏', color: this.accentColor }]
+    });
+    if (answer.index !== 1 || this.pendingHost === null || this.pendingHost.id !== host.id) { return; }
+    const hosts: string[] = this.rdpMultimonFallbackHosts().filter((id: string): boolean => id !== host.id);
+    hosts.push(host.id);
+    AppStorage.setOrCreate<string>('rdpMultimonFallbackHosts', hosts.join('|'));
+    this.disconnectAndCleanup('rdp-multimon-fallback');
+    this.goBack();
+  }
+
   private setRdpFollowWindowPreference(on: boolean): void {
     this.bumpRdpControlCenterSelectionRevision();
     this.cancelRdpDynamicLayout('follow-window-preference');
@@ -6679,6 +6766,7 @@ struct RemoteDesktop {
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
     if (action === 'ai') { this.openSessionAi(); return; }
     if (action === 'screenshot') { this.openSessionScreenshot(); return; }
+    if (action === 'monitor') { this.cycleRdpMonitorFocus(); return; }
     if (action === 'portrait') { this.toggleRemotePortraitDisplay(); return; }
     if (action === 'control') { this.toggleRdpControlCenter(); return; }
     if (action === 'fileTransfer') { this.openFileTransferPanel(); return; }
@@ -11504,6 +11592,26 @@ struct RemoteDesktop {
         this.resolveRdpDisplayLayout(this.renderWidthPx, this.renderHeightPx,
           shouldUseRdpInitialDpiScale(this.isDesktopDevice, resolutionId), resolutionId,
           this.rdpCustomWidth, this.rdpCustomHeight, allowAdvancedDisplay) : null;
+      const multimonCount: number = this.rdpMultimonCountFor(host);
+      if (multimonCount >= 2) {
+        // Each monitor gets the chosen preset (or 1920 × 1080 with 自适应); dynamic layout is off for the session.
+        const fixed: boolean = resolutionId !== 'auto' && rdpDisplay !== null;
+        const layout: RdpMultimonLayout = rdpMultimonLayout(multimonCount,
+          fixed && rdpDisplay !== null ? rdpDisplay.width : 1920, fixed && rdpDisplay !== null ? rdpDisplay.height : 1080);
+        this.rdpMultimonActive = layout;
+        this.rdpMultimonStartedAt = Date.now();
+        this.rdpMultimonFallbackAsked = false;
+        this.rdpMonitorFocus = -1;
+        hilog.info(RD_DOMAIN, RD_TAG, 'RDP multimon count=' + layout.count.toString() + ' monitor=' +
+          layout.monitorWidth.toString() + 'x' + layout.monitorHeight.toString() + ' downgraded=' +
+          (layout.downgraded ? '1' : '0'));
+        if (layout.downgraded) {
+          promptAction.showToast({ message: '整个桌面太大，每块屏幕改为 1920 × 1080', duration: 2200 });
+        }
+        return { width: layout.monitorWidth, height: layout.monitorHeight, colorDepth,
+          multiMonitor: true, monitorCount: layout.count };
+      }
+      this.rdpMultimonActive = null;
       if (pcAdaptive) {
         if (rdpDisplay !== null) {
           hilog.info(RD_DOMAIN, RD_TAG, 'RDP density-aware adaptive size=' +
@@ -13219,7 +13327,8 @@ struct RemoteDesktop {
   }
 
   private requestRdpDynamicLayoutNow(reason: string): boolean {
-    if (!this.canRequestRdpDynamicLayout()) {
+    // A multi-monitor desktop keeps the layout it declared (Display Control would collapse it to one screen).
+    if (!this.canRequestRdpDynamicLayout() || this.rdpMultimonActive !== null) {
       return false;
     }
     const resolutionId: string = normalizeRdpResolutionId(
@@ -14891,6 +15000,10 @@ struct RemoteDesktop {
         return;
       }
       const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
+      if (this.rdpMultimonActive !== null && stats.renderedPaintCount <= 0 &&
+        Date.now() - this.rdpMultimonStartedAt > RDP_MULTIMON_FIRST_FRAME_TIMEOUT_MS) {
+        void this.offerRdpMultimonFallback();
+      }
       if (shouldAttemptInitialRdpDynamicUpgrade(stats.displayControlReady,
         stats.displayControlDisabled, stats.displayChannelRequestCount) &&
         this.rdpResolutionFollowsWindow() && this.canRequestRdpDynamicLayout()) {
@@ -24912,6 +25025,7 @@ struct RemoteDesktop {
               availableHeight: this.rdpToolbarAvailableHeight(),
               aiVisible: this.sessionAiVisible(),
               screenshotVisible: this.sessionScreenshotVisible(),
+              monitorLabel: this.rdpMultimonActive === null ? '' : rdpMonitorLabel(this.rdpMonitorFocus),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(this.rdpToolbarAvailableHeight())
@@ -24934,6 +25048,7 @@ struct RemoteDesktop {
               viewportWidth: this.remoteSidebarWindowWidth,
               aiVisible: this.sessionAiVisible(),
               screenshotVisible: this.sessionScreenshotVisible(),
+              monitorLabel: this.rdpMultimonActive === null ? '' : rdpMonitorLabel(this.rdpMonitorFocus),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(80).position({ x: 0, y: 0 })
@@ -25003,6 +25118,11 @@ struct RemoteDesktop {
             onFollowWindow: (on: boolean): void => {
               this.setRdpFollowWindowPreference(on);
             },
+            multimonCount: this.rdpMultiMonitorCount,
+            multimonActiveCount: this.rdpMultimonActive === null ? 1 : (this.rdpMultimonActive as RdpMultimonLayout).count,
+            monitorFocus: this.rdpMonitorFocus,
+            onMultimonCount: (count: number): void => { this.setRdpMultimonPreference(count); },
+            onMonitorFocus: (index: number): void => { this.setRdpMonitorFocus(index); },
             onDesktopScalePercent: (value: string): void => {
               this.setRdpDesktopScalePercent(value);
             },

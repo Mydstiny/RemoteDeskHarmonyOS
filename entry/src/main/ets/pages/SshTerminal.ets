@@ -9308,6 +9308,8 @@ struct SshTerminal {
       return '会话已切换';
     }
     if (!ProEntries.visible('pro.workspaces')) { return 'Pro 不可用'; }
+    // load() is a no-op once this account's workspaces are read (a PC session window may not have read them yet).
+    WorkspaceStore.getInstance().load();
     const saved: Workspace | null = WorkspaceStore.getInstance().get(run.workspaceId);
     if (saved === null) { return '工作区已删除或账号已切换'; }
     if (run.workspaceUpdatedAt > 0 && saved.updatedAt !== run.workspaceUpdatedAt) { return '工作区已修改'; }

@@ -65,6 +65,12 @@ export struct RdpControlCenter {
   @Prop remoteUiScale: string = 'auto';
   /** PC 自适应 renegotiates with every window size (off: the whole screen's size, scaled into the window). */
   @Prop followWindow: boolean = false;
+  /** Pro 多显示器: the saved choice (0, 2–4), the running session's monitor count (1: single) and the local view. */
+  @Prop multimonCount: number = 0;
+  @Prop multimonActiveCount: number = 1;
+  @Prop monitorFocus: number = -1;
+  onMultimonCount: (count: number) => void = (_count: number): void => {};
+  onMonitorFocus: (index: number) => void = (_index: number): void => {};
   @Prop desktopScaleMode: string = 'auto';
   @Prop desktopScalePercent: number = 100;
   @Prop colorDepth: number = 32;
@@ -245,6 +251,43 @@ export struct RdpControlCenter {
       .onClick(action)
   }
 
+  /** 多显示器 (实验): how many monitors to declare next time, and which one to look at now. */
+  @Builder private multimonSection() {
+    Divider().color(this.pal().divider)
+    Text('多显示器（实验）').fontSize(11).fontColor(this.pal().text2)
+      .width('100%').margin({ top: 10, bottom: 6 })
+    Scroll() {
+      Row({ space: 6 }) {
+        this.choice('关闭', !(this.multimonCount >= 2), (): void => { this.onMultimonCount(0); })
+        this.choice('2 块屏幕', this.multimonCount === 2, (): void => { this.onMultimonCount(2); })
+        this.choice('3 块屏幕', this.multimonCount === 3, (): void => { this.onMultimonCount(3); })
+        this.choice('4 块屏幕', this.multimonCount === 4, (): void => { this.onMultimonCount(4); })
+      }
+    }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+    Text('下次连接时向 Windows 声明多块并排的屏幕，远程程序可以拖到第二块屏；本地可以切换看哪一块。需要 Windows 专业版或服务器版，'
+      + '分辨率不跟随窗口；整个桌面太大时每块屏幕降为 1920 × 1080。')
+      .fontSize(9).fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+    if (this.multimonActiveCount >= 2) {
+      Text('现在看').fontSize(11).fontColor(this.pal().text2).width('100%').margin({ bottom: 6 })
+      Scroll() {
+        Row({ space: 6 }) {
+          this.choice('全部', !(this.monitorFocus >= 0), (): void => { this.onMonitorFocus(-1); })
+          ForEach(this.monitorIndexes(), (index: number): void => {
+            this.choice('屏幕 ' + (index + 1).toString(), this.monitorFocus === index,
+              (): void => { this.onMonitorFocus(index); })
+          }, (index: number): string => index.toString())
+        }
+      }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        .margin({ bottom: 10 })
+    }
+  }
+
+  private monitorIndexes(): number[] {
+    const indexes: number[] = [];
+    for (let i = 0; i < this.multimonActiveCount; i++) { indexes.push(i); }
+    return indexes;
+  }
+
   @Builder private followWindowRow() {
     this.toggleRow('分辨率跟随窗口', this.followWindow ? '窗口大小一变，远端分辨率随之改变' :
       '关闭：远端用整块屏幕的分辨率，窗口缩放时按比例显示',
@@ -411,6 +454,7 @@ export struct RdpControlCenter {
           if (this.isDesktopDevice && this.resolutionSelected() === 'auto') {
             this.followWindowRow()
           }
+          this.multimonSection()
         } else {
           Text('Windows 远端分辨率').fontSize(11).fontColor(this.pal().text2)
             .width('100%').margin({ bottom: 6 })

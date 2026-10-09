@@ -127,7 +127,7 @@ function sessionEvidence(): ProFeature {
 }
 function rdpAdvancedDisplay(): ProFeature {
   const feature = planned(PRO_RDP_ADVANCED_DISPLAY_FEATURE, 'RDP 高级显示方案',
-    '自定义远端桌面宽高与 Windows 100–500% 界面缩放，并按设备保存显示方案。');
+    '自定义远端桌面宽高与 Windows 100–500% 界面缩放，并按设备保存显示方案；多显示器（实验）：向 Windows 声明 2–4 块屏幕，本地切换看哪一块。');
   feature.availability = 'available';
   feature.protocols = ['rdp'];
   feature.capabilities = ['rdp.displayControl'];
@@ -225,7 +225,8 @@ export function proFeatureProgress(id: string): string {
         '不支持的设备只能保存和打包 · 待手机、平板、PC 验收';
     case 'pro.hostManagement': return '已上线（试用） · 分组、标签、批量操作与导入导出在手机、平板和鸿蒙 PC 模拟器上验收通过';
     case PRO_RDP_ADVANCED_DISPLAY_FEATURE:
-      return '已上线（试用） · 自定义尺寸与 Windows 缩放已在作者的 Windows 上可用；不同 Windows 版本和显示器组合还在逐一验证';
+      return '已上线（试用） · 自定义尺寸与 Windows 缩放已在作者的 Windows 上可用；不同 Windows 版本和显示器组合还在逐一验证 · ' +
+        '多显示器是实验功能：需要 Windows 专业版或服务器版逐一实测，PC 多窗口多屏（每块本地屏一个窗口）要等鸿蒙 PC 真机和外接显示器';
     case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE:
       return '已上线（试用） · 能否改分辨率取决于被控端的 RustDesk 版本、显示器和权限，各种组合还在逐一验证';
     case 'pro.feedback': return '暂不开放 · Pro 专属畅联群与 QQ 群已准备好，开放时间另行通知';

@@ -26,7 +26,8 @@ import {
 } from '../../services/RdpSessionSidebarPolicy';
 
 export type RdpToolbarAction = 'control' | 'fileTransfer' | 'keyboard' | 'shortcuts' |
-  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect' | 'ai' | 'screenshot';
+  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect' | 'ai' | 'screenshot' |
+  'monitor';
 
 interface RdpToolbarItem {
   action: RdpToolbarAction;
@@ -53,6 +54,8 @@ export struct RdpSessionToolbar {
   @Prop aiVisible: boolean = false;
   /** Pro 截屏给 AI 看: its button sits right before 刷新. */
   @Prop screenshotVisible: boolean = false;
+  /** Pro 多显示器: the monitor in view ('全部屏幕', '屏幕 1', …); '' hides the switch. A tap shows the next one. */
+  @Prop monitorLabel: string = '';
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   /** The session window's width (vp); 0 while unknown. */
   @Prop viewportWidth: number = 0;
@@ -83,6 +86,9 @@ export struct RdpSessionToolbar {
     ];
     if (this.aiVisible) {
       items.splice(1, 0, { action: 'ai', label: 'AI 助理', dangerous: false });
+    }
+    if (this.monitorLabel !== '') {
+      items.splice(1, 0, { action: 'monitor', label: this.monitorLabel, dangerous: false });
     }
     if (this.screenshotVisible) {
       const refresh: number = items.findIndex((item: RdpToolbarItem): boolean => item.action === 'refresh');
@@ -118,6 +124,7 @@ export struct RdpSessionToolbar {
     if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
     if (action === 'ai') { return $r('sys.symbol.wand_and_stars'); }
     if (action === 'screenshot') { return $r('sys.symbol.camera_fill'); }
+    if (action === 'monitor') { return $r('sys.symbol.rectangle_on_rectangle'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 

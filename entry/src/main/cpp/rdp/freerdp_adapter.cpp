@@ -38,6 +38,7 @@
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_gfx_wire_evidence.h"
 #include "rdp_keymap.h"
+#include "rdp_multimon_policy.h"
 #include "rdp_negotiation_parser.h"
 #include "rdp_network_action_gate.h"
 #include "rdp_network_recovery_policy.h"
@@ -3121,6 +3122,7 @@ static bool revokeRdpCallbackSources(
         context->update->BeginPaint = nullptr;
         context->update->EndPaint = nullptr;
         context->update->DesktopResize = nullptr;
+        context->update->RemoteMonitors = nullptr;
     }
     if (context->graphics != nullptr &&
         context->graphics->Pointer_Prototype != nullptr) {
@@ -5867,6 +5869,8 @@ BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
 }
 
 // ---- GDI BeginPaint/EndPaint — 首帧上屏 (BGRA raw → GLRenderer) ----
+static BOOL rdpCbRemoteMonitors(rdpContext* context, UINT32 count, const MONITOR_DEF* monitors);
+
 BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     auto callbackLease = acquireRdpCallbackInstance(instance);
     if (!callbackLease) return FALSE;
@@ -5945,6 +5949,7 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     instance->update->BeginPaint = cbBeginPaint;
     instance->update->EndPaint = cbEndPaint;
     instance->update->DesktopResize = cbDesktopResize;
+    instance->update->RemoteMonitors = rdpCbRemoteMonitors;
     self->impl_->gdiInitialized.store(true, std::memory_order_release);
     self->impl_->paintCount.store(0, std::memory_order_release);
     self->impl_->firstPaintUs.store(0, std::memory_order_release);
@@ -6251,6 +6256,19 @@ BOOL FreeRdpAdapter::cbEndPaintWithExpectedToken(
     sinkLease = {};
     if (telemetry) {
         telemetry(telemetryWidth, telemetryHeight, telemetryBytes, telemetrySubmitted);
+    }
+    return TRUE;
+}
+
+/** D0: the monitor layout Windows reports back (TS_MONITOR_LAYOUT_PDU), logged for the multi-monitor experiment. */
+static BOOL rdpCbRemoteMonitors(rdpContext* context, UINT32 count, const MONITOR_DEF* monitors) {
+    (void)context;
+    OH_LOG_INFO(LOG_APP, "[RDP-MULTIMON] server layout count=%{public}u", count);
+    for (UINT32 i = 0; monitors != nullptr && i < count && i < 16; i++) {
+        OH_LOG_INFO(LOG_APP,
+            "[RDP-MULTIMON] server monitor[%{public}u] left=%{public}d top=%{public}d right=%{public}d"
+            " bottom=%{public}d flags=%{public}u",
+            i, monitors[i].left, monitors[i].top, monitors[i].right, monitors[i].bottom, monitors[i].flags);
     }
     return TRUE;
 }
@@ -8388,9 +8406,48 @@ void FreeRdpAdapter::connectThreadFunc(
                     RdpGatewayPolicy::gatewayTransportName(route.gatewayTransport));
     }
 
-    // 多显示器当前会导致部分 Windows 会话只建连不出首帧, 先固定单屏稳定路径。
-    if (cfg.multiMonitor) {
-        OH_LOG_WARN(LOG_APP, "[RDP] 多显示器配置已忽略, 使用单屏稳定视频路径 (requested monitorCount=%{public}d)",
+    // 多显示器 (Pro, opt-in): 2–4 monitors side by side, primary first. Some Windows hosts were seen to connect without
+    // a first frame with several monitors, so ArkTS offers one screen after 15 s without a picture. Dynamic layout
+    // (Display Control) sends a single monitor and would collapse the desktop, so it is off for this session.
+    const RdpMultimonLayout multimon = RdpMultimonPolicy::Resolve(cfg.multiMonitor, cfg.monitorCount,
+                                                                  cfg.width, cfg.height);
+    if (multimon.count >= 2) {
+        freerdp_settings_set_bool(s, FreeRDP_UseMultimon, TRUE);
+        freerdp_settings_set_bool(s, FreeRDP_ForceMultimon, FALSE);
+        freerdp_settings_set_bool(s, FreeRDP_SupportMonitorLayoutPdu, TRUE);
+        freerdp_settings_set_bool(s, FreeRDP_SupportDisplayControl, FALSE);
+        freerdp_settings_set_bool(s, FreeRDP_DynamicResolutionUpdate, FALSE);
+        bool monitorsWritten = freerdp_settings_set_uint32(s, FreeRDP_MonitorCount,
+                                                           static_cast<UINT32>(multimon.count)) == TRUE;
+        for (int i = 0; monitorsWritten && i < multimon.count; i++) {
+            auto* monitor = static_cast<rdpMonitor*>(
+                freerdp_settings_get_pointer_array_writable(s, FreeRDP_MonitorDefArray, static_cast<size_t>(i)));
+            if (monitor == nullptr) { monitorsWritten = false; break; }
+            *monitor = rdpMonitor {};
+            monitor->x = i * multimon.monitorWidth;
+            monitor->y = 0;
+            monitor->width = multimon.monitorWidth;
+            monitor->height = multimon.monitorHeight;
+            monitor->is_primary = i == 0 ? 1 : 0;
+            monitor->orig_screen = static_cast<UINT32>(i);
+            monitor->attributes.desktopScaleFactor = 100;
+            monitor->attributes.deviceScaleFactor = 100;
+        }
+        if (monitorsWritten) {
+            freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth, static_cast<UINT32>(multimon.desktopWidth));
+            freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, static_cast<UINT32>(multimon.desktopHeight));
+            OH_LOG_INFO(LOG_APP,
+                "[RDP-MULTIMON] request count=%{public}d monitor=%{public}dx%{public}d desktop=%{public}dx%{public}d"
+                " downgraded=%{public}d",
+                multimon.count, multimon.monitorWidth, multimon.monitorHeight,
+                multimon.desktopWidth, multimon.desktopHeight, multimon.downgraded ? 1 : 0);
+        } else {
+            freerdp_settings_set_bool(s, FreeRDP_UseMultimon, FALSE);
+            freerdp_settings_set_uint32(s, FreeRDP_MonitorCount, 0);
+            OH_LOG_WARN(LOG_APP, "[RDP-MULTIMON] monitor array unavailable; single screen");
+        }
+    } else if (cfg.multiMonitor) {
+        OH_LOG_INFO(LOG_APP, "[RDP-MULTIMON] requested count=%{public}d is below 2; single screen",
                     cfg.monitorCount);
     }
 

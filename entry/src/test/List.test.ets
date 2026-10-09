@@ -32,6 +32,7 @@ import transferUserTextPolicyTest from './TransferUserTextPolicy.test';
 import hostHealthPolicyTest from './HostHealthPolicy.test';
 import sessionEvidencePolicyTest from './SessionEvidencePolicy.test';
 import workspaceStepPolicyTest from './WorkspaceStepPolicy.test';
+import rdpMultiMonitorPolicyTest from './RdpMultiMonitorPolicy.test';
 import remoteSessionMediaStatePolicyTest from './RemoteSessionMediaStatePolicy.test';
 import haloColorPolicyTest from './HaloColorPolicy.test';
 import remoteSessionCapabilityPolicyTest from './RemoteSessionCapabilityPolicy.test';
@@ -595,4 +596,5 @@ export default function testsuite() {
   hostHealthPolicyTest();
   sessionEvidencePolicyTest();
   workspaceStepPolicyTest();
+  rdpMultiMonitorPolicyTest();
 }
