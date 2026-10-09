@@ -109,6 +109,13 @@ function hostManagement(): ProFeature {
   feature.minApiVersion = 26;
   return feature;
 }
+function hostHealth(): ProFeature {
+  const feature = planned('pro.hostHealth', '主机健康中心',
+    '看懂主机为什么连不上：找不到主机、端口不通、超时、证书或指纹需要确认、对端不在线，分别用白话说明并给出下一步；保留每台主机最近 20 次检测记录，支持批量检测，AI 助理也能解读。');
+  feature.availability = 'available';
+  feature.protocols = ['rdp', 'ssh', 'vnc', 'rustdesk'];
+  return feature;
+}
 function rdpAdvancedDisplay(): ProFeature {
   const feature = planned(PRO_RDP_ADVANCED_DISPLAY_FEATURE, 'RDP 高级显示方案',
     '自定义远端桌面宽高与 Windows 100–500% 界面缩放，并按设备保存显示方案。');
@@ -155,6 +162,7 @@ export function proFeatures(): ProFeature[] {
       '把诊断结论、详细分析和建议步骤整理成邮件，诊断日志作为附件，确认后在邮件应用里发送。'),
     workspaces(),
     hostManagement(),
+    hostHealth(),
     rdpAdvancedDisplay(),
     rustDeskAdvancedDisplay(),
     personalization(),
@@ -199,6 +207,8 @@ export function proFeatureProgress(id: string): string {
     case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
     case 'pro.workspaces':
       return '已上线（试用） · 平板 SSH + RustDesk 实机通过 · PC 按布局摆放窗口待验证（作者还没有鸿蒙 PC 真机） · 手机屏幕小，默认关闭';
+    case 'pro.hostHealth':
+      return '已开发 · 试用开放 · 覆盖 RDP、SSH、VNC、RustDesk，Moonlight 稍后接入 · 待手机、平板、PC 验收';
     case 'pro.hostManagement': return '已上线（试用） · 分组、标签、批量操作与导入导出在手机、平板和鸿蒙 PC 模拟器上验收通过';
     case PRO_RDP_ADVANCED_DISPLAY_FEATURE:
       return '已上线（试用） · 自定义尺寸与 Windows 缩放已在作者的 Windows 上可用；不同 Windows 版本和显示器组合还在逐一验证';

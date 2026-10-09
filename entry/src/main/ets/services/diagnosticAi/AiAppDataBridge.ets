@@ -7,14 +7,18 @@ export class AiHostSummary {
   /** 0 unknown, 1 excellent … 5 bad (the last measured network). */
   health: number;
   latencyMs: number;
+  /** 主机健康中心 (Pro): the last check in words — state, why, how long ago; '' without one. */
+  healthCheck: string;
 
-  constructor(label: string, protocol: string, group: string, lastConnected: number, health: number, latencyMs: number) {
+  constructor(label: string, protocol: string, group: string, lastConnected: number, health: number, latencyMs: number,
+    healthCheck: string = '') {
     this.label = label;
     this.protocol = protocol;
     this.group = group;
     this.lastConnected = lastConnected;
     this.health = health;
     this.latencyMs = latencyMs;
+    this.healthCheck = healthCheck;
   }
 }
 
@@ -68,8 +72,11 @@ export function aiHostsText(hosts: AiHostSummary[], protocol: string): string {
     .sort((a: AiHostSummary, b: AiHostSummary): number => b.lastConnected - a.lastConnected).slice(0, 150)
     .map((h: AiHostSummary): string => h.label + ' | ' + aiProtocolName(h.protocol) + ' | ' + (h.group !== '' ? h.group : '未分组') +
       ' | ' + aiTimeText(h.lastConnected) + ' | ' + (HEALTH_WORDS[h.health] ?? '未知') +
-      (h.latencyMs > 0 ? '（' + h.latencyMs.toString() + ' ms）' : ''));
-  return '共 ' + shown.length.toString() + ' 台主机（' + counts.join('、') + '）。\n名称 | 协议 | 分组 | 最近连接 | 最近网络\n' + rows.join('\n');
+      (h.latencyMs > 0 ? '（' + h.latencyMs.toString() + ' ms）' : '') +
+      (h.healthCheck !== '' ? ' | ' + h.healthCheck : ''));
+  const checked: boolean = shown.some((h: AiHostSummary): boolean => h.healthCheck !== '');
+  return '共 ' + shown.length.toString() + ' 台主机（' + counts.join('、') + '）。\n名称 | 协议 | 分组 | 最近连接 | 最近网络' +
+    (checked ? ' | 健康检测（主机健康中心最近一次检测：状态、原因、时间）' : '') + '\n' + rows.join('\n');
 }
 
 /** One connection-log entry in words (time, host, protocol, result). */

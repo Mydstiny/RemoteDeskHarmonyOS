@@ -154,4 +154,27 @@ check('staleness and the age label', () => {
   assert.equal(h.hostHealthAgeLabel(now - 3 * 86400000, now), '3 天前');
 });
 
+check('H1–H3 wiring: probes record per account, deleted hosts lose history, the sheet, the card note and the AI', () => {
+  const read = rel => fs.readFileSync(path.join(root, rel), 'utf8');
+  const page = read('entry/src/main/ets/pages/HostListPage.ets');
+  for (const fn of ['rdpProbeHealth(', 'rdpGatewayProbeHealth(', 'vncProbeHealth(', 'sshProbeHealth(', 'rustDeskPresenceHealth(']) {
+    assert.ok(page.includes(fn), fn + ' feeds the health store');
+  }
+  assert.ok(page.includes('const healthScope: string = HostHealthStore.getInstance().currentScopeId();'));
+  assert.ok(page.includes('HostHealthStore.getInstance().removeHost(host.id);'), 'deleting a host deletes its history');
+  assert.ok(page.includes("MenuItem({ content: '健康状况' })"));
+  assert.ok(page.includes('this.openHostHealth(targets, \'\');'), 'a batch check opens the grouped result');
+  assert.ok(page.includes('this.HostHealthNote(host, this.hostHealthRevision)'));
+  assert.ok(page.includes('host.lastHealth as number, host.lastLatency, this.hostHealthForAi(host));'));
+  const store = read('entry/src/main/ets/services/pro/health/HostHealthStore.ets');
+  assert.ok(store.includes("export const HOST_HEALTH_PREFERENCES_NAME: string = 'ProHostHealth';"), 'a local file of its own');
+  assert.ok(store.includes("if (!this.enabled() || scopeId !== this.scope.ownerScopeId) { return false; }"),
+    'nothing kept without Pro or after an account switch');
+  assert.ok(store.includes("return 'v1|' + owner + '|' + hostId;"), 'keys carry the account');
+  const bridge = read('entry/src/main/ets/services/diagnosticAi/AiAppDataBridge.ets');
+  assert.ok(bridge.includes("(h.healthCheck !== '' ? ' | ' + h.healthCheck : '')"));
+  const catalog = read('entry/src/main/ets/services/pro/ProFeatureCatalog.ets');
+  assert.ok(catalog.includes("planned('pro.hostHealth', '主机健康中心',") && catalog.includes("case 'pro.hostHealth':"));
+});
+
 console.log('host health: ' + passed + ' checks passed');

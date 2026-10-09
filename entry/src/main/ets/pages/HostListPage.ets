@@ -18,6 +18,25 @@ import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../services/di
 import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import { proCloneLabel } from '../services/pro/ProClonePolicy';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
+import { HostHealthStore } from '../services/pro/health/HostHealthStore';
+import { HostHealthRow, HostHealthSheet } from '../components/pro/health/HostHealthSheet';
+import {
+  HostHealthAction,
+  HostHealthObservation,
+  HostHealthRoute,
+  HostHealthVerdict,
+  hostHealthAgeLabel,
+  hostHealthCodeDetail,
+  hostHealthStatusLabel,
+  isHostHealthStale,
+  healthAddressFamily,
+  hostHealthObservation,
+  rdpGatewayProbeHealth,
+  rdpProbeHealth,
+  rustDeskPresenceHealth,
+  sshProbeHealth,
+  vncProbeHealth
+} from '../services/pro/health/HostHealthPolicy';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
@@ -1151,6 +1170,14 @@ struct HostListPage {
   @State hostBatchProbing: boolean = false;
   @State proWorkspaceRun: WorkspaceRun | null = null;
   @State showHostImportSheet: boolean = false;
+  /** 主机健康中心 (Pro): one host's health, or every checked host grouped by reason after a batch check. */
+  @State showHostHealthSheet: boolean = false;
+  @State hostHealthFocusId: string = '';
+  @State hostHealthRows: HostHealthRow[] = [];
+  @State hostHealthRevision: number = 0;
+  @State hostHealthCheckingIds: string[] = [];
+  @State hostHealthBatchChecking: boolean = false;
+  private hostHealthStop: (() => void) | null = null;
   @State showWorkspaceEditor: boolean = false;
   /** 创建并打开 from the add sheet: opened once the sheet has closed. */
   private pendingWorkspaceOpen: Workspace | null = null;
@@ -2518,8 +2545,18 @@ struct HostListPage {
     const groupId: string = HostOrganizationStore.getInstance().membership(host.id).groupId;
     const group = groupId === '' ? null : HostOrganizationStore.getInstance().group(groupId);
     return new AiHostSummary(host.label !== '' ? host.label : '未命名主机', host.protocol, group !== null ? group.name : '',
-      host.lastConnected, host.lastHealth as number, host.lastLatency);
+      host.lastConnected, host.lastHealth as number, host.lastLatency, this.hostHealthForAi(host));
   });
+
+  /** The last health check in words for the AI (no address, code only as its sentence). */
+  private hostHealthForAi(host: RemoteHost): string {
+    if (!this.hostHealthAvailableFor(host)) { return ''; }
+    const latest: HostHealthObservation | null = HostHealthStore.getInstance().latest(host.id);
+    if (latest === null) { return ''; }
+    const detail: string = hostHealthCodeDetail(latest.code);
+    return hostHealthStatusLabel(latest.status) + (detail !== '' ? '：' + detail : '') + '（' +
+      hostHealthAgeLabel(latest.observedAt, Date.now()) + '）';
+  }
   private readonly assistantHostConnector = (hostId: string): boolean => {
     const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
     if (host === undefined) { return false; }
@@ -2731,6 +2768,12 @@ struct HostListPage {
     this.updateWindowMetrics();
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
+    HostHealthStore.getInstance().init(getContext(this) as common.Context);
+    if (this.hostHealthStop === null) {
+      this.hostHealthStop = HostHealthStore.getInstance().onChange((): void => {
+        this.hostHealthRevision = HostHealthStore.getInstance().currentRevision();
+      });
+    }
     this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
       getContext(this) as common.Context, sshWorkbenchHostIsPc(this.isDesktopDevice));
     this.refreshSshNotificationAuthorization();
@@ -6532,6 +6575,7 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    if (this.hostHealthStop !== null) { this.hostHealthStop(); this.hostHealthStop = null; }
     this.aiIslandLayer.close();
     this.aiVoiceLayer.close();
     DiagnosticAiSettingsBridge.unregister(this.assistantSettingApplier);
@@ -7217,7 +7261,10 @@ struct HostListPage {
         const state: boolean | undefined = this.orgOnline(host);
         if (state === true) { online++; } else if (state === false) { offline++; }
       });
-      if (this.pageActive) {
+      if (this.pageActive && HostHealthStore.getInstance().enabled()) {
+        // 主机健康中心: the result grouped by reason instead of a count in a toast.
+        this.openHostHealth(targets, '');
+      } else if (this.pageActive) {
         promptAction.showToast({ message: '检测完成 · ' + online.toString() + ' 在线 · ' + offline.toString() + ' 离线' +
           (targets.length - online - offline > 0 ? ' · ' + (targets.length - online - offline).toString() + ' 未知' : ''),
           duration: 2400 });
@@ -11744,6 +11791,15 @@ struct HostListPage {
     }
   }
 
+  /** One observation for 主机健康中心; nothing is kept without the Pro feature or after an account switch. */
+  private recordHostHealth(host: RemoteHost, verdict: HostHealthVerdict, latencyMs: number,
+    route: HostHealthRoute, address: string, scopeId: string): void {
+    const store: HostHealthStore = HostHealthStore.getInstance();
+    if (!store.enabled()) { return; }
+    store.record(hostHealthObservation(host.id, host.protocol, verdict, latencyMs, route,
+      healthAddressFamily(address), 'probe', Date.now()), scopeId);
+  }
+
   private async probeHostConnectivity(host: RemoteHost, showToast: boolean = true): Promise<void> {
     if (this.hostPresenceProbeBusyIds.has(host.id)) { return; }
     if (host.protocol === 'rustdesk') {
@@ -11761,6 +11817,11 @@ struct HostListPage {
     const pageGeneration: number = this.hostPresencePageGeneration;
     const probeGeneration: number = this.nextHostPresenceProbeGeneration(host.id);
     const startedAt: number = Date.now();
+    // 主机健康中心: the same check, read as a plain state for the account signed in when it started.
+    const healthScope: string = HostHealthStore.getInstance().currentScopeId();
+    let health: HostHealthVerdict = { status: 'unknown', code: 'E-UNKNOWN' };
+    let healthRoute: HostHealthRoute = 'direct';
+    let healthAddress: string = '';
     try {
       let ok: boolean = false;
       if (host.protocol === 'rdp') {
@@ -11770,9 +11831,24 @@ struct HostListPage {
           ok = result.ok && result.targetCertificate.present &&
             (this.rdpCertificateRouteMode(host) !== 'microsoft_rd_gateway' ||
               result.gatewayCertificate.present);
+          healthRoute = this.rdpCertificateRouteMode(host) === 'microsoft_rd_gateway' ? 'gateway' : 'proxy';
+          health = ok ? rdpProbeHealth({
+            ok: true, errorCode: 0, rootTrusted: result.targetCertificate.rootTrusted,
+            hostMismatch: result.targetCertificate.hostMismatch,
+            fingerprintSha256: result.targetCertificate.fingerprintSha256,
+            savedFingerprintSha256: host.rdpCertificateFingerprintSha256
+          }) : rdpGatewayProbeHealth(result.errorCode.length > 0 ? result.errorCode : 'E-UNKNOWN');
+          healthAddress = result.transportHost ?? '';
         } else {
           const directProbe = await this.probeRdpCertificateWithDnsFallback(host);
           ok = directProbe.info.ok;
+          health = rdpProbeHealth({
+            ok: directProbe.info.ok, errorCode: directProbe.info.errorCode,
+            rootTrusted: directProbe.info.rootTrusted, hostMismatch: directProbe.info.hostMismatch,
+            fingerprintSha256: directProbe.info.fingerprintSha256,
+            savedFingerprintSha256: host.rdpCertificateFingerprintSha256
+          });
+          healthAddress = directProbe.info.connectedAddress ?? directProbe.transportHost;
         }
       } else if (host.protocol === 'vnc') {
         const vncHostId: string = this.vncRecordIdForHost(host);
@@ -11796,6 +11872,10 @@ struct HostListPage {
         }
         const info: VncCertificateInfo = await probe;
         ok = info.ok;
+        health = vncProbeHealth({
+          ok: info.ok, errorCategory: info.errorMessageCategory, rootTrusted: info.rootTrusted,
+          hostMismatch: info.hostMismatch, fingerprintSha256: info.fingerprintSha256, savedFingerprintSha256: ''
+        });
       } else if (host.protocol === 'ssh') {
         if (!this.sshProxyProfilesReady) {
           throw new Error('SSH 连接方式存储不可读');
@@ -11820,9 +11900,15 @@ struct HostListPage {
           this.sshPresenceOperationIds.delete(host.id);
         }
         ok = info.ok;
+        healthRoute = plan.proxyHost.trim().length > 0 ? 'proxy' : 'direct';
+        health = sshProbeHealth({
+          ok: info.ok, errorCode: info.errorCode, errorMessage: info.errorMessage,
+          fingerprintSha256: info.fingerprintSha256, savedFingerprintSha256: host.sshHostKeyFingerprintSha256
+        });
       }
       if (!this.isCurrentHostPresenceProbe(host.id, pageGeneration, probeGeneration)) { return; }
       const latencyMs: number = Date.now() - startedAt;
+      this.recordHostHealth(host, health, latencyMs, healthRoute, healthAddress, healthScope);
       if (host.protocol !== 'vnc') {
         // Use the observation path so the local card updates even when a
         // throttled cloud write is unavailable. The service also replaces the
@@ -11842,6 +11928,7 @@ struct HostListPage {
       }
     } catch (_err) {
       if (!this.isCurrentHostPresenceProbe(host.id, pageGeneration, probeGeneration)) { return; }
+      this.recordHostHealth(host, health, -1, healthRoute, healthAddress, healthScope);
       this.setHostPresenceOverride(host.id, 'unknown');
       if (showToast) {
         promptAction.showToast({ message: host.protocol.toUpperCase() + ' 检测失败', duration: 1800 });
@@ -11858,6 +11945,7 @@ struct HostListPage {
     if (!this.rustdeskPresenceDetectionEnabled && !manual) { return; }
     const pageGeneration: number = this.hostPresencePageGeneration;
     const probeGeneration: number = this.nextHostPresenceProbeGeneration(host.id);
+    const healthScope: string = HostHealthStore.getInstance().currentScopeId();
     this.setHostPresenceProbeBusy(host.id, true);
     this.setHostPresenceOverride(host.id, 'checking');
     // Checking is page-local. Persist only the completed result so entering
@@ -11885,6 +11973,8 @@ struct HostListPage {
         updated.lastHealth = ConnectionHealth.UNKNOWN;
       }
       this.updateLocalPresenceObservation(updated);
+      this.recordHostHealth(host, rustDeskPresenceHealth(state, host.rustdeskDirectEnabled, false), latencyMs,
+        host.rustdeskDirectEnabled ? 'direct' : 'relay', '', healthScope);
       const displayState: HostPresenceState = state === 1 ? 'online' :
         (state === 2 ? 'offline' : 'unknown');
       this.setHostPresenceOverride(host.id, displayState, displayState === 'online' ? latencyMs : -1);
@@ -13296,6 +13386,7 @@ struct HostListPage {
     }
     if (removed) {
       this.forgetRdpSecurityDowngrades(host);
+      HostHealthStore.getInstance().removeHost(host.id);
       const key: string = remoteHostCardKey(host.id);
       this.hostManualOrder = this.hostManualOrder.filter(
         (stored: string): boolean => stored !== key && stored !== host.id);
@@ -15740,6 +15831,24 @@ struct HostListPage {
     }
   }
 
+  /** 主机健康中心 on the card: a problem the last check found, and how long ago; nothing when all is well. */
+  @Builder HostHealthNote(host: RemoteHost, revision: number) {
+    if (revision >= 0 && this.hostHealthAvailableFor(host) && this.hostHealthCardNote(host).length > 0) {
+      Text(this.hostHealthCardNote(host))
+        .fontSize(this.settingsModern() ? 12 : 11).fontColor('#FF9F0A').margin({ top: 3, left: 6 })
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .onClick((): void => { this.openHostHealth([host], host.id); })
+    }
+  }
+
+  private hostHealthCardNote(host: RemoteHost): string {
+    const latest: HostHealthObservation | null = HostHealthStore.getInstance().latest(host.id);
+    if (latest === null || latest.status === 'reachable' || isHostHealthStale(latest.observedAt, Date.now())) {
+      return '';
+    }
+    return hostHealthStatusLabel(latest.status) + ' · ' + hostHealthAgeLabel(latest.observedAt, Date.now());
+  }
+
   @Builder HostConnectionHealth(host: RemoteHost) {
     if (displayConnectionHealth(host.lastHealth, host.lastLatency).length > 0) {
       Text(displayConnectionHealth(host.lastHealth, host.lastLatency))
@@ -17291,6 +17400,7 @@ struct HostListPage {
             if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk' && host.protocol !== 'ai') {
               this.HostConnectionHealth(host)
             }
+            this.HostHealthNote(host, this.hostHealthRevision)
           }.margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           .onClick((): void => { this.handleHostCardClick(host); })
@@ -17854,6 +17964,84 @@ struct HostListPage {
 
     }
     .width('100%').height('100%')
+    .bindSheet($$this.showHostHealthSheet, this.hostHealthSheet(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : 620,
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg
+    })
+  }
+
+  @Builder hostHealthSheet() {
+    HostHealthSheet({
+      hosts: this.hostHealthRows,
+      focusHostId: this.hostHealthFocusId,
+      revision: this.hostHealthRevision,
+      checkingIds: this.hostHealthCheckingIds,
+      batchChecking: this.hostHealthBatchChecking,
+      onCheck: (hostId: string): void => { void this.checkHostHealth(hostId); },
+      onCheckAll: (): void => { void this.checkAllHostHealth(); },
+      onAction: (hostId: string, action: HostHealthAction): void => { this.runHostHealthAction(hostId, action); },
+      onClose: (): void => { this.showHostHealthSheet = false; }
+    })
+  }
+
+  private hostHealthAvailableFor(host: RemoteHost): boolean {
+    return host.protocol !== 'ai' && host.protocol !== 'moonlight' &&
+      !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled) && HostHealthStore.getInstance().enabled();
+  }
+
+  private openHostHealth(hosts: RemoteHost[], focusHostId: string): void {
+    this.hostHealthRows = hosts.filter((host: RemoteHost): boolean => this.hostHealthAvailableFor(host))
+      .map((host: RemoteHost): HostHealthRow => ({
+        id: host.id,
+        label: hostCardDisplayLabel(shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+          host.protocol, host.label, host.rustdeskProPeerId, host.customHostname),
+        protocol: host.protocol
+      }));
+    if (this.hostHealthRows.length === 0) { return; }
+    this.hostHealthFocusId = focusHostId;
+    this.hostHealthRevision = HostHealthStore.getInstance().currentRevision();
+    this.openSheetSafely((): void => { if (this.pageActive) { this.showHostHealthSheet = true; } });
+  }
+
+  private async checkHostHealth(hostId: string): Promise<void> {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined || this.hostHealthCheckingIds.indexOf(hostId) >= 0) { return; }
+    this.hostHealthCheckingIds = this.hostHealthCheckingIds.concat([hostId]);
+    try {
+      await this.probeHostConnectivity(host, false);
+    } finally {
+      this.hostHealthCheckingIds = this.hostHealthCheckingIds.filter((id: string): boolean => id !== hostId);
+    }
+  }
+
+  private async checkAllHostHealth(): Promise<void> {
+    if (this.hostHealthBatchChecking) { return; }
+    this.hostHealthBatchChecking = true;
+    try {
+      const ids: string[] = this.hostHealthRows.map((row: HostHealthRow): string => row.id);
+      // Four at a time, like 批量检测, so the radio and the remote hosts stay calm.
+      for (let start: number = 0; start < ids.length && this.pageActive && this.showHostHealthSheet; start += 4) {
+        await Promise.all(ids.slice(start, start + 4).map((id: string): Promise<void> => this.checkHostHealth(id)));
+      }
+    } finally {
+      this.hostHealthBatchChecking = false;
+    }
+  }
+
+  private runHostHealthAction(hostId: string, action: HostHealthAction): void {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return; }
+    if (action === 'retry' || action === 'check_network') { void this.checkHostHealth(hostId); return; }
+    this.showHostHealthSheet = false;
+    if (action === 'confirm_certificate' || action === 'review_fingerprint') {
+      // The connection itself shows the certificate or fingerprint and asks before trusting it.
+      void this.connectToHost(host);
+    } else if (action === 'edit_host') {
+      this.editHost(host);
+    } else if (action === 'check_relay') {
+      this.curTab = 2;
+    }
   }
 
   @Builder hostImportSheet() {
@@ -18166,6 +18354,9 @@ struct HostListPage {
         MenuItem({ content: '编辑' }).onClick((): void => { this.editHost(host); })
         if (this.settingsModern() && this.hostGroupCanProbe(host)) {
           MenuItem({ content: '检测在线状态' }).onClick((): void => { void this.probeHostConnectivity(host); })
+        }
+        if (this.hostHealthAvailableFor(host)) {
+          MenuItem({ content: '健康状况' }).onClick((): void => { this.openHostHealth([host], host.id); })
         }
         if (host.protocol === 'ssh') {
           MenuItem({ content: '部署公钥' }).onClick((): void => { void this.openSshPublicKeyInstall(host); })

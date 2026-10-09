@@ -366,3 +366,22 @@ export function hostHealthAgeLabel(observedAt: number, now: number): string {
   const days: number = Math.floor(hours / 24);
   return days === 1 ? '昨天' : days.toString() + ' 天前';
 }
+
+/** An observation from a verdict, as the checks record it. */
+export function hostHealthObservation(hostId: string, protocol: string, v: HostHealthVerdict, latencyMs: number,
+  route: HostHealthRoute, addressFamily: HostHealthAddressFamily, source: HostHealthSource,
+  observedAt: number): HostHealthObservation {
+  return {
+    schemaVersion: HOST_HEALTH_SCHEMA_VERSION,
+    hostId,
+    protocol,
+    observedAt: Math.max(1, Math.floor(observedAt)),
+    status: v.status,
+    code: HOST_HEALTH_CODES.indexOf(v.code) >= 0 ? v.code : 'E-UNKNOWN',
+    latencyMs: v.status === 'reachable' && Number.isFinite(latencyMs) && latencyMs >= 0 ?
+      Math.min(600000, Math.round(latencyMs)) : -1,
+    route,
+    addressFamily,
+    source
+  };
+}
