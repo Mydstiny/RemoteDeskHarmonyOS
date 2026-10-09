@@ -1,7 +1,7 @@
 {
   "layered-image":
   {
-    "background" : "$media:background",
-    "foreground" : "$media:foreground"
+    "background" : "$media:icon_rd_glow_mist_bg",
+    "foreground" : "$media:icon_rd_glow_mist_fg"
   }
 }

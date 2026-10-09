@@ -62,6 +62,7 @@ export struct ProAppIconPanel {
     if (name === 'rd_soft') { return $r('app.media.icon_preview_rd_soft'); }
     if (name === 'rd_glow') { return $r('app.media.icon_preview_rd_glow'); }
     if (name === 'rd_glow_mist') { return $r('app.media.icon_preview_rd_glow_mist'); }
+    if (name === 'rd_classic') { return $r('app.media.icon_preview_rd_classic'); }
     if (name === 'rd_glow_night') { return $r('app.media.icon_preview_rd_glow_night'); }
     if (name === 'rd_glow_frost') { return $r('app.media.icon_preview_rd_glow_frost'); }
     if (name === 'rd_vivid_night') { return $r('app.media.icon_preview_rd_vivid_night'); }
