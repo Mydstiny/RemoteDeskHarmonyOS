@@ -65,9 +65,10 @@ export async function writeSessionFramePng(context: common.Context, frame: Sessi
   }
 }
 
-/** A text file next to the screenshot (the session summary); returns its path. */
-export function writeSessionEvidenceText(context: common.Context, capturedAt: number, text: string): string {
-  const path: string = evidenceDir(context) + '/' + sessionEvidenceFileName('summary', capturedAt);
+/** A text file next to the screenshot (the session summary or the 诊断时间线); returns its path. */
+export function writeSessionEvidenceText(context: common.Context, capturedAt: number, text: string,
+  kind: 'summary' | 'timeline' = 'summary'): string {
+  const path: string = evidenceDir(context) + '/' + sessionEvidenceFileName(kind, capturedAt);
   const bytes: Uint8Array = new util.TextEncoder().encodeInto(text);
   const file: fileIo.File = fileIo.openSync(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE |
     fileIo.OpenMode.TRUNC);

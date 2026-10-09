@@ -79,7 +79,10 @@ check('three entries, Pro-gated; the AI gets only the text the user confirmed', 
   assert.match(page, /if \(action === 'screenshot'\) \{ this\.openSessionScreenshot\(\); return; \}/);
   assert.match(page, /onScreenshot: \(\): void => \{[\s\S]{0,80}this\.openSessionScreenshot\(\);/);
   assert.equal((page.match(/screenshotVisible: this\.sessionScreenshotVisible\(\)/g) || []).length, 3);
-  assert.match(page, /AppStorage\.setOrCreate<string>\(AI_ASSISTANT_HANDOFF, Date\.now\(\)\.toString\(\) \+ '\|' \+ question\)/);
+  assert.match(page, /AppStorage\.setOrCreate<string>\(AI_SESSION_ASK, Date\.now\(\)\.toString\(\) \+ '\|' \+ question\)/);
+  const host = read('entry/src/main/ets/components/diagnosticAi/SessionAiHost.ets');
+  assert.match(host, /@StorageProp\(AI_SESSION_ASK\) @Watch\('onAskRequest'\)/);
+  assert.match(host, /if \(!this\.island\.isOpen\(\)\) \{ this\.openOrb\(\); \}[\s\S]{0,300}AiChatMemory\.handoff = question;\s*aiChatRefresh\(\);/);
   const bar = read('entry/src/main/ets/components/RemoteSessionTopBar.ets');
   assert.match(bar, /if \(this\.screenshotAvailable\) \{\s*this\.menuItem\('截屏给 AI 看', 'sessionScreenshot'/);
   assert.match(read('entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets'), /actionId === 'sessionScreenshot'\) \{/);
@@ -91,6 +94,40 @@ check('three entries, Pro-gated; the AI gets only the text the user confirmed', 
   assert.match(sheet, /this\.onAskAi\(sessionScreenshotQuestion\(this\.text, this\.protocol\)\)/);
   assert.match(sheet, /SaveButton\(/);
   assert.match(sheet, /void frame\.pixelMap\.release\(\)/);
+});
+
+check('诊断时间线: last N minutes only, oldest first, capped, plain lines', () => {
+  const now = new Date(2026, 9, 9, 15, 0, 0).getTime();
+  const ev = (minAgo, code, extra) => ({ wallTimeMs: now - minAgo * 60000, moduleId: 'connection.rdp', eventCode: code,
+    outcome: 'failed', code: 0, durationMs: 0, ...extra });
+  const text = e.sessionTimelineText([ev(0.5, 'b', { code: -14, durationMs: 120 }), ev(4, 'a'), ev(6, 'old')], 5, now);
+  const lines = text.split('\n');
+  assert.equal(lines[0], 'RemoteDesktop 诊断时间线（最近 5 分钟，2 条）');
+  assert.match(lines[1], /^14:56:00\.000  connection\.rdp  a  failed$/);
+  assert.match(lines[2], /^14:59:30\.000  connection\.rdp  b  failed  code=-14  120ms$/);
+  const many = Array.from({ length: e.SESSION_TIMELINE_EVENT_LIMIT + 3 }, (_, i) => ev(0.0002 * i, 'x' + i));
+  assert.match(e.sessionTimelineText(many, 1, now).split('\n')[0], /，更早的 3 条已省略）$/);
+  assert.deepEqual(Array.from(e.SESSION_TIMELINE_MINUTES), [1, 5, 10]);
+  assert.equal(e.sessionEvidenceFileName('timeline', now), 'RemoteDesk-timeline-20261009-150000.txt');
+  const runtime = read('entry/src/main/ets/services/DiagnosticCaptureRuntime.ets');
+  assert.match(runtime, /timelineSince\(sinceWallTimeMs: number\): DiagnosticTimelineEntry\[\] \{\s*if \(this\.phase === 'idle'\) \{ return \[\]; \}/);
+  const sheet = read('entry/src/main/ets/components/pro/evidence/SessionScreenshotSheet.ets');
+  assert.match(sheet, /status\(\)\.phase !== 'idle'/);
+});
+
+check('SSH: screen text on request from the interactive tab, confirmed and editable before the AI sees it', () => {
+  assert.match(e.sessionScreenshotQuestion('ls: 权限不够', 'ssh', 'terminal'), /^这是我的 SSH 终端当前屏幕上的文字/);
+  const html = read('entry/src/main/resources/rawfile/ssh-terminal/index.html');
+  assert.match(html, /window\.__sshXtermGetScreenText = function \(\) \{[\s\S]{0,400}buffer\.viewportY \+ i/);
+  const surface = read('entry/src/main/ets/components/SshXtermSurface.ets');
+  assert.match(surface, /@Prop @Watch\('onScreenTextRequest'\) screenTextRequest: number = 0;/);
+  const ssh = read('entry/src/main/ets/pages/SshTerminal.ets');
+  assert.match(ssh, /screenTextRequest: this\.sshWorkspaceInteractiveForTab\(tab\.tabId, interactive\) \?\s*this\.sshScreenTextRequest : 0/);
+  assert.match(ssh, /if \(this\.sshScreenTextVisible\(\) && this\.sshConnectionIsConnected\(\)\) \{\s*this\.SshHeaderActionRow\('屏幕文字交给 AI'/);
+  assert.match(ssh, /ProEntries\.visible\(PRO_SESSION_EVIDENCE_FEATURE/);
+  assert.match(ssh, /this\.showSshTabRenameSheet \|\| this\.showSftpTransferCenter \|\| this\.showSshScreenTextSheet;/);
+  assert.match(ssh, /sessionScreenshotQuestion\(text, 'ssh', 'terminal'\)[\s\S]{0,200}AI_SESSION_ASK/);
+  assert.match(read('entry/src/main/ets/components/pro/evidence/SessionTextToAiSheet.ets'), /this\.onSend\(this\.text\)/);
 });
 
 check('catalog and AI knowledge describe it', () => {

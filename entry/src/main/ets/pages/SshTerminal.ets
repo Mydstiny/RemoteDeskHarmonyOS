@@ -10,6 +10,9 @@ import { ProContinuationService, proContinuationFailureText } from '../services/
 import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
 import { ProContinuationSecret, validProContinuationSecret } from '../services/pro/ProContinuationCredentials';
 import { ProEntries } from '../services/pro/ProEntries';
+import { SessionTextToAiSheet } from '../components/pro/evidence/SessionTextToAiSheet';
+import { PRO_SESSION_EVIDENCE_FEATURE, sessionScreenshotQuestion } from '../services/pro/evidence/SessionEvidencePolicy';
+import { AI_SESSION_ASK } from '../services/diagnosticAi/AiBridgeKeys';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
 import { SessionAiHost } from '../components/diagnosticAi/SessionAiHost';
 import { SshSkinStore } from '../services/ssh/skin/SshSkinStore';
@@ -671,7 +674,7 @@ type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
   'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
-  'orientation' | 'quick-commands' | 'ai';
+  'orientation' | 'quick-commands' | 'ai' | 'ai-screen';
 
 const SSH_PTY_STARTUP_SETTLE_WINDOW_MS: number = 2500;
 const SSH_PTY_STARTUP_SETTLE_MS: number = 900;
@@ -907,6 +910,10 @@ struct SshTerminal {
   @State selectMode: boolean = false;
   /** 复制请求计数器 — ++ 触发 TerminalEmulator 把文本写入 copiedText */
   @State copyRequest: number = 0;
+  /** 屏幕文字交给 AI (Pro): asks the interactive terminal for its screen text. */
+  @State sshScreenTextRequest: number = 0;
+  @State showSshScreenTextSheet: boolean = false;
+  @State sshScreenText: string = '';
   /** TerminalEmulator 回传的待复制文本 — @Watch 触发写系统剪贴板 */
   @State @Watch('onCopiedTextChange') copiedText: string = '';
   /** 移动端键盘/视口变化时递增, 通知终端渲染器回到底部 */
@@ -5799,6 +5806,13 @@ struct SshTerminal {
         this.terminalFocusRequest : 0,
       copyRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
         this.copyRequest : 0,
+      screenTextRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.sshScreenTextRequest : 0,
+      onScreenText: (text: string, _surfaceIdentity: string): void => {
+        if (!this.sshWorkspaceInteractiveForTab(tab.tabId, interactive)) { return; }
+        this.sshScreenText = text;
+        this.showSshScreenTextSheet = true;
+      },
       copiedText: this.copiedText,
       scrollToBottomRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
         this.scrollToBottomRequest : 0,
@@ -7086,6 +7100,29 @@ struct SshTerminal {
     return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
+  /** Pro 屏幕文字交给 AI: 「更多 → 屏幕文字交给 AI」 while connected. */
+  private sshScreenTextVisible(): boolean {
+    return this.sshAiVisible() &&
+      ProEntries.visible(PRO_SESSION_EVIDENCE_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+  private askSshAiAboutScreen(text: string): void {
+    this.showSshScreenTextSheet = false;
+    const question: string = sessionScreenshotQuestion(text, 'ssh', 'terminal');
+    setTimeout((): void => {
+      AppStorage.setOrCreate<string>(AI_SESSION_ASK, Date.now().toString() + '|' + question);
+    }, 350);
+  }
+
+  @Builder
+  SshScreenTextSheetContent() {
+    SessionTextToAiSheet({
+      initialText: this.sshScreenText,
+      onSend: (text: string): void => { this.askSshAiAboutScreen(text); },
+      onClose: (): void => { this.showSshScreenTextSheet = false; }
+    })
+  }
+
   private sshHeaderActionPopupWidth(): number {
     const uiContext = this.getUIContext();
     const measureTextVp = (text: string, fontSize: number): number => {
@@ -7095,7 +7132,7 @@ struct SshTerminal {
       }));
     };
     const labels: string[] = [
-      'AI 助理', '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
+      'AI 助理', '屏幕文字交给 AI', '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
       '显示会话详情', '隐藏会话详情', '取消显示会话详情',
       '终端搜索', '终端外观', '恢复终端字号', '语言与地区',
@@ -7134,6 +7171,8 @@ struct SshTerminal {
       }
       if (action === 'ai') {
         this.aiSessionOpenRequest = Date.now();
+      } else if (action === 'ai-screen') {
+        this.sshScreenTextRequest = Date.now();
       } else if (action === 'new-session') {
         this.openSshTabPicker();
       } else if (action === 'tabs') {
@@ -7174,6 +7213,7 @@ struct SshTerminal {
   private sshHeaderActionIcon(action: SshHeaderAction): Resource {
     switch (action) {
       case 'ai': return $r('sys.symbol.wand_and_stars');
+      case 'ai-screen': return $r('sys.symbol.doc_text');
       case 'new-session': return $r('sys.symbol.plus');
       case 'quick-commands': return $r('sys.symbol.text_clipboard');
       case 'tabs': return $r('sys.symbol.rectangle_on_rectangle');
@@ -7268,6 +7308,9 @@ struct SshTerminal {
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         if (this.sshAiVisible()) {
           this.SshHeaderActionRow('AI 助理', '悬浮球加小对话框：单击退出，双击语音', 'ai')
+        }
+        if (this.sshScreenTextVisible() && this.sshConnectionIsConnected()) {
+          this.SshHeaderActionRow('屏幕文字交给 AI', '把终端当前屏幕的文字给 AI 解读，发送前可修改', 'ai-screen')
         }
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
         // Continuation is automatic and managed in 设置 > Pro 功能; no per-session menu rows.
@@ -14014,7 +14057,7 @@ struct SshTerminal {
       this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet ||
       this.showSshCommandPalette || this.showSshProductivitySheet ||
       this.showSshSessionLogSheet || this.showSshBroadcastSheet ||
-      this.showSshTabRenameSheet || this.showSftpTransferCenter;
+      this.showSshTabRenameSheet || this.showSftpTransferCenter || this.showSshScreenTextSheet;
   }
 
   private clearTerminalSearchDebounce(): void {
@@ -19883,6 +19926,19 @@ struct SshTerminal {
           onDisappear: (): void => {
             this.onForwardingSheetDisappear(this.forwardingSheetMountToken);
           }
+        })
+
+      // 屏幕文字交给 AI (Pro): its own host, like the other terminal sheets.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshScreenTextSheet, this.SshScreenTextSheetContent(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : 520,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: this.bindSheetBg('#171D25'),
+          showClose: false
         })
 
       // Tunnel confirmations use a dedicated dark Sheet instead of the system

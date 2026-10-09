@@ -389,6 +389,8 @@ export struct SshXtermSurface {
   @Prop @Watch('onTranscriptResetRequestChange') transcriptResetRequest: number = 0;
   @Prop @Watch('onFocusRequest') focusRequest: number = 0;
   @Prop @Watch('onCopyRequest') copyRequest: number = 0;
+  /** 屏幕文字交给 AI (Pro): bumped for the interactive surface only; the text comes back through onScreenText. */
+  @Prop @Watch('onScreenTextRequest') screenTextRequest: number = 0;
   @Prop @Watch('onScrollToBottomRequest') scrollToBottomRequest: number = 0;
   @Prop @Watch('onForceScrollToBottomRequest') forceScrollToBottomRequest: number = 0;
   @Prop @Watch('onExternalScrollRequest') externalScrollRequest: number = 0;
@@ -407,6 +409,7 @@ export struct SshXtermSurface {
   onTerminalMode?: (mouseTracking: boolean, applicationCursorKeys: boolean,
     applicationKeypad: boolean, alternateBuffer: boolean, surfaceKey: string) => void;
   onSearchResult?: (result: SshTerminalSearchResult, surfaceKey: string) => void;
+  onScreenText?: (text: string, surfaceKey: string) => void;
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: SshXtermBridgeProxy = new SshXtermBridgeProxy();
@@ -1806,6 +1809,30 @@ export struct SshXtermSurface {
           // a JSON string literal. Both are accepted here.
         }
         this.copiedText = selection;
+      }).catch((_err: Error): void => {});
+    } catch (_err) { /* page is leaving */ }
+  }
+
+  private onScreenTextRequest(): void {
+    if (this.screenTextRequest <= 0 || !this.active || !this.pageReady || this.disposed) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    const surfaceIdentity: string = this.surfaceIdentity();
+    const request: number = this.screenTextRequest;
+    try {
+      this.controller.runJavaScript('(typeof window.__sshXtermGetScreenText==="function")?' +
+        'window.__sshXtermGetScreenText():"";').then((result: string): void => {
+        if (lifecycleToken !== this.lifecycleToken || surfaceIdentity !== this.surfaceIdentity() ||
+          request !== this.screenTextRequest || !this.active || this.disposed) {
+          return;
+        }
+        let text: string = result ?? '';
+        try {
+          const decoded: Object = JSON.parse(text) as Object;
+          if (typeof decoded === 'string') { text = decoded; }
+        } catch (_err) {
+          // Raw string (see onCopyRequest).
+        }
+        if (this.onScreenText) { this.onScreenText(text, surfaceIdentity); }
       }).catch((_err: Error): void => {});
     } catch (_err) { /* page is leaving */ }
   }

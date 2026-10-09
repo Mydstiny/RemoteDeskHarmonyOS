@@ -1953,6 +1953,16 @@ void GLRenderer::Destroy() {
         redrawCallback_ = nullptr;
         sessionRedrawCallback_ = nullptr;
     }
+    {
+        // A pending 截屏 is cancelled now rather than waiting out its timeout.
+        std::lock_guard<std::mutex> captureLock(captureMutex_);
+        if (captureRequestToken_ != 0) {
+            captureDoneToken_ = captureRequestToken_;
+            captureRequestToken_ = 0;
+            capturePixels_.clear();
+        }
+    }
+    captureCv_.notify_all();
     const bool detachedWindowSurface = usesProcessSurface_ &&
         g_surfaceDetached.load(std::memory_order_acquire) && eglSurface_ != EGL_NO_SURFACE;
     EGLNativeWindowType surfaceWindow = 0;

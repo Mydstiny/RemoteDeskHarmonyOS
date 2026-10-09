@@ -1,5 +1,5 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
-import { AI_ASSISTANT_HANDOFF, AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
+import { AI_SESSION_ASK, AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
 import { SessionScreenshotSheet } from '../components/pro/evidence/SessionScreenshotSheet';
 import {
   PRO_SESSION_EVIDENCE_FEATURE,
@@ -5596,6 +5596,10 @@ struct RemoteDesktop {
       (this.connected ? '1' : '0') + ' connecting=' + (this.connecting ? '1' : '0') + ' session=' +
       this.sessionId.toString() + ' handoff=' + (this.pcWindowHandoffComplete ? '1' : '0'));
     this.onProRemoteContinuationConnectionChange();
+    if (!this.connected) {
+      // The picture is gone: 截屏 closes with it (a pending capture is cancelled by the renderer).
+      this.showSessionScreenshotSheet = false;
+    }
     if (this.connected) {
       this.syncRemoteSystemPointer('connection-state');
       if (this.isRdpRemoteSession()) {
@@ -6559,18 +6563,17 @@ struct RemoteDesktop {
     this.showSessionScreenshotSheet = true;
   }
 
-  /** The text read from a screenshot goes to the session's AI as a question for 助理. */
+  /** The text read from a screenshot goes to the session's AI: its orb comes up and its chat asks it. */
   private askSessionAiAboutScreenshot(question: string): void {
     this.showSessionScreenshotSheet = false;
     if (!this.sessionAiVisible()) {
       promptAction.showToast({ message: 'AI 助理未开启', duration: 1600 });
       return;
     }
-    this.openSessionAi();
-    // The orb's small chat mounts first; then it takes the question over to 助理.
+    // After the sheet has gone, so the orb settles over the session.
     setTimeout((): void => {
-      AppStorage.setOrCreate<string>(AI_ASSISTANT_HANDOFF, Date.now().toString() + '|' + question);
-    }, 700);
+      AppStorage.setOrCreate<string>(AI_SESSION_ASK, Date.now().toString() + '|' + question);
+    }, 350);
   }
 
   @Builder sessionScreenshotSheetBuilder() {

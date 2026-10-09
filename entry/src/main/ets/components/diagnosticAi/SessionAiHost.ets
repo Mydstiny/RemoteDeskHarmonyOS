@@ -4,7 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer } from './AiTopLayer';
 import { AI_VOICE_REQUEST, AiChatMemory, aiChatConfigProblem, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
-import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_HANDOVER, AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_ASK, AI_SESSION_ASK_TTL_MS, AI_SESSION_HANDOVER, AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { SessionAiPanelParams, sessionAiPanel } from './SessionAiPanel';
 import { aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
 import { buildDark, buildLight } from '../../common/Theme';
@@ -44,6 +44,8 @@ export struct SessionAiHost {
   @StorageProp(AI_APP_ACTION_REQUEST) @Watch('onAppActionRequest') appActionRequest: string = '';
   /** A long press on the session's AI button: AI 控制面板. */
   @StorageProp(AI_SESSION_PANEL_REQUEST) @Watch('onPanelRequest') panelRequest: number = 0;
+  /** A question for this session's AI (截屏 text, the SSH screen): asked in the orb's chat. */
+  @StorageProp(AI_SESSION_ASK) @Watch('onAskRequest') askRequest: string = '';
   private panel: ComponentContent<SessionAiPanelParams> | null = null;
   /** Voice mode was turned on in the panel while the AI is up: the orb listens once the panel is gone. */
   private listenAfterPanel: boolean = false;
@@ -143,6 +145,23 @@ export struct SessionAiHost {
       return;
     }
     this.startAi();
+  }
+
+  /** A question from the session (截屏给 AI 看, SSH 屏幕文字): the orb comes up (in text) and its chat asks it. */
+  private onAskRequest(): void {
+    const value: string = this.askRequest;
+    const bar: number = value.indexOf('|');
+    if (bar <= 0 || this.disposed || !AiSessionRouter.isInFront(this.hostId)) { return; }
+    const stamp: number = parseInt(value.slice(0, bar), 10) || 0;
+    const question: string = value.slice(bar + 1).trim();
+    if (question === '' || Date.now() - stamp > AI_SESSION_ASK_TTL_MS) { return; }
+    if (!this.island.isOpen()) { this.openOrb(); }
+    const problem: string = this.configProblem();
+    if (problem !== '') { this.toast(problem); return; }
+    hilog.info(0x0000, 'AiChat', 'session AI asks a question from the session');
+    // The chat asks it as soon as it shows (now, or when it mounts with the orb).
+    AiChatMemory.handoff = question;
+    aiChatRefresh();
   }
 
   private onPanelRequest(): void {

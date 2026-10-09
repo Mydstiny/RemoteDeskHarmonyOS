@@ -1171,6 +1171,19 @@
         return state.terminal ? (state.terminal.getSelection() || '') : '';
       };
 
+      // 屏幕文字交给 AI (Pro): the rows now on screen, trailing blanks trimmed.
+      window.__sshXtermGetScreenText = function () {
+        var terminal = state.terminal;
+        if (!terminal) return '';
+        var buffer = terminal.buffer.active;
+        var lines = [];
+        for (var i = 0; i < terminal.rows; i++) {
+          var line = buffer.getLine(buffer.viewportY + i);
+          lines.push(line ? line.translateToString(true) : '');
+        }
+        return lines.join('\n').replace(/\s+$/, '');
+      };
+
       window.__sshXtermSearch = function (request, legacyForward) {
         // Preserve the old two-argument boolean API for any retained caller.
         if (typeof request !== 'object' || request === null) {

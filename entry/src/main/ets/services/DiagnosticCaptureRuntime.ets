@@ -77,6 +77,16 @@ export interface DiagnosticCaptureEvent {
   window: DiagnosticWindowFacts;
 }
 
+/** One event of a capture as a 诊断时间线 line shows it (no session refs, no runtime facts). */
+export interface DiagnosticTimelineEntry {
+  wallTimeMs: number;
+  moduleId: DiagnosticModuleId;
+  eventCode: string;
+  outcome: DiagnosticOutcome;
+  code: number;
+  durationMs: number;
+}
+
 export interface DiagnosticCaptureStatus {
   phase: DiagnosticCapturePhase;
   captureId: string;
@@ -342,6 +352,19 @@ export class DiagnosticCaptureRuntime {
       approximateBytes: this.approximateBytes,
       stopReason: this.stopReason
     };
+  }
+
+  /**
+   * The running (or stopped, not yet saved) capture's events from `sinceWallTimeMs` on, as plain facts: the 诊断时间线
+   * of a 诊断证据包. Read-only; empty while there is no capture.
+   */
+  timelineSince(sinceWallTimeMs: number): DiagnosticTimelineEntry[] {
+    if (this.phase === 'idle') { return []; }
+    return this.events.filter((event: DiagnosticCaptureEvent): boolean => event.wallTimeMs >= sinceWallTimeMs)
+      .map((event: DiagnosticCaptureEvent): DiagnosticTimelineEntry => ({
+        wallTimeMs: event.wallTimeMs, moduleId: event.moduleId, eventCode: event.eventCode,
+        outcome: event.outcome, code: event.code, durationMs: event.durationMs
+      }));
   }
 
   /** Outcomes of the running capture's events after `sequence` (read-only; nothing while not capturing). */

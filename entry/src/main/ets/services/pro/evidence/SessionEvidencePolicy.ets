@@ -83,20 +83,67 @@ export function sessionEvidenceSummary(facts: SessionEvidenceFacts): string {
   return lines.join('\n');
 }
 
-/** The question handed to the AI with the text read from a screenshot (cut to SESSION_SCREENSHOT_TEXT_LIMIT). */
-export function sessionScreenshotQuestion(text: string, protocol: string): string {
+/**
+ * The question handed to the AI with the text read from a screenshot — or, with `source` 'terminal', the text on an
+ * SSH terminal screen (cut to SESSION_SCREENSHOT_TEXT_LIMIT).
+ */
+export function sessionScreenshotQuestion(text: string, protocol: string,
+  source: 'screenshot' | 'terminal' = 'screenshot'): string {
   const clean: string = text.replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   const cut: boolean = clean.length > SESSION_SCREENSHOT_TEXT_LIMIT;
   const body: string = cut ? clean.slice(0, SESSION_SCREENSHOT_TEXT_LIMIT) : clean;
-  return '这是我在 ' + protocolName(protocol) + ' 远程会话里截屏、本机识别出的文字' +
+  const lead: string = source === 'terminal' ? '这是我的 ' + protocolName(protocol) + ' 终端当前屏幕上的文字' :
+    '这是我在 ' + protocolName(protocol) + ' 远程会话里截屏、本机识别出的文字';
+  return lead +
     (cut ? '（太长，只截取了前 ' + SESSION_SCREENSHOT_TEXT_LIMIT.toString() + ' 字）' : '') +
     '。请告诉我它是什么意思、可能是什么问题、我该怎么做：\n\n' + body;
 }
 
 /** File names inside an evidence pack: ASCII, so every mail app shows them right. */
-export function sessionEvidenceFileName(kind: 'screenshot' | 'summary', capturedAt: number): string {
+export function sessionEvidenceFileName(kind: 'screenshot' | 'summary' | 'timeline', capturedAt: number): string {
   const d: Date = new Date(capturedAt);
   const stamp: string = d.getFullYear().toString() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' +
     pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
-  return kind === 'screenshot' ? 'RemoteDesk-screenshot-' + stamp + '.png' : 'RemoteDesk-session-' + stamp + '.txt';
+  if (kind === 'screenshot') { return 'RemoteDesk-screenshot-' + stamp + '.png'; }
+  return (kind === 'summary' ? 'RemoteDesk-session-' : 'RemoteDesk-timeline-') + stamp + '.txt';
+}
+
+/** The minutes of 诊断时间线 a pack can carry. */
+export const SESSION_TIMELINE_MINUTES: number[] = [1, 5, 10];
+/** At most this many events go into one pack (the newest are kept). */
+export const SESSION_TIMELINE_EVENT_LIMIT: number = 2000;
+
+/** One diagnostic event as the timeline shows it. */
+export interface SessionTimelineEvent {
+  wallTimeMs: number;
+  moduleId: string;
+  eventCode: string;
+  outcome: string;
+  code: number;
+  durationMs: number;
+}
+
+function clock(time: number): string {
+  const d: Date = new Date(time);
+  const ms: number = d.getMilliseconds();
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '.' +
+    (ms < 100 ? (ms < 10 ? '00' : '0') : '') + ms.toString();
+}
+
+/** The last `minutes` of the running diagnostic capture, one event per line, oldest first. */
+export function sessionTimelineText(events: SessionTimelineEvent[], minutes: number, now: number): string {
+  const since: number = now - minutes * 60 * 1000;
+  const kept: SessionTimelineEvent[] = events.filter((event: SessionTimelineEvent): boolean =>
+    event.wallTimeMs >= since && event.wallTimeMs <= now)
+    .sort((a: SessionTimelineEvent, b: SessionTimelineEvent): number => a.wallTimeMs - b.wallTimeMs);
+  const cut: number = Math.max(0, kept.length - SESSION_TIMELINE_EVENT_LIMIT);
+  const lines: string[] = ['RemoteDesktop 诊断时间线（最近 ' + minutes.toString() + ' 分钟，' +
+    (kept.length - cut).toString() + ' 条' + (cut > 0 ? '，更早的 ' + cut.toString() + ' 条已省略' : '') + '）'];
+  for (let i = cut; i < kept.length; i++) {
+    const event: SessionTimelineEvent = kept[i];
+    lines.push(clock(event.wallTimeMs) + '  ' + event.moduleId + '  ' + event.eventCode + '  ' + event.outcome +
+      (event.code !== 0 ? '  code=' + event.code.toString() : '') +
+      (event.durationMs > 0 ? '  ' + event.durationMs.toString() + 'ms' : ''));
+  }
+  return lines.join('\n');
 }

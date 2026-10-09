@@ -17,6 +17,13 @@ export const AI_SESSION_PANEL_REQUEST: string = 'aiSession.panelRequest';
 export const AI_ORB_SPEAKING: string = 'aiOrb.speaking';
 /** AppStorage: the AI (chat, voice) asks the host page to open an app screen ('<action id>@<time>'). */
 export const AI_APP_ACTION_REQUEST: string = 'aiAppActionRequest';
+/**
+ * AppStorage: a question for the session's AI ('<time>|<question>'), e.g. the text read from a 截屏 or from the SSH
+ * screen. The session's AI (the one in front) opens its orb if needed and asks it in its small chat.
+ */
+export const AI_SESSION_ASK: string = 'aiSession.ask';
+/** A session question older than this is stale (the page that asked may be gone). */
+export const AI_SESSION_ASK_TTL_MS: number = 10000;
 /** AppStorage: a question handed to 助理 ('<time>|<question>'); the panel switches to 助理 and asks it. */
 export const AI_ASSISTANT_HANDOFF: string = 'aiAssistantHandoff';
 /** AppStorage: the AI asks the island (or voice mode) to float as the orb ('<time>'). */

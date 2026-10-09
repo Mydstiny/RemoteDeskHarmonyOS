@@ -13,7 +13,13 @@ import {
   writeSessionEvidenceText,
   writeSessionFramePng
 } from '../../../services/pro/evidence/SessionEvidenceService';
-import { sessionScreenshotQuestion } from '../../../services/pro/evidence/SessionEvidencePolicy';
+import {
+  SESSION_TIMELINE_MINUTES,
+  SessionTimelineEvent,
+  sessionScreenshotQuestion,
+  sessionTimelineText
+} from '../../../services/pro/evidence/SessionEvidencePolicy';
+import { DiagnosticCaptureRuntime, DiagnosticTimelineEntry } from '../../../services/DiagnosticCaptureRuntime';
 
 type ScreenshotPhase = 'capturing' | 'ready' | 'failed' | 'reading' | 'text' | 'pack';
 
@@ -37,6 +43,10 @@ export struct SessionScreenshotSheet {
   @State private message: string = '';
   @State private packScreenshot: boolean = true;
   @State private packSummary: boolean = true;
+  /** 诊断时间线 needs a running 诊断抓取: the app records events only then. */
+  @State private timelineAvailable: boolean = false;
+  @State private packTimeline: boolean = false;
+  @State private timelineMinutes: number = 5;
   @State private busy: boolean = false;
   private frame: SessionFrame | null = null;
   private pngPath: string = '';
@@ -44,7 +54,22 @@ export struct SessionScreenshotSheet {
   onAskAi: (question: string) => void = (_question: string): void => {};
   onClose: () => void = (): void => {};
 
-  aboutToAppear(): void { void this.capture(); }
+  aboutToAppear(): void {
+    this.timelineAvailable = DiagnosticCaptureRuntime.getInstance().status().phase !== 'idle';
+    this.packTimeline = this.timelineAvailable;
+    void this.capture();
+  }
+
+  private timelineText(): string {
+    const now: number = Date.now();
+    const events: SessionTimelineEvent[] = DiagnosticCaptureRuntime.getInstance()
+      .timelineSince(now - this.timelineMinutes * 60 * 1000)
+      .map((entry: DiagnosticTimelineEntry): SessionTimelineEvent => ({
+        wallTimeMs: entry.wallTimeMs, moduleId: entry.moduleId, eventCode: entry.eventCode,
+        outcome: entry.outcome, code: entry.code, durationMs: entry.durationMs
+      }));
+    return sessionTimelineText(events, this.timelineMinutes, now);
+  }
 
   aboutToDisappear(): void {
     this.alive = false;
@@ -98,6 +123,9 @@ export struct SessionScreenshotSheet {
     if (this.packScreenshot && this.pngPath !== '') { paths.push(this.pngPath); }
     if (this.packSummary && this.summary.trim() !== '' && this.frame !== null) {
       paths.push(writeSessionEvidenceText(getContext(this), this.frame.capturedAt, this.summary));
+    }
+    if (this.timelineAvailable && this.packTimeline && this.frame !== null) {
+      paths.push(writeSessionEvidenceText(getContext(this), this.frame.capturedAt, this.timelineText(), 'timeline'));
     }
     return paths;
   }
@@ -226,6 +254,26 @@ export struct SessionScreenshotSheet {
             if (this.packSummary) {
               Text(this.summary).fontSize(12).fontColor(this.pal().text2).width('100%')
                 .padding(12).borderRadius(12).backgroundColor(this.pal().surface)
+            }
+            if (this.timelineAvailable) {
+              Row({ space: 10 }) {
+                Checkbox().select(this.packTimeline).selectedColor(this.accentColor)
+                  .onChange((value: boolean) => { this.packTimeline = value; })
+                Text('诊断时间线').fontSize(14).fontColor(this.pal().text).layoutWeight(1)
+              }.width('100%')
+              if (this.packTimeline) {
+                Row({ space: 8 }) {
+                  ForEach(SESSION_TIMELINE_MINUTES, (minutes: number) => {
+                    Button('最近 ' + minutes.toString() + ' 分钟').height(32).fontSize(12)
+                      .fontColor(this.timelineMinutes === minutes ? appUiOnAccentText(this.accentColor) : this.pal().text)
+                      .backgroundColor(this.timelineMinutes === minutes ? this.accentColor : this.pal().surface)
+                      .onClick(() => { this.timelineMinutes = minutes; })
+                  }, (minutes: number) => minutes.toString())
+                }.width('100%')
+              }
+            } else {
+              Text('想附上诊断时间线：先在设置的「日志」里开始抓取，复现问题后再截屏。')
+                .fontSize(12).fontColor(this.pal().text3).width('100%')
             }
             Row({ space: 10 }) {
               Button('分享').height(42).layoutWeight(1).fontSize(14)
