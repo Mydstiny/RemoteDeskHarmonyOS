@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "task": "pro-purchase-foundation",
-  "branch": "codex/pro-purchase-foundation",
+  "branch": "codex/pro-next-features",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "03faf926",
+  "head": "b2473f88",
   "phase": "Full acceptance active; Pro QQ-only feedback and permanent QR manifest implemented; device deployment partially complete",
   "currentFocus": "Pro 反馈仅保留 QQ 群，QQ 二维码长期有效",
   "currentFocus": "Pro 诊断与 AI 帮助：抓取结束状态机、异步作用域围栏和 reducedMotion 已闭合；继续真实 Provider、账号切换实机、设备视觉/邮件验收",
