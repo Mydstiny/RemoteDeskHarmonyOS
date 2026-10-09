@@ -26,7 +26,7 @@ import {
 } from '../../services/RdpSessionSidebarPolicy';
 
 export type RdpToolbarAction = 'control' | 'fileTransfer' | 'keyboard' | 'shortcuts' |
-  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect' | 'ai';
+  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect' | 'ai' | 'screenshot';
 
 interface RdpToolbarItem {
   action: RdpToolbarAction;
@@ -51,6 +51,8 @@ export struct RdpSessionToolbar {
   @Prop portraitDisplayActive: boolean = false;
   /** Pro AI 助理: its button sits right after RDP 控制. */
   @Prop aiVisible: boolean = false;
+  /** Pro 截屏给 AI 看: its button sits right before 刷新. */
+  @Prop screenshotVisible: boolean = false;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   /** The session window's width (vp); 0 while unknown. */
   @Prop viewportWidth: number = 0;
@@ -82,6 +84,10 @@ export struct RdpSessionToolbar {
     if (this.aiVisible) {
       items.splice(1, 0, { action: 'ai', label: 'AI 助理', dangerous: false });
     }
+    if (this.screenshotVisible) {
+      const refresh: number = items.findIndex((item: RdpToolbarItem): boolean => item.action === 'refresh');
+      items.splice(refresh, 0, { action: 'screenshot', label: '截屏', dangerous: false });
+    }
     if (this.portraitDisplayEnabled) {
       items.splice(items.length - 1, 0, {
         action: 'portrait', label: '竖屏显示', dangerous: false
@@ -111,6 +117,7 @@ export struct RdpSessionToolbar {
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
     if (action === 'ai') { return $r('sys.symbol.wand_and_stars'); }
+    if (action === 'screenshot') { return $r('sys.symbol.camera_fill'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 

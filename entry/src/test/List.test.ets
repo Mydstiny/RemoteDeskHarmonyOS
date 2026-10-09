@@ -30,6 +30,7 @@ import remoteInputGuardPolicyTest from './RemoteInputGuardPolicy.test';
 import settingsAccordionPolicyTest from './SettingsAccordionPolicy.test';
 import transferUserTextPolicyTest from './TransferUserTextPolicy.test';
 import hostHealthPolicyTest from './HostHealthPolicy.test';
+import sessionEvidencePolicyTest from './SessionEvidencePolicy.test';
 import remoteSessionMediaStatePolicyTest from './RemoteSessionMediaStatePolicy.test';
 import haloColorPolicyTest from './HaloColorPolicy.test';
 import remoteSessionCapabilityPolicyTest from './RemoteSessionCapabilityPolicy.test';
@@ -591,4 +592,5 @@ export default function testsuite() {
   moonlightDesktopFlipStoreTest();
   transferUserTextPolicyTest();
   hostHealthPolicyTest();
+  sessionEvidencePolicyTest();
 }

@@ -35,6 +35,8 @@ export interface VncSessionToolbarActions {
   onDisconnect: () => void;
   /** Pro AI 助理: the session's AI as the orb with its small chat. */
   onOpenAi: () => void;
+  /** Pro 截屏给 AI 看. */
+  onScreenshot: () => void;
   onCollapsedPointerMove: (x: number, y: number) => void;
 }
 
@@ -59,6 +61,8 @@ export struct VncSessionToolbar {
   @Prop diagnosticsEnabled: boolean = false;
   /** Pro AI 助理: its button sits before 性能 and 断开. */
   @Prop aiVisible: boolean = false;
+  /** Pro 截屏给 AI 看: its button sits next to the AI. */
+  @Prop screenshotVisible: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop collapsed: boolean = false;
   @Prop viewportWidth: number = 0;
@@ -81,6 +85,7 @@ export struct VncSessionToolbar {
     onToggleDiagnostics: (): void => {},
     onDisconnect: (): void => {},
     onOpenAi: (): void => {},
+    onScreenshot: (): void => {},
     onCollapsedPointerMove: (_x: number, _y: number): void => {}
   };
 
@@ -132,6 +137,9 @@ export struct VncSessionToolbar {
     } else if (actionId === 'diagnostics') {
       this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
         (): void => { this.actions.onToggleDiagnostics(); })
+    } else if (actionId === 'screenshot') {
+      this.actionButton($r('sys.symbol.camera_fill'), '截屏', false,
+        (): void => { this.actions.onScreenshot(); })
     } else if (actionId === 'ai') {
       this.actionButton($r('sys.symbol.wand_and_stars'), 'AI 助理', this.sessionAiOpen,
         (): void => { this.actions.onOpenAi(); }, false,
@@ -164,7 +172,8 @@ export struct VncSessionToolbar {
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible,
+          this.screenshotVisible),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>
@@ -172,7 +181,8 @@ export struct VncSessionToolbar {
       }
     } else {
       Row({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible,
+          this.screenshotVisible),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>
@@ -188,7 +198,7 @@ export struct VncSessionToolbar {
   /** Every button (56vp, 5vp apart, 6vp padding, 复位 always before 断开) in one row; narrower only with the window. */
   private pcExpandedToolbarWidth(): number {
     const count: number = vncToolbarPrimaryActionIds(
-      this.displayCount, this.portraitDisplayEnabled, this.aiVisible).length + 1;
+      this.displayCount, this.portraitDisplayEnabled, this.aiVisible, this.screenshotVisible).length + 1;
     const content: number = count * 56 + (count - 1) * 5 + 12;
     const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
       Math.max(1, this.viewportWidth - 24) : content;

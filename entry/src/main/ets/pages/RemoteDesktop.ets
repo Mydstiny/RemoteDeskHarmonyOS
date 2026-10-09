@@ -1,5 +1,11 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
-import { AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
+import { AI_ASSISTANT_HANDOFF, AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
+import { SessionScreenshotSheet } from '../components/pro/evidence/SessionScreenshotSheet';
+import {
+  PRO_SESSION_EVIDENCE_FEATURE,
+  SessionEvidenceFacts,
+  sessionEvidenceSummary
+} from '../services/pro/evidence/SessionEvidencePolicy';
 import { rustDeskCodecName, rustDeskLiveAudioPossible, rustDeskPrivacyStateMessage, rustDeskPrivacyStateOn } from '../services/RustDeskLiveOptionsPolicy';
 import { AiTouchShieldTracker } from '../services/diagnosticAi/AiTouchShield';
 import { recordRustDeskFailure, recordRustDeskFirstFrame, recordRustDeskQualityRequest,
@@ -1438,6 +1444,9 @@ struct RemoteDesktop {
   @State vncCertificateWarning: string = '';
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
   @State rdpRenderStats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
+  /** 截屏给 AI 看 / 诊断证据包 (Pro). */
+  @State showSessionScreenshotSheet: boolean = false;
+  @State sessionScreenshotSummary: string = '';
   @State @Watch('onHarmonyShortcutInputOwnerChange') rdpControlCenterVisible: boolean = false;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @State vncDisplayCapabilities: VncDisplayCapabilities = EMPTY_VNC_DISPLAY_CAPABILITIES;
@@ -2560,7 +2569,8 @@ struct RemoteDesktop {
     const portraitEnabled: boolean = this.remotePortraitDisplayEnabledForCurrentProtocol();
     const naturalRailHeight: number = vncToolbarRailHeight(
       deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight,
-      this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible());
+      this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible(),
+      this.sessionScreenshotVisible());
     const railHeight: number = portraitActive ? this.remotePortraitSidebarHeight(
       availableHeight, naturalRailHeight) : naturalRailHeight;
     const request: OverlayPlacementRequest = {
@@ -2591,9 +2601,11 @@ struct RemoteDesktop {
         railHeight: portraitActive ? this.remotePortraitSidebarHeight(
           availableHeight,
           vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), true,
-            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible())) :
+            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible(),
+            this.sessionScreenshotVisible())) :
           vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), true,
-            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible()),
+            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible(),
+            this.sessionScreenshotVisible()),
         menuWidth: 0,
         menuHeight: 0,
         expanded: false
@@ -2832,6 +2844,10 @@ struct RemoteDesktop {
       onOpenAi: (): void => {
         this.markVncToolbarInteraction();
         this.openSessionAi();
+      },
+      onScreenshot: (): void => {
+        this.markVncToolbarInteraction();
+        this.openSessionScreenshot();
       },
       onTogglePortraitDisplay: (): void => {
         this.markVncToolbarInteraction();
@@ -6492,6 +6508,81 @@ struct RemoteDesktop {
     return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
+  /** 截屏给 AI 看 is offered on RDP, RustDesk and VNC sessions with a picture on screen. */
+  private sessionScreenshotVisible(): boolean {
+    const protocol: string = this.currentProtocolName();
+    return (protocol === 'rdp' || protocol === 'rustdesk' || protocol === 'vnc') && this.connected &&
+      this.rendererHandle > 0 && ProEntries.visible(PRO_SESSION_EVIDENCE_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+  private rustDeskCodecName(codec: number): string {
+    switch (codec) {
+      case 0: return 'H.264';
+      case 1: return 'H.265';
+      case 2: return 'VP8';
+      case 3: return 'VP9';
+      case 4: return 'AV1';
+      default: return '';
+    }
+  }
+
+  private sessionEvidenceFacts(): SessionEvidenceFacts {
+    const protocol: string = this.currentProtocolName();
+    const rustdesk: boolean = protocol === 'rustdesk';
+    const host: RemoteHost | null = this.pendingHost;
+    return {
+      protocol,
+      hostLabel: host === null ? '' : host.label,
+      capturedAt: Date.now(),
+      remoteWidth: rustdesk ? this.rustDeskDiagnostics.width : (protocol === 'rdp' ? this.rdpRenderStats.desktopWidth : 0),
+      remoteHeight: rustdesk ? this.rustDeskDiagnostics.height :
+        (protocol === 'rdp' ? this.rdpRenderStats.desktopHeight : 0),
+      viewportWidth: Math.round(this.surfaceWidth),
+      viewportHeight: Math.round(this.surfaceHeight),
+      codec: rustdesk ? this.rustDeskCodecName(this.rustDeskDiagnostics.codec) : '',
+      decoder: rustdesk && this.rustDeskDiagnostics.codec >= 0 ?
+        (this.rustDeskDiagnostics.codec <= 1 ? 'hardware' : 'software') : '',
+      fps: rustdesk ? this.rustDeskDiagnostics.displayFps : 0,
+      route: rustdesk && host !== null ? (host.rustdeskDirectEnabled ? 'direct' : 'relay') : '',
+      lastError: this.connectionError !== '' ? this.connectionError : this.rdpSessionErrorMessage,
+      appVersion: '',
+      deviceType: this.isDesktopDevice ? 'PC' : (this.isPadDevice ? '平板' : '手机')
+    };
+  }
+
+  private openSessionScreenshot(): void {
+    if (!this.sessionScreenshotVisible()) {
+      promptAction.showToast({ message: '远端画面显示出来后才能截屏', duration: 1600 });
+      return;
+    }
+    this.sessionScreenshotSummary = sessionEvidenceSummary(this.sessionEvidenceFacts());
+    this.showSessionScreenshotSheet = true;
+  }
+
+  /** The text read from a screenshot goes to the session's AI as a question for 助理. */
+  private askSessionAiAboutScreenshot(question: string): void {
+    this.showSessionScreenshotSheet = false;
+    if (!this.sessionAiVisible()) {
+      promptAction.showToast({ message: 'AI 助理未开启', duration: 1600 });
+      return;
+    }
+    this.openSessionAi();
+    // The orb's small chat mounts first; then it takes the question over to 助理.
+    setTimeout((): void => {
+      AppStorage.setOrCreate<string>(AI_ASSISTANT_HANDOFF, Date.now().toString() + '|' + question);
+    }, 700);
+  }
+
+  @Builder sessionScreenshotSheetBuilder() {
+    SessionScreenshotSheet({
+      rendererHandle: this.rendererHandle,
+      protocol: this.currentProtocolName(),
+      summary: this.sessionScreenshotSummary,
+      onAskAi: (question: string): void => { this.askSessionAiAboutScreenshot(question); },
+      onClose: (): void => { this.showSessionScreenshotSheet = false; }
+    })
+  }
+
   /** The side bar's edge, for the AI's orb to keep clear of: RDP/RustDesk rails on the right, VNC's where it is. */
   private sessionAiAvoidSide(): string {
     if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pc') { return ''; }
@@ -6584,6 +6675,7 @@ struct RemoteDesktop {
 
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
     if (action === 'ai') { this.openSessionAi(); return; }
+    if (action === 'screenshot') { this.openSessionScreenshot(); return; }
     if (action === 'portrait') { this.toggleRemotePortraitDisplay(); return; }
     if (action === 'control') { this.toggleRdpControlCenter(); return; }
     if (action === 'fileTransfer') { this.openFileTransferPanel(); return; }
@@ -8609,6 +8701,7 @@ struct RemoteDesktop {
         this.sendCtrlAltDel();
       },
       onLockRemote: (): void => {},
+      onSessionScreenshot: (): void => { this.openSessionScreenshot(); },
       onTogglePrivacy: (on: boolean): void => {
         this.setRustDeskPrivacyMode(on);
       },
@@ -24784,6 +24877,7 @@ struct RemoteDesktop {
           portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
           diagnosticsEnabled: this.vncShowDiagnostics,
           aiVisible: this.sessionAiVisible(),
+          screenshotVisible: this.sessionScreenshotVisible(),
           canvasResetAvailable: this.canvasTransformGestureModified,
           collapsed: this.vncToolbarCollapsed,
           viewportWidth: this.currentRemoteSessionSidebarViewport().width,
@@ -24814,6 +24908,7 @@ struct RemoteDesktop {
               portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
               availableHeight: this.rdpToolbarAvailableHeight(),
               aiVisible: this.sessionAiVisible(),
+              screenshotVisible: this.sessionScreenshotVisible(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(this.rdpToolbarAvailableHeight())
@@ -24835,6 +24930,7 @@ struct RemoteDesktop {
               availableHeight: this.rdpToolbarAvailableHeight(),
               viewportWidth: this.remoteSidebarWindowWidth,
               aiVisible: this.sessionAiVisible(),
+              screenshotVisible: this.sessionScreenshotVisible(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(80).position({ x: 0, y: 0 })
@@ -24934,6 +25030,7 @@ struct RemoteDesktop {
       if (this.connected && this.shouldShowRemoteSessionTopBar()) {
         RemoteSessionTopBar({
           protocol: this.currentProtocolName(),
+          screenshotAvailable: this.sessionScreenshotVisible(),
           layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice),
           edgeRail: this.shouldUseRemoteSessionEdgeRail(),
           privacyMode: this.rustDeskPrivacyShown(),
@@ -25257,6 +25354,15 @@ struct RemoteDesktop {
             action.dismiss();
           },
           onDisappear: (): void => { this.handleRdpSessionErrorSheetDisappear(); }
+        })
+
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSessionScreenshotSheet, this.sessionScreenshotSheetBuilder(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : 640,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: this.pal().sheetBg,
+          showClose: false
         })
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)

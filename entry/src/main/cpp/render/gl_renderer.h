@@ -16,10 +16,12 @@
 #include "video_perf_counters.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // OpenGL ES 3.0
 #include <GLES3/gl3.h>
@@ -114,6 +116,13 @@ public:
     void SetRedrawCallback(std::function<void()> callback);
     /** Register the active RDP session wake callback independently of decoder ownership. */
     void SetSessionRedrawCallback(std::function<void()> callback);
+    /**
+     * 截屏 (Pro): ask for the next presented frame, read back at the remote picture's own size (at most 4096 on
+     * the long edge) without the local zoom, pan, rotation or flips. Asks for a redraw so a still desktop answers.
+     */
+    uint64_t RequestFrameCapture();
+    /** Waits for that capture off the UI and GL threads: RGBA, top row first. False on timeout or failure. */
+    bool WaitFrameCapture(uint64_t token, int timeoutMs, std::vector<uint8_t>& rgba, int& width, int& height);
     /** Redraw the retained raw frame on the caller's renderer-owner thread. */
     void RenderRetainedFrame(uint64_t expectedGeneration = 0);
     /** Same retained redraw with a generation-safe presentation result. */
@@ -195,6 +204,14 @@ private:
     GLint  canvasFlipYLocation_; // uniform uCanvasFlipY 位置
     // The OES texture the current OES program was linked for (0: none sampled yet).
     GLuint oesProgramTexture_ = 0;
+    std::mutex captureMutex_;
+    std::condition_variable captureCv_;
+    uint64_t captureNextToken_ = 0;
+    uint64_t captureRequestToken_ = 0;
+    uint64_t captureDoneToken_ = 0;
+    std::vector<uint8_t> capturePixels_;
+    int captureWidth_ = 0;
+    int captureHeight_ = 0;
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
@@ -296,6 +313,9 @@ private:
     GLuint CompileShader(GLenum type, const char* source);
     GLuint CreateShaderProgram();
     bool InstallOesProgram();
+    /** Called with the context current, after a frame is drawn and before it is swapped. */
+    void CaptureIfRequestedLocked(bool oes, GLuint texture, int width, int height,
+                                  const Render::NativeImageTransform* transform);
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);

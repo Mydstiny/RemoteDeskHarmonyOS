@@ -583,6 +583,115 @@ void GLRenderer::RequestRedraw() {
     }
 }
 
+uint64_t GLRenderer::RequestFrameCapture() {
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::mutex> lock(captureMutex_);
+        token = ++captureNextToken_;
+        captureRequestToken_ = token;
+    }
+    // A still desktop sends no frame; the redraw presents the retained one so the capture is answered.
+    RequestRedraw();
+    return token;
+}
+
+bool GLRenderer::WaitFrameCapture(uint64_t token, int timeoutMs, std::vector<uint8_t>& rgba,
+                                  int& width, int& height) {
+    std::unique_lock<std::mutex> lock(captureMutex_);
+    captureCv_.wait_for(lock, std::chrono::milliseconds(std::max(100, timeoutMs)),
+        [this, token]() { return captureDoneToken_ >= token; });
+    if (captureDoneToken_ != token || capturePixels_.empty()) {
+        if (captureRequestToken_ == token) { captureRequestToken_ = 0; }
+        return false;
+    }
+    rgba.swap(capturePixels_);
+    width = captureWidth_;
+    height = captureHeight_;
+    capturePixels_.clear();
+    return true;
+}
+
+void GLRenderer::CaptureIfRequestedLocked(bool oes, GLuint texture, int width, int height,
+                                          const Render::NativeImageTransform* transform) {
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::mutex> lock(captureMutex_);
+        if (captureRequestToken_ == 0 || captureRequestToken_ == captureDoneToken_) { return; }
+        token = captureRequestToken_;
+    }
+    std::vector<uint8_t> pixels;
+    int outW = 0;
+    int outH = 0;
+    bool ok = false;
+    const GLuint program = oes ? shaderProgram_ : rawShaderProgram_;
+    if (texture != 0 && program != 0 && width > 0 && height > 0 && (!oes || transform != nullptr)) {
+        constexpr int kMaxEdge = 4096;
+        const double scale = std::min(1.0, static_cast<double>(kMaxEdge) / std::max(width, height));
+        outW = std::max(1, static_cast<int>(width * scale));
+        outH = std::max(1, static_cast<int>(height * scale));
+        GLuint target = 0;
+        GLuint framebuffer = 0;
+        glGenTextures(1, &target);
+        glBindTexture(GL_TEXTURE_2D, target);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, outW, outH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+            glViewport(0, 0, outW, outH);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUseProgram(program);
+            glActiveTexture(GL_TEXTURE0);
+            // The remote picture as it is: no local rotation or flips (the next frame sets its own uniforms again).
+            if (oes) {
+                glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
+                glUniform1i(samplerLocation_, 0);
+                glUniform1i(canvasRotationLocation_, 0);
+                glUniform1i(canvasFlipXLocation_, 0);
+                glUniform1i(canvasFlipYLocation_, 0);
+                glUniformMatrix4fv(oesTransformLocation_, 1, GL_FALSE, transform->data());
+            } else {
+                glBindTexture(GL_TEXTURE_2D, texture);
+                glUniform1i(rawSamplerLocation_, 0);
+                if (rawCanvasRotationLocation_ >= 0) { glUniform1i(rawCanvasRotationLocation_, 0); }
+                if (rawCanvasFlipXLocation_ >= 0) { glUniform1i(rawCanvasFlipXLocation_, 0); }
+                if (rawCanvasFlipYLocation_ >= 0) { glUniform1i(rawCanvasFlipYLocation_, 0); }
+            }
+            glBindVertexArray(vao_);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glBindVertexArray(0);
+            const size_t rowBytes = static_cast<size_t>(outW) * 4U;
+            std::vector<uint8_t> bottomUp(rowBytes * static_cast<size_t>(outH));
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, outW, outH, GL_RGBA, GL_UNSIGNED_BYTE, bottomUp.data());
+            ok = glGetError() == GL_NO_ERROR;
+            if (ok) {
+                // glReadPixels starts at the bottom row; the picture's top row comes first in the result.
+                pixels.resize(bottomUp.size());
+                for (int row = 0; row < outH; ++row) {
+                    std::memcpy(pixels.data() + static_cast<size_t>(row) * rowBytes,
+                                bottomUp.data() + static_cast<size_t>(outH - 1 - row) * rowBytes, rowBytes);
+                }
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &target);
+    }
+    {
+        std::lock_guard<std::mutex> lock(captureMutex_);
+        captureDoneToken_ = token;
+        if (captureRequestToken_ == token) { captureRequestToken_ = 0; }
+        capturePixels_ = ok ? std::move(pixels) : std::vector<uint8_t>();
+        captureWidth_ = ok ? outW : 0;
+        captureHeight_ = ok ? outH : 0;
+    }
+    captureCv_.notify_all();
+    OH_LOG_INFO(LOG_APP, "[GL] frame capture path=%{public}s source=%{public}dx%{public}d out=%{public}dx%{public}d ok=%{public}d",
+                oes ? "oes" : "raw", width, height, outW, outH, ok ? 1 : 0);
+}
+
 void GLRenderer::ApplyPendingCanvasTransformLocked() {
     for (;;) {
         const uint64_t before = canvasTransformVersion_.load(std::memory_order_acquire);
@@ -1331,6 +1440,7 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     glBindVertexArray(0);
     const auto drawAt = clock::now();
 
+    CaptureIfRequestedLocked(false, rawTexture_, rawTextureWidth_, rawTextureHeight_, nullptr);
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
     if (swapped) {
         PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_, true);
@@ -1477,6 +1587,7 @@ RdpPresentMetrics GLRenderer::PresentFrame(
 
     const auto drawAt = clock::now();
     // 交换缓冲区
+    CaptureIfRequestedLocked(true, textureId, oesWidth, oesHeight, &textureTransform);
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
     if (swapped) {
         PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_, true);
@@ -1674,6 +1785,7 @@ RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGenerat
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     const auto drawAt = clock::now();
+    CaptureIfRequestedLocked(false, rawTexture_, rawTextureWidth_, rawTextureHeight_, nullptr);
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
     if (swapped) {
         PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_, true);
@@ -2319,6 +2431,86 @@ napi_value NapiRenderFrame(napi_env env, napi_callback_info info) {
 /**
  * NAPI: resizeRenderer(handle: number, width: number, height: number): void
  */
+struct FrameCaptureWork {
+    napi_async_work work = nullptr;
+    napi_deferred deferred = nullptr;
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t token = 0;
+    int timeoutMs = 2000;
+    std::vector<uint8_t> rgba;
+    int width = 0;
+    int height = 0;
+    bool ok = false;
+};
+
+/**
+ * NAPI: captureRendererFrame(handle, timeoutMs?): Promise<{ width, height, pixels: ArrayBuffer }>
+ * 截屏 (Pro): the next presented remote frame at its own size, RGBA top row first. Rejects when the renderer is
+ * gone or no frame is presented in time.
+ */
+napi_value NapiCaptureRendererFrame(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = { nullptr, nullptr };
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t handleVal = 0;
+    if (argc >= 1) { napi_get_value_int64(env, args[0], &handleVal); }
+    int32_t timeoutMs = 2000;
+    if (argc >= 2) { napi_get_value_int32(env, args[1], &timeoutMs); }
+    napi_value promise = nullptr;
+    auto* data = new FrameCaptureWork();
+    napi_create_promise(env, &data->deferred, &promise);
+    auto access = AcquirePublicRenderer(handleVal);
+    if (!access.renderer) {
+        napi_value message = nullptr;
+        napi_create_string_utf8(env, "renderer unavailable", NAPI_AUTO_LENGTH, &message);
+        napi_value error = nullptr;
+        napi_create_error(env, nullptr, message, &error);
+        napi_reject_deferred(env, data->deferred, error);
+        delete data;
+        return promise;
+    }
+    data->renderer = access.renderer;
+    data->timeoutMs = std::max(200, std::min(10000, static_cast<int>(timeoutMs)));
+    data->token = data->renderer->RequestFrameCapture();
+    napi_value name = nullptr;
+    napi_create_string_utf8(env, "captureRendererFrame", NAPI_AUTO_LENGTH, &name);
+    napi_create_async_work(env, nullptr, name,
+        [](napi_env, void* raw) {
+            auto* work = static_cast<FrameCaptureWork*>(raw);
+            work->ok = work->renderer->WaitFrameCapture(work->token, work->timeoutMs, work->rgba,
+                                                        work->width, work->height);
+        },
+        [](napi_env env, napi_status, void* raw) {
+            auto* work = static_cast<FrameCaptureWork*>(raw);
+            if (work->ok && !work->rgba.empty()) {
+                napi_value result = nullptr;
+                napi_create_object(env, &result);
+                napi_value width = nullptr;
+                napi_value height = nullptr;
+                napi_create_int32(env, work->width, &width);
+                napi_create_int32(env, work->height, &height);
+                napi_set_named_property(env, result, "width", width);
+                napi_set_named_property(env, result, "height", height);
+                void* bytes = nullptr;
+                napi_value buffer = nullptr;
+                napi_create_arraybuffer(env, work->rgba.size(), &bytes, &buffer);
+                if (bytes != nullptr) { std::memcpy(bytes, work->rgba.data(), work->rgba.size()); }
+                napi_set_named_property(env, result, "pixels", buffer);
+                napi_resolve_deferred(env, work->deferred, result);
+            } else {
+                napi_value message = nullptr;
+                napi_create_string_utf8(env, "no frame presented in time", NAPI_AUTO_LENGTH, &message);
+                napi_value error = nullptr;
+                napi_create_error(env, nullptr, message, &error);
+                napi_reject_deferred(env, work->deferred, error);
+            }
+            napi_delete_async_work(env, work->work);
+            delete work;
+        }, data, &data->work);
+    napi_queue_async_work(env, data->work);
+    return promise;
+}
+
 napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     size_t argc = 3;
     napi_value args[3];
@@ -3932,6 +4124,9 @@ napi_value RendererNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "resizeRenderer", NAPI_AUTO_LENGTH,
                          NapiResizeRenderer, nullptr, &fn);
     napi_set_named_property(env, exports, "resizeRenderer", fn);
+    napi_create_function(env, "captureRendererFrame", NAPI_AUTO_LENGTH,
+                         NapiCaptureRendererFrame, nullptr, &fn);
+    napi_set_named_property(env, exports, "captureRendererFrame", fn);
 
     napi_create_function(env, "setRendererCanvasTransform", NAPI_AUTO_LENGTH,
                          NapiSetRendererCanvasTransform, nullptr, &fn);

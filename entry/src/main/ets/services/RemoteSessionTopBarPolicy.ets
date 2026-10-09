@@ -536,7 +536,7 @@ export function rustDeskActionAvailability(actionId: string,
     actionId === 'rotateDisplay' ||
     actionId === 'desktopFlip' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
-    actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
+    actionId === 'togglePrivacyMode' || actionId === 'toggleAudio' || actionId === 'sessionScreenshot') {
     return capabilities.connect;
   }
   if (actionId === 'diagnostics') {

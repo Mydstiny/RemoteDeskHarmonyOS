@@ -281,6 +281,13 @@ declare module 'librdpnapi.so' {
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
+  /** 截屏 (Pro): the next presented remote frame at its own size (≤4096 long edge), RGBA top row first. */
+  export interface RendererFrameCapture {
+    width: number;
+    height: number;
+    pixels: ArrayBuffer;
+  }
+  export function captureRendererFrame(handle: number, timeoutMs?: number): Promise<RendererFrameCapture>;
   export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
     rotationQuarterTurns?: number, flipX?: boolean, flipY?: boolean): number;
   export function testRender(handle: number): void;

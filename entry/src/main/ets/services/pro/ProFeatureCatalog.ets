@@ -116,6 +116,14 @@ function hostHealth(): ProFeature {
   feature.protocols = ['rdp', 'ssh', 'vnc', 'rustdesk'];
   return feature;
 }
+function sessionEvidence(): ProFeature {
+  const feature = planned('pro.session.evidence', '截屏给 AI 看与诊断证据包',
+    '在 RDP、RustDesk、VNC 会话里截下远端画面：本机识别画面里的文字，你确认后交给 AI 解读报错；也可以保存到图库，' +
+    '或把截图和会话摘要打包分享、发给开发者。图片不会自动上传。');
+  feature.availability = 'available';
+  feature.protocols = ['rdp', 'rustdesk', 'vnc'];
+  return feature;
+}
 function rdpAdvancedDisplay(): ProFeature {
   const feature = planned(PRO_RDP_ADVANCED_DISPLAY_FEATURE, 'RDP 高级显示方案',
     '自定义远端桌面宽高与 Windows 100–500% 界面缩放，并按设备保存显示方案。');
@@ -163,6 +171,7 @@ export function proFeatures(): ProFeature[] {
     workspaces(),
     hostManagement(),
     hostHealth(),
+    sessionEvidence(),
     rdpAdvancedDisplay(),
     rustDeskAdvancedDisplay(),
     personalization(),
@@ -209,6 +218,9 @@ export function proFeatureProgress(id: string): string {
       return '已上线（试用） · 平板 SSH + RustDesk 实机通过 · PC 按布局摆放窗口待验证（作者还没有鸿蒙 PC 真机） · 手机屏幕小，默认关闭';
     case 'pro.hostHealth':
       return '已开发 · 试用开放 · 覆盖 RDP、SSH、VNC、RustDesk，Moonlight 稍后接入 · 待手机、平板、PC 验收';
+    case 'pro.session.evidence':
+      return '已开发 · 试用开放 · RDP、RustDesk、VNC 会话可用，Moonlight 稍后接入 · 识别文字依赖系统的本机文字识别，' +
+        '不支持的设备只能保存和打包 · 待手机、平板、PC 验收';
     case 'pro.hostManagement': return '已上线（试用） · 分组、标签、批量操作与导入导出在手机、平板和鸿蒙 PC 模拟器上验收通过';
     case PRO_RDP_ADVANCED_DISPLAY_FEATURE:
       return '已上线（试用） · 自定义尺寸与 Windows 缩放已在作者的 Windows 上可用；不同 Windows 版本和显示器组合还在逐一验证';

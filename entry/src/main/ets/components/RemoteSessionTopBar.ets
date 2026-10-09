@@ -109,6 +109,8 @@ export interface RemoteSessionTopBarActions {
   onOpenFileTransfer: () => void;
   onCtrlAltDel: () => void;
   onLockRemote: () => void;
+  /** 截屏给 AI 看 (Pro). */
+  onSessionScreenshot: () => void;
   onTogglePrivacy: (on: boolean) => void;
   /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all of them). */
   onToggleRustDeskVirtualDisplay: (display: number, on: boolean) => void;
@@ -243,6 +245,8 @@ export struct RemoteSessionTopBar {
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  /** Pro 截屏给 AI 看 is on for this session; otherwise the menu keeps the disabled 截屏 placeholder. */
+  @Prop screenshotAvailable: boolean = false;
   @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
@@ -281,6 +285,7 @@ export struct RemoteSessionTopBar {
     onOpenFileTransfer: (): void => {},
     onCtrlAltDel: (): void => {},
     onLockRemote: (): void => {},
+    onSessionScreenshot: (): void => {},
     onTogglePrivacy: (_on: boolean): void => {},
     onToggleRustDeskVirtualDisplay: (_display: number, _on: boolean): void => {},
     onToggleAudio: (_on: boolean): void => {},
@@ -926,7 +931,11 @@ export struct RemoteSessionTopBar {
           this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
           if (this.protocol === 'rustdesk') {
             this.menuItem('锁定远程电脑', 'lockRemote', (): void => { this.actions.onLockRemote(); })
-            this.menuItem('截屏', 'screenshot', (): void => {})
+            if (this.screenshotAvailable) {
+              this.menuItem('截屏给 AI 看', 'sessionScreenshot', (): void => { this.actions.onSessionScreenshot(); })
+            } else {
+              this.menuItem('截屏', 'screenshot', (): void => {})
+            }
             this.menuItem('文字聊天', 'textChat', (): void => {})
             this.menuItem('语音通话', 'voiceCall', (): void => {})
             this.menuItem('录制', 'recordSession', (): void => {})
