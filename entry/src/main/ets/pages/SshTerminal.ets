@@ -4,6 +4,29 @@ import { ProBadge } from '../components/ProBadge';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
 import { WorkspaceView } from '../services/pro/workspace/WorkspacePolicy';
+import { WorkspaceStagedSteps } from '../services/pro/workspace/WorkspaceHandoff';
+import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
+import { Workspace } from '../services/pro/workspace/WorkspacePolicy';
+import {
+  WorkspaceStepPick,
+  WorkspaceStepRun,
+  WorkspaceStepRunItem,
+  WorkspaceStepTarget,
+  cancelWorkspaceStepRun,
+  nextWorkspaceStep,
+  retryWorkspaceSteps,
+  setWorkspaceStepRunPaused,
+  setWorkspaceStepState,
+  skipNextWorkspaceStep,
+  workspaceStepCdCommand,
+  workspaceStepPreview,
+  workspaceStepPreviewKey,
+  workspaceStepRunFinished,
+  workspaceStepRunFor,
+  workspaceStepRunSummary,
+  workspaceStepsNeedConfirmation
+} from '../services/pro/workspace/WorkspaceStepPolicy';
+import { WorkspaceStepRunCard } from '../components/pro/workspace/WorkspaceStepRunCard';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
 import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
@@ -450,6 +473,7 @@ import {
   buildSshSnippetInsertSubmission,
   emptySshProductivityDocument,
   renderSshSnippet,
+  snippetVisibleForScope,
   SshCommandHistoryV1,
   SshLocalCommandSubmit,
   SshLocalCommandTracker,
@@ -914,6 +938,11 @@ struct SshTerminal {
   @State sshScreenTextRequest: number = 0;
   @State showSshScreenTextSheet: boolean = false;
   @State sshScreenText: string = '';
+  /** 连接后步骤 of a Pro workspace running in this session (null: none). */
+  @State proWorkspaceStepRun: WorkspaceStepRun | null = null;
+  /** host:session:generation the run belongs to; any change stops it. */
+  private proWorkspaceStepFence: string = '';
+  private proWorkspaceStepTimer: number = -1;
   /** TerminalEmulator 回传的待复制文本 — @Watch 触发写系统剪贴板 */
   @State @Watch('onCopiedTextChange') copiedText: string = '';
   /** 移动端键盘/视口变化时递增, 通知终端渲染器回到底部 */
@@ -8972,6 +9001,10 @@ struct SshTerminal {
 
   private onSshContinuationConnectionChange(): void {
     this.stopSftpKnock();
+    if (!this.connected && this.proWorkspaceStepRun !== null &&
+      !workspaceStepRunFinished(this.proWorkspaceStepRun as WorkspaceStepRun)) {
+      this.cancelProWorkspaceSteps('已停止：会话已断开');
+    }
     if (!this.connected && this.proContinuationWindowId > 0) {
       ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
       this.proContinuationPersistent = false;
@@ -9178,6 +9211,199 @@ struct SshTerminal {
     if (view.sshDirectory !== '' && !(await this.refreshSftp(view.sshDirectory))) {
       promptAction.showToast({ message: '工作区目录未能打开，可在 SFTP 中手动进入', duration: 2200 });
     }
+  }
+
+  // ---------- 连接后步骤 (Pro workspaces) ----------
+
+  private proWorkspaceStepFenceNow(): string {
+    return this.hostId.trim() + ':' + this.sessionId.toString() + ':' + this.sshSessionGeneration.toString();
+  }
+
+  private clearProWorkspaceStepTimer(): void {
+    if (this.proWorkspaceStepTimer >= 0) { clearTimeout(this.proWorkspaceStepTimer); this.proWorkspaceStepTimer = -1; }
+  }
+
+  private scheduleProWorkspaceStep(delayMs: number): void {
+    this.clearProWorkspaceStepTimer();
+    this.proWorkspaceStepTimer = setTimeout((): void => {
+      this.proWorkspaceStepTimer = -1;
+      this.advanceProWorkspaceSteps();
+    }, delayMs);
+  }
+
+  private proWorkspaceStepTargets(hostId: string): WorkspaceStepTarget[][] {
+    const forwards: WorkspaceStepTarget[] = this.sshForwardingProfilesReady ?
+      this.sshForwardingProfiles.list(hostId).map((profile: SshForwardingProfile): WorkspaceStepTarget => ({
+        id: profile.id, usable: true,
+        title: sshForwardingModeLabel(profile.mode) + ' ' + formatListenerHostPort(profile.bindHost, profile.bindPort)
+      })) : [];
+    const snippets: WorkspaceStepTarget[] = this.sshProductivityReady ?
+      this.sshProductivityStore.snapshot().snippets
+        .filter((snippet: SshSnippetV1): boolean => snippetVisibleForScope(snippet, hostId, this.sshProductivityGroupId()))
+        .map((snippet: SshSnippetV1): WorkspaceStepTarget => {
+          const rendered = renderSshSnippet(snippet, []);
+          return { id: snippet.id, title: snippet.title,
+            usable: rendered.ok && !rendered.containsSecret && rendered.insertion.length > 0 };
+        }) : [];
+    return [forwards, snippets];
+  }
+
+  private proWorkspaceStepPreviewed(key: string): boolean {
+    try {
+      const store = preferences.getPreferencesSync(getContext(this), { name: 'pro_workspace_steps' });
+      return store.getSync(key, false) === true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private markProWorkspaceStepPreviewed(key: string): void {
+    try {
+      const store = preferences.getPreferencesSync(getContext(this), { name: 'pro_workspace_steps' });
+      store.putSync(key, true);
+      store.flush();
+    } catch (_error) { /* asked again next time */ }
+  }
+
+  /**
+   * A session opened from a workspace runs the entry's 连接后步骤 once: a preview before the first run of this workspace
+   * version, a confirmation on every run with a step that presses Enter, then one step at a time.
+   */
+  private async startProWorkspaceSteps(hostId: string): Promise<void> {
+    const staged: WorkspaceStagedSteps | null = WorkspaceHandoff.getInstance().takeSteps(hostId);
+    if (staged === null || this.terminalClosing || !this.connected || this.hostId !== hostId ||
+      !ProEntries.visible('pro.workspaces')) { return; }
+    const fence: string = this.proWorkspaceStepFenceNow();
+    const targets: WorkspaceStepTarget[][] = this.proWorkspaceStepTargets(hostId);
+    let run: WorkspaceStepRun = workspaceStepRunFor(staged.workspaceId, staged.workspaceName,
+      staged.workspaceUpdatedAt, hostId, staged.steps, targets[0], targets[1]);
+    const key: string = workspaceStepPreviewKey(staged.workspaceId, staged.workspaceUpdatedAt, hostId);
+    const firstRun: boolean = !this.proWorkspaceStepPreviewed(key);
+    const confirm: boolean = workspaceStepsNeedConfirmation(run);
+    if (firstRun || confirm) {
+      const answer = await this.getUIContext().getPromptAction().showDialog({
+        title: confirm ? '执行工作区的连接后步骤？' : '工作区「' + staged.workspaceName + '」的连接后步骤',
+        message: workspaceStepPreview(run) + (confirm ? '\n\n其中有命令会自动回车执行，请确认无误。' : ''),
+        buttons: [{ text: '不执行', color: this.pal().text2 }, { text: '开始执行', color: this.accentColor }]
+      });
+      if (this.proWorkspaceStepFenceNow() !== fence || !this.connected || this.terminalClosing) { return; }
+      if (answer.index !== 1) {
+        run = cancelWorkspaceStepRun(run, '你选择了不执行');
+        this.proWorkspaceStepRun = run;
+        this.proWorkspaceStepFence = fence;
+        return;
+      }
+      this.markProWorkspaceStepPreviewed(key);
+    }
+    this.proWorkspaceStepRun = run;
+    this.proWorkspaceStepFence = fence;
+    // The shell prints its prompt first.
+    this.scheduleProWorkspaceStep(1200);
+  }
+
+  /** Why the run must stop now ('' when it may go on). */
+  private proWorkspaceStepStopReason(run: WorkspaceStepRun): string {
+    if (this.terminalClosing || !this.connected) { return '会话已断开'; }
+    if (this.proWorkspaceStepFenceNow() !== this.proWorkspaceStepFence || this.hostId !== run.hostId) {
+      return '会话已切换';
+    }
+    if (!ProEntries.visible('pro.workspaces')) { return 'Pro 不可用'; }
+    const saved: Workspace | null = WorkspaceStore.getInstance().get(run.workspaceId);
+    if (saved === null) { return '工作区已删除或账号已切换'; }
+    if (run.workspaceUpdatedAt > 0 && saved.updatedAt !== run.workspaceUpdatedAt) { return '工作区已修改'; }
+    return '';
+  }
+
+  private advanceProWorkspaceSteps(): void {
+    if (this.proWorkspaceStepRun === null) { return; }
+    let run: WorkspaceStepRun = this.proWorkspaceStepRun as WorkspaceStepRun;
+    if (workspaceStepRunFinished(run)) { return; }
+    const reason: string = this.proWorkspaceStepStopReason(run);
+    if (reason !== '') {
+      this.proWorkspaceStepRun = cancelWorkspaceStepRun(run, '已停止：' + reason);
+      return;
+    }
+    const pick: WorkspaceStepPick = nextWorkspaceStep(run);
+    run = pick.run;
+    if (pick.index < 0) {
+      this.proWorkspaceStepRun = run;
+      if (workspaceStepRunFinished(run)) {
+        promptAction.showToast({ message: run.workspaceName + ' · ' + workspaceStepRunSummary(run), duration: 2000 });
+      }
+      return;
+    }
+    const item: WorkspaceStepRunItem = run.items[pick.index];
+    run = setWorkspaceStepState(run, pick.index, 'running', '');
+    this.proWorkspaceStepRun = run;
+    let ok: boolean = true;
+    let message: string = '';
+    if (item.kind === 'forward') {
+      const handle: SshSessionHandle | null = this.currentForwardingHandle();
+      const profile: SshForwardingProfile | undefined = this.sshForwardingProfilesReady ?
+        this.sshForwardingProfiles.list(run.hostId).find((p: SshForwardingProfile): boolean => p.id === item.ref) :
+        undefined;
+      if (handle === null || profile === undefined) {
+        ok = false;
+        message = profile === undefined ? '转发规则已删除' : 'SSH 会话尚未就绪';
+      } else {
+        const result: SshForwardingOperationResult = this.sshForwardingController.start(handle, profile);
+        ok = result.accepted;
+        message = ok ? '' : this.forwardingOperationMessage('启动', result);
+        this.updateForwardingSnapshot(handle);
+      }
+    } else if (item.kind === 'cd') {
+      this.sendTerminalBytes(workspaceStepCdCommand(item.path) + '\r', true);
+    } else {
+      const snippet: SshSnippetV1 | undefined = this.sshProductivityReady ?
+        this.sshProductivityStore.snapshot().snippets.find((s: SshSnippetV1): boolean => s.id === item.ref) : undefined;
+      const rendered = snippet === undefined ? null : renderSshSnippet(snippet, []);
+      if (rendered === null || !rendered.ok || rendered.containsSecret || rendered.insertion.length === 0) {
+        ok = false;
+        message = snippet === undefined ? '命令已删除' : '命令需要填写变量或含密钥';
+      } else {
+        this.sshProductivityTrackerSuppressed = true;
+        try {
+          this.sendTerminalBytes(rendered.insertion + (item.execute ? '\r' : ''), item.execute);
+        } finally {
+          this.sshProductivityTrackerSuppressed = false;
+        }
+      }
+    }
+    this.proWorkspaceStepRun = setWorkspaceStepState(this.proWorkspaceStepRun as WorkspaceStepRun, pick.index,
+      ok ? 'done' : 'failed', message);
+    // An inserted command waits for the user; the steps after it still follow once the shell has it.
+    this.scheduleProWorkspaceStep(item.kind === 'forward' ? 300 : 700);
+  }
+
+  private pauseProWorkspaceSteps(paused: boolean): void {
+    if (this.proWorkspaceStepRun === null) { return; }
+    this.proWorkspaceStepRun = setWorkspaceStepRunPaused(this.proWorkspaceStepRun as WorkspaceStepRun, paused);
+    if (paused) { this.clearProWorkspaceStepTimer(); } else { this.scheduleProWorkspaceStep(200); }
+  }
+
+  private skipProWorkspaceStep(): void {
+    if (this.proWorkspaceStepRun === null) { return; }
+    this.proWorkspaceStepRun = skipNextWorkspaceStep(this.proWorkspaceStepRun as WorkspaceStepRun);
+    if (!(this.proWorkspaceStepRun as WorkspaceStepRun).paused) { this.scheduleProWorkspaceStep(200); }
+  }
+
+  private retryProWorkspaceSteps(): void {
+    if (this.proWorkspaceStepRun === null) { return; }
+    this.proWorkspaceStepRun = retryWorkspaceSteps(this.proWorkspaceStepRun as WorkspaceStepRun);
+    this.proWorkspaceStepFence = this.proWorkspaceStepFenceNow();
+    this.scheduleProWorkspaceStep(200);
+  }
+
+  private cancelProWorkspaceSteps(reason: string): void {
+    this.clearProWorkspaceStepTimer();
+    if (this.proWorkspaceStepRun === null) { return; }
+    this.proWorkspaceStepRun = cancelWorkspaceStepRun(this.proWorkspaceStepRun as WorkspaceStepRun, reason);
+  }
+
+  private closeProWorkspaceSteps(): void {
+    this.clearProWorkspaceStepTimer();
+    this.proWorkspaceStepRun = null;
+    this.proWorkspaceStepFence = '';
   }
 
   private async restoreProConnectionShare(): Promise<void> {
@@ -13049,6 +13275,7 @@ struct SshTerminal {
     void this.restoreProContinuation();
     void this.restoreProConnectionShare();
     void this.restoreProWorkspaceView(bindingHostId);
+    void this.startProWorkspaceSteps(bindingHostId);
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
@@ -20241,6 +20468,18 @@ struct SshTerminal {
           .combine(TransitionEffect.translate({ y: -16 }))
           .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 }))
           .animation({ duration: SSH_COMMAND_PALETTE_MOTION_MS, curve: Curve.FastOutSlowIn }))
+      }
+      if (this.proWorkspaceStepRun !== null) {
+        WorkspaceStepRunCard({
+          run: this.proWorkspaceStepRun as WorkspaceStepRun,
+          onPause: (paused: boolean): void => { this.pauseProWorkspaceSteps(paused); },
+          onSkip: (): void => { this.skipProWorkspaceStep(); },
+          onRetry: (): void => { this.retryProWorkspaceSteps(); },
+          onCancel: (): void => { this.cancelProWorkspaceSteps('已取消'); },
+          onClose: (): void => { this.closeProWorkspaceSteps(); }
+        })
+          .position({ x: Math.max(8, this.sshPageAreaW - 312), y: 64 })
+          .zIndex(250)
       }
     }
     .width('100%').height('100%')

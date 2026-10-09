@@ -11,7 +11,26 @@ export interface WorkspaceView {
   sshPane: string; sshDirectory: string; monitor: number; scale: number; panX: number; panY: number; inputMode: string; strictBounds?: boolean;
 }
 export interface WorkspaceFrame { x: number; y: number; w: number; h: number; fullscreen: boolean; }
-export interface WorkspaceEntry { hostRef: string; protocol: WorkspaceProtocol; order: number; autoConnect: boolean; view: WorkspaceView; frame?: WorkspaceFrame; }
+/**
+ * 连接后步骤 (Pro, SSH entries only): enable a saved port forward, go to a directory, or insert a saved command (run
+ * only when `execute` is on, and confirmed on every run). Steps refer to saved forwards and commands by id; a step whose
+ * forward or command is gone shows as 已失效 and never runs. Optional on the entry, so older app versions (which keep
+ * schemaVersion 1) still read the workspace and simply open the host.
+ */
+export type WorkspaceStepKind = 'forward' | 'cd' | 'snippet';
+export interface WorkspaceStep {
+  kind: WorkspaceStepKind;
+  /** The forward profile id ('forward') or the saved command id ('snippet'); '' for 'cd'. */
+  ref: string;
+  /** The directory for 'cd' (absolute); '' otherwise. */
+  path: string;
+  /** 'snippet' only: press Enter after inserting it. */
+  execute: boolean;
+  /** Run only if the step before it succeeded. */
+  requirePrevious: boolean;
+}
+export const MAX_WORKSPACE_STEPS: number = 8;
+export interface WorkspaceEntry { hostRef: string; protocol: WorkspaceProtocol; order: number; autoConnect: boolean; view: WorkspaceView; frame?: WorkspaceFrame; steps?: WorkspaceStep[]; }
 export interface Workspace { schemaVersion: number; id: string; name: string; color: string; icon: string; order: number; entries: WorkspaceEntry[]; layout?: WorkspaceLayoutPreset; updatedAt: number; }
 export interface WorkspaceOpenItem { hostRef: string; protocol: string; mode: 'window' | 'tab' | 'split' | 'queued'; order: number; frame?: WorkspaceFrame; }
 export interface WorkspaceOpenPlan { device: WorkspaceDevice; items: WorkspaceOpenItem[]; maxConcurrent: number; fallback: string; }
@@ -35,8 +54,30 @@ function exactView(view: WorkspaceView, protocol: string): boolean {
 export function defaultWorkspaceView(): WorkspaceView {
   return { sshPane: 'terminal', sshDirectory: '', monitor: 0, scale: 1, panX: 0, panY: 0, inputMode: 'direct' };
 }
+function validStep(step: WorkspaceStep): boolean {
+  if (!step || typeof step !== 'object') { return false; }
+  const keys: string[] = Object.keys(step);
+  const expected: string[] = ['kind', 'ref', 'path', 'execute', 'requirePrevious'];
+  if (keys.length !== expected.length || keys.some((key: string): boolean => expected.indexOf(key) < 0)) { return false; }
+  if (typeof step.execute !== 'boolean' || typeof step.requirePrevious !== 'boolean') { return false; }
+  if (step.kind === 'cd') {
+    return step.ref === '' && !step.execute && text(step.path, 1024) && step.path.startsWith('/');
+  }
+  if (step.kind === 'forward') { return text(step.ref, 96) && step.path === '' && !step.execute; }
+  if (step.kind === 'snippet') { return text(step.ref, 96) && step.path === ''; }
+  return false;
+}
+export function validateWorkspaceSteps(protocol: string, steps: WorkspaceStep[] | undefined): boolean {
+  if (steps === undefined) { return true; }
+  return Array.isArray(steps) && protocol === 'ssh' && steps.length <= MAX_WORKSPACE_STEPS &&
+    steps.every((step: WorkspaceStep): boolean => validStep(step));
+}
+export function copyWorkspaceStep(step: WorkspaceStep): WorkspaceStep {
+  return { kind: step.kind, ref: step.ref, path: step.path, execute: step.execute, requirePrevious: step.requirePrevious };
+}
 export function validateWorkspaceEntry(entry: WorkspaceEntry): string[] {
   const errors: string[] = [];
+  if (!validateWorkspaceSteps(entry.protocol, entry.steps)) { errors.push('invalid_steps'); }
   if (!text(entry.hostRef, 160) || /[\u0000-\u001f]/.test(entry.hostRef)) { errors.push('invalid_host_ref'); }
   if (!text(entry.protocol, 32)) { errors.push('invalid_protocol'); }
   if (!Number.isInteger(entry.order) || entry.order < 0 || entry.order >= MAX_WORKSPACE_ENTRIES) { errors.push('invalid_order'); }
@@ -122,6 +163,7 @@ export function copyWorkspaceEntry(entry: WorkspaceEntry): WorkspaceEntry {
       scale: entry.view.scale, panX: entry.view.panX, panY: entry.view.panY, inputMode: entry.view.inputMode }
   };
   if (entry.view.strictBounds !== undefined) { copied.view.strictBounds = entry.view.strictBounds; }
+  if (entry.steps !== undefined) { copied.steps = entry.steps.map((step: WorkspaceStep): WorkspaceStep => copyWorkspaceStep(step)); }
   if (entry.frame !== undefined) {
     copied.frame = { x: entry.frame.x, y: entry.frame.y, w: entry.frame.w, h: entry.frame.h,
       fullscreen: entry.frame.fullscreen };

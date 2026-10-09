@@ -97,7 +97,8 @@ function proFeedback(): ProFeature {
 }
 function workspaces(): ProFeature {
   const feature = planned('pro.workspaces', '工作区与布局',
-    '把常用的一组会话存成工作区，一键依次打开；SSH 可指定初始目录，PC 按保存的布局摆放窗口。需要鸿蒙 7（API 26）及以上。');
+    '把常用的一组会话存成工作区，一键依次打开；SSH 可指定初始目录，并设置连接后步骤（启用转发、进入目录、插入常用命令）；' +
+    'PC 按保存的布局摆放窗口。需要鸿蒙 7（API 26）及以上。');
   feature.availability = 'available';
   feature.minApiVersion = 26;
   return feature;
@@ -215,7 +216,8 @@ export function proFeatureProgress(id: string): string {
       return '原型 · 仅调试版：目前只能在本应用内测试注册与登录，还不能给普通网站和其他应用使用；RDP 接入待鸿蒙 PC 真机验收';
     case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
     case 'pro.workspaces':
-      return '已上线（试用） · 平板 SSH + RustDesk 实机通过 · PC 按布局摆放窗口待验证（作者还没有鸿蒙 PC 真机） · 手机屏幕小，默认关闭';
+      return '已上线（试用） · 平板 SSH + RustDesk 实机通过 · SSH 连接后步骤新开发，待手机、平板验收 · ' +
+        'PC 按布局摆放窗口待验证（作者还没有鸿蒙 PC 真机） · 手机屏幕小，默认关闭';
     case 'pro.hostHealth':
       return '已开发 · 试用开放 · 覆盖 RDP、SSH、VNC、RustDesk，Moonlight 稍后接入 · 待手机、平板、PC 验收';
     case 'pro.session.evidence':

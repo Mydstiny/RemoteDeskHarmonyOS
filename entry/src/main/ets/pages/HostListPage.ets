@@ -7542,6 +7542,11 @@ struct HostListPage {
     const sshView = entry !== null && host.protocol === 'ssh' &&
       (entry.view.sshPane === 'files' || entry.view.sshDirectory !== '') ? entry.view : null;
     handoff.stage(host.id, sshView, frame);
+    if (entry !== null && host.protocol === 'ssh' && entry.steps !== undefined && entry.steps.length > 0) {
+      const saved: Workspace | null = WorkspaceStore.getInstance().get(run.workspaceId);
+      handoff.stageSteps(host.id, { workspaceId: run.workspaceId, workspaceName: run.name,
+        workspaceUpdatedAt: saved === null ? 0 : saved.updatedAt, steps: entry.steps });
+    }
     const vncRecordId: string = this.vncRecordIdForHost(host);
     if (vncRecordId !== '' && frame !== null) { handoff.stage(vncRecordId, null, frame); }
     if (this.workspaceDeviceKind() === 'tablet') {

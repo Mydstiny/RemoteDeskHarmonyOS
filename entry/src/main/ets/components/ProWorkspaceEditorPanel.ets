@@ -11,6 +11,23 @@ import {
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { workspaceDeviceKind, workspaceEntryLimit } from '../services/pro/workspace/WorkspaceDevicePolicy';
 import { orgHostRows, OrgHostRow, orgProtocolLabel, orgRowDetail } from '../services/pro/org/HostOrganizationDirectory';
+import { MAX_WORKSPACE_STEPS, WorkspaceStep, WorkspaceStepKind } from '../services/pro/workspace/WorkspacePolicy';
+import {
+  WorkspaceStepRun,
+  WorkspaceStepRunItem,
+  WorkspaceStepTarget,
+  workspaceStepRunFor
+} from '../services/pro/workspace/WorkspaceStepPolicy';
+import { SshForwardingProfileStore } from '../services/SshForwardingProfileStore';
+import { SshForwardingProfile } from '../services/SshForwardingPolicy';
+import { formatListenerHostPort } from '../services/EndpointAddressPolicy';
+import { sshForwardingModeLabel } from '../services/SshForwardingEditorPolicy';
+import { SshProductivityStore } from '../services/ssh/productivity/SshProductivityStore';
+import {
+  SshSnippetV1,
+  renderSshSnippet,
+  snippetVisibleForScope
+} from '../services/ssh/productivity/SshProductivityPolicy';
 
 type EditorTab = 'sessions' | 'layout';
 const CANVAS_RATIO: number = 10 / 16;
@@ -40,9 +57,18 @@ export struct ProWorkspaceEditorPanel {
   @State picked: string[] = [];
   @State selectedFrameRef: string = '';
   @State canvasWidth: number = 300;
+  /** 连接后步骤: which kind is being added ('' none) and the directory typed for a 'cd' step. */
+  @State stepPicking: string = '';
+  @State stepPathDraft: string = '';
+  private forwardStore: SshForwardingProfileStore = new SshForwardingProfileStore();
+  private forwardStoreReady: boolean = false;
+  private snippetStore: SshProductivityStore = new SshProductivityStore();
+  private snippetStoreReady: boolean = false;
   private dragStart: WorkspaceFrame | null = null;
 
   aboutToAppear(): void {
+    try { this.forwardStoreReady = this.forwardStore.init(getContext(this)); } catch (_error) { this.forwardStoreReady = false; }
+    try { this.snippetStoreReady = this.snippetStore.init(getContext(this)); } catch (_error) { this.snippetStoreReady = false; }
     this.draft = copyWorkspace(this.workspace);
     this.nameDraft = this.workspace.name;
     if (this.draft.entries.length === 0) { this.picking = true; }
@@ -112,6 +138,159 @@ export struct ProWorkspaceEditorPanel {
     if (dir !== '' && !dir.startsWith('/')) { this.toast('目录需要以 / 开头'); return; }
     this.setEntry(entry.hostRef, (item: WorkspaceEntry): void => { item.view.sshDirectory = dir; });
   }
+  // ---------- 连接后步骤 ----------
+  private stepForwards(hostRef: string): WorkspaceStepTarget[] {
+    if (!this.forwardStoreReady) { return []; }
+    return this.forwardStore.list(hostRef).map((profile: SshForwardingProfile): WorkspaceStepTarget => ({
+      id: profile.id, usable: true,
+      title: sshForwardingModeLabel(profile.mode) + ' ' + formatListenerHostPort(profile.bindHost, profile.bindPort)
+    }));
+  }
+  private stepSnippets(hostRef: string): WorkspaceStepTarget[] {
+    if (!this.snippetStoreReady) { return []; }
+    return this.snippetStore.snapshot().snippets
+      .filter((snippet: SshSnippetV1): boolean => snippetVisibleForScope(snippet, hostRef, ''))
+      .map((snippet: SshSnippetV1): WorkspaceStepTarget => {
+        const rendered = renderSshSnippet(snippet, []);
+        return { id: snippet.id, title: snippet.title,
+          usable: rendered.ok && !rendered.containsSecret && rendered.insertion.length > 0 };
+      });
+  }
+  private stepRun(entry: WorkspaceEntry): WorkspaceStepRun {
+    return workspaceStepRunFor('', '', 0, entry.hostRef, entry.steps ?? [], this.stepForwards(entry.hostRef),
+      this.stepSnippets(entry.hostRef));
+  }
+  private setSteps(entry: WorkspaceEntry, change: (steps: WorkspaceStep[]) => WorkspaceStep[]): void {
+    this.setEntry(entry.hostRef, (item: WorkspaceEntry): void => {
+      const next: WorkspaceStep[] = change((item.steps ?? []).slice());
+      if (next.length === 0) { item.steps = undefined; } else { item.steps = next; }
+    });
+  }
+  private addStep(entry: WorkspaceEntry, kind: WorkspaceStepKind, ref: string, path: string): void {
+    if ((entry.steps ?? []).length >= MAX_WORKSPACE_STEPS) {
+      this.toast('每台主机最多 ' + MAX_WORKSPACE_STEPS.toString() + ' 个步骤');
+      return;
+    }
+    this.setSteps(entry, (steps: WorkspaceStep[]): WorkspaceStep[] =>
+      steps.concat([{ kind, ref, path, execute: false, requirePrevious: false }]));
+    this.stepPicking = '';
+    this.stepPathDraft = '';
+  }
+  private addCdStep(entry: WorkspaceEntry): void {
+    const path: string = this.stepPathDraft.trim();
+    if (!path.startsWith('/')) { this.toast('目录需要以 / 开头'); return; }
+    this.addStep(entry, 'cd', '', path);
+  }
+  private moveStep(entry: WorkspaceEntry, index: number, delta: number): void {
+    this.setSteps(entry, (steps: WorkspaceStep[]): WorkspaceStep[] => {
+      const target: number = index + delta;
+      if (target < 0 || target >= steps.length) { return steps; }
+      const moved: WorkspaceStep = steps[index];
+      steps.splice(index, 1);
+      steps.splice(target, 0, moved);
+      return steps;
+    });
+  }
+
+  @Builder private entrySteps(entry: WorkspaceEntry) {
+    Column({ space: 6 }) {
+      Text('连接后步骤').fontSize(12).fontColor(this.pal().text3).width('100%')
+      Text('连上后依次执行：启用已保存的转发、进入目录、插入已保存的命令。命令默认只插入不回车；开了「自动执行」的，每次运行前都会让你确认。')
+        .fontSize(11).fontColor(this.pal().text3).width('100%')
+      ForEach(this.stepRun(entry).items, (item: WorkspaceStepRunItem, index: number): void => {
+        Column({ space: 4 }) {
+          Row({ space: 6 }) {
+            Text((index + 1).toString() + '. ' + item.label).fontSize(13)
+              .fontColor(item.state === 'invalid' ? this.pal().danger : this.pal().text)
+              .layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(14).padding(6)
+              .fontColor([index === 0 ? this.pal().cardBorder : this.pal().text3])
+              .onClick((): void => { this.moveStep(entry, index, -1); })
+            SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(14).padding(6)
+              .fontColor([index === (entry.steps ?? []).length - 1 ? this.pal().cardBorder : this.pal().text3])
+              .onClick((): void => { this.moveStep(entry, index, 1); })
+            SymbolGlyph($r('sys.symbol.trash')).fontSize(14).padding(6).fontColor([this.pal().danger])
+              .onClick((): void => {
+                this.setSteps(entry, (steps: WorkspaceStep[]): WorkspaceStep[] =>
+                  steps.filter((_step: WorkspaceStep, at: number): boolean => at !== index));
+              })
+          }.width('100%')
+          if (item.state === 'invalid') {
+            Text(item.message).fontSize(11).fontColor(this.pal().danger).width('100%')
+          }
+          Flex({ wrap: FlexWrap.Wrap }) {
+            if (item.kind === 'snippet') {
+              this.chip('自动执行', item.execute, (): void => {
+                this.setSteps(entry, (steps: WorkspaceStep[]): WorkspaceStep[] => steps.map(
+                  (step: WorkspaceStep, at: number): WorkspaceStep => at !== index ? step :
+                    { kind: step.kind, ref: step.ref, path: step.path, execute: !step.execute,
+                      requirePrevious: step.requirePrevious }));
+              })
+            }
+            if (index > 0) {
+              this.chip('上一步成功才继续', item.requirePrevious, (): void => {
+                this.setSteps(entry, (steps: WorkspaceStep[]): WorkspaceStep[] => steps.map(
+                  (step: WorkspaceStep, at: number): WorkspaceStep => at !== index ? step :
+                    { kind: step.kind, ref: step.ref, path: step.path, execute: step.execute,
+                      requirePrevious: !step.requirePrevious }));
+              })
+            }
+          }.width('100%')
+        }.width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface)
+      }, (item: WorkspaceStepRunItem, index: number): string => index.toString() + item.kind + item.ref + item.path +
+        (item.execute ? '1' : '0') + (item.requirePrevious ? '1' : '0') + item.state)
+      if (this.stepPicking === '') {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.chip('＋ 启用转发', false, (): void => { this.stepPicking = 'forward'; })
+          this.chip('＋ 进入目录', false, (): void => { this.stepPicking = 'cd'; this.stepPathDraft = ''; })
+          this.chip('＋ 插入命令', false, (): void => { this.stepPicking = 'snippet'; })
+        }.width('100%')
+      } else if (this.stepPicking === 'cd') {
+        Row({ space: 6 }) {
+          TextInput({ text: this.stepPathDraft, placeholder: '目录，例如 /var/www' }).height(36).layoutWeight(1)
+            .maxLength(1024).backgroundColor(this.pal().surface).borderRadius(10)
+            .onChange((value: string): void => { this.stepPathDraft = value; })
+            .onSubmit((): void => { this.addCdStep(entry); })
+          Button('添加').height(36).fontSize(13).fontColor(this.accent).backgroundColor(this.pal().surface)
+            .onClick((): void => { this.addCdStep(entry); })
+          Button('取消').height(36).fontSize(13).fontColor(this.pal().text2).backgroundColor(this.pal().surface)
+            .onClick((): void => { this.stepPicking = ''; })
+        }.width('100%')
+      } else {
+        Column({ space: 4 }) {
+          Row() {
+            Text(this.stepPicking === 'forward' ? '选择一条已保存的转发' : '选择一条已保存的命令')
+              .fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
+            Text('取消').fontSize(12).fontColor(this.pal().text2).padding(4)
+              .onClick((): void => { this.stepPicking = ''; })
+          }.width('100%')
+          if ((this.stepPicking === 'forward' ? this.stepForwards(entry.hostRef) : this.stepSnippets(entry.hostRef)).length === 0) {
+            Text(this.stepPicking === 'forward' ?
+              (this.forwardStoreReady ? '这台主机还没有保存的转发。可以在 SSH 会话的「隧道转发」里添加。' : '暂时读不到转发规则') :
+              (this.snippetStoreReady ? '还没有可用的常用命令。可以在 SSH 会话的「常用命令」里添加。' : '暂时读不到常用命令'))
+              .fontSize(11).fontColor(this.pal().text3).width('100%')
+          }
+          ForEach(this.stepPicking === 'forward' ? this.stepForwards(entry.hostRef) : this.stepSnippets(entry.hostRef),
+            (target: WorkspaceStepTarget): void => {
+              Row() {
+                Text(target.title).fontSize(13).fontColor(target.usable ? this.pal().text : this.pal().text3)
+                  .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                if (!target.usable) {
+                  Text('需要填写变量，不能用').fontSize(11).fontColor(this.pal().text3)
+                }
+              }.width('100%').height(36).padding({ left: 10, right: 10 }).borderRadius(10)
+              .backgroundColor(this.pal().surface)
+              .opacity(target.usable ? 1 : 0.6)
+              .onClick((): void => {
+                if (!target.usable) { return; }
+                this.addStep(entry, this.stepPicking === 'forward' ? 'forward' : 'snippet', target.id, '');
+              })
+            }, (target: WorkspaceStepTarget): string => target.id)
+        }.width('100%')
+      }
+    }.width('100%')
+  }
+
   private applyPreset(preset: WorkspaceLayoutPreset): void {
     this.update((next: Workspace): void => { next.entries = applyLayoutPreset(next.entries, preset); next.layout = preset; });
   }
@@ -212,6 +391,7 @@ export struct ProWorkspaceEditorPanel {
           .onChange((value: string): void => { this.dirDraft = value; })
           .onSubmit((): void => { this.saveDirectory(entry); })
           .onBlur((): void => { this.saveDirectory(entry); })
+        this.entrySteps(entry)
       }
       Button('从工作区移除').width('100%').height(36).fontSize(13).fontColor(this.pal().danger)
         .backgroundColor(this.pal().surface)
@@ -237,7 +417,8 @@ export struct ProWorkspaceEditorPanel {
                   .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 Text(orgProtocolLabel(entry.protocol) + (entry.autoConnect ? '' : ' · 手动连接') +
                   (entry.protocol === 'ssh' && entry.view.sshPane === 'files' ? ' · 打开文件' : '') +
-                  (entry.view.sshDirectory !== '' ? ' · ' + entry.view.sshDirectory : ''))
+                  (entry.view.sshDirectory !== '' ? ' · ' + entry.view.sshDirectory : '') +
+                  ((entry.steps ?? []).length > 0 ? ' · ' + (entry.steps ?? []).length.toString() + ' 个连接后步骤' : ''))
                   .fontSize(11).fontColor(this.pal().text3).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(14).padding(6)
@@ -258,7 +439,8 @@ export struct ProWorkspaceEditorPanel {
             if (this.openRef === entry.hostRef) { this.entryOptions(entry) }
           }.width('100%')
         }, (entry: WorkspaceEntry): string => entry.hostRef + ':' + entry.order.toString() + ':' +
-          (entry.autoConnect ? '1' : '0') + entry.view.sshPane + entry.view.sshDirectory)
+          (entry.autoConnect ? '1' : '0') + entry.view.sshPane + entry.view.sshDirectory +
+          JSON.stringify(entry.steps ?? []))
         if (this.entries().length === 0) {
           Text('还没有会话。添加几台主机，打开工作区时会按顺序连接。').fontSize(13).fontColor(this.pal().text3)
             .width('100%').padding(16)
