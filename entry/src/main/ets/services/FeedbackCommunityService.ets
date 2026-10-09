@@ -33,7 +33,8 @@ function responseBytes(result: Object): ArrayBuffer {
 
 export class FeedbackCommunityService {
   async fetchManifest(
-    manifestUrl: string = FEEDBACK_COMMUNITY_MANIFEST_URL
+    manifestUrl: string = FEEDBACK_COMMUNITY_MANIFEST_URL,
+    allowPermanent: boolean = false
   ): Promise<FeedbackCommunityManifest> {
     if (!isFeedbackCommunityManifestUrl(manifestUrl)) {
       throw new Error('反馈清单地址不是受信任的 HTTPS 资源地址');
@@ -54,7 +55,7 @@ export class FeedbackCommunityService {
         throw new Error('云端清单请求失败: HTTP ' + (response.responseCode as number).toString());
       }
       const payload: Object = JSON.parse(response.result as string) as Object;
-      const validation = validateFeedbackCommunityManifest(payload, Date.now());
+      const validation = validateFeedbackCommunityManifest(payload, Date.now(), allowPermanent);
       if (!validation.ok || validation.manifest === null) {
         throw new Error(validation.message || '云端二维码清单无效');
       }

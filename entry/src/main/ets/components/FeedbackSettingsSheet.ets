@@ -21,7 +21,6 @@ import {
 } from '../services/FeedbackCommunityPolicy';
 import { FeedbackCommunityService } from '../services/FeedbackCommunityService';
 import {
-  PRO_FEEDBACK_CHANLIAN_MANIFEST_URL,
   PRO_FEEDBACK_FEATURE,
   PRO_FEEDBACK_QQ_MANIFEST_URL
 } from '../services/pro/ProFeedbackPolicy';
@@ -51,9 +50,6 @@ export struct FeedbackSettingsSheet {
   @State savingQr: boolean = false;
   @State activeTab: number = 0;
   @State proFeedbackVisible: boolean = false;
-  @State proChanlian: FeedbackCommunityManifest | null = null;
-  @State proChanlianQrPixelMap: image.PixelMap | null = null;
-  @State proChanlianError: string = '';
   @State proQq: FeedbackCommunityManifest | null = null;
   @State proQqQrPixelMap: image.PixelMap | null = null;
   @State proQqError: string = '';
@@ -64,6 +60,7 @@ export struct FeedbackSettingsSheet {
   private communityLoadEpoch: number = 0;
   private proLoadEpoch: number = 0;
   private proStop: (() => void) | null = null;
+  private expiryTimer: number = -1;
 
   aboutToAppear(): void {
     this.communityLoadEpoch++;
@@ -73,6 +70,7 @@ export struct FeedbackSettingsSheet {
     this.communityError = '';
     this.nowMs = Date.now();
     this.refreshCommunityQr();
+    this.startExpiryTimer();
     this.proFeedbackVisible = ProEntries.visible(PRO_FEEDBACK_FEATURE);
     this.proStop?.();
     this.proStop = ProEntries.subscribe((): void => {
@@ -83,14 +81,12 @@ export struct FeedbackSettingsSheet {
         // restore; a restored Pro account should fetch a fresh manifest.
         this.proLoadEpoch++;
         this.proLoading = false;
-        this.proChanlian = null;
         this.proQq = null;
-        this.proChanlianError = '';
         this.proQqError = '';
         this.clearProQrPixelMaps();
         if (this.activeTab === 2) { this.activeTab = 0; }
       }
-      if (visible && this.proChanlian === null && !this.proLoading) {
+      if (visible && this.proQq === null && !this.proLoading) {
         void this.refreshProQr();
       }
     });
@@ -103,10 +99,9 @@ export struct FeedbackSettingsSheet {
     this.proLoading = false;
     this.proStop?.();
     this.proStop = null;
+    this.stopExpiryTimer();
     this.clearQrPixelMap();
-    this.proChanlian = null;
     this.proQq = null;
-    this.proChanlianError = '';
     this.proQqError = '';
     this.clearProQrPixelMaps();
   }
@@ -133,6 +128,31 @@ export struct FeedbackSettingsSheet {
       return message as string;
     }
     return '暂时无法读取云端二维码，请稍后重试。';
+  }
+
+  private startExpiryTimer(): void {
+    this.stopExpiryTimer();
+    this.expiryTimer = setInterval((): void => {
+      this.nowMs = Date.now();
+      if (this.community !== null && this.community.expiresAt <= this.nowMs) {
+        this.community = null;
+        this.clearQrPixelMap();
+        this.communityError = '二维码已过期，请刷新后重试';
+      }
+      if (this.proQq !== null && !this.proQq.permanent && this.proQq.expiresAt <= this.nowMs) {
+        this.proQq = null;
+        this.releasePixelMap(this.proQqQrPixelMap);
+        this.proQqQrPixelMap = null;
+        this.proQqError = 'QQ 二维码已过期，请刷新后重试';
+      }
+    }, 1000);
+  }
+
+  private stopExpiryTimer(): void {
+    if (this.expiryTimer >= 0) {
+      clearInterval(this.expiryTimer);
+      this.expiryTimer = -1;
+    }
   }
 
   private async refreshCommunityQr(): Promise<void> {
@@ -210,17 +230,16 @@ export struct FeedbackSettingsSheet {
   }
 
   private clearProQrPixelMaps(): void {
-    const chanlian: image.PixelMap | null = this.proChanlianQrPixelMap;
     const qq: image.PixelMap | null = this.proQqQrPixelMap;
-    this.proChanlianQrPixelMap = null;
     this.proQqQrPixelMap = null;
-    this.releasePixelMap(chanlian);
     this.releasePixelMap(qq);
   }
 
-  private async loadProChannel(manifestUrl: string, channel: string, epoch: number): Promise<void> {
+  private async loadProQq(epoch: number): Promise<void> {
     try {
-      const manifest: FeedbackCommunityManifest = await this.communityService.fetchManifest(manifestUrl);
+      const manifest: FeedbackCommunityManifest = await this.communityService.fetchManifest(
+        PRO_FEEDBACK_QQ_MANIFEST_URL, true
+      );
       const bytes: ArrayBuffer = await this.communityService.downloadQrImage(
         feedbackCommunityImageUrl(manifest)
       );
@@ -238,34 +257,19 @@ export struct FeedbackSettingsSheet {
         this.releasePixelMap(pixelMap);
         return;
       }
-      if (channel === 'chanlian') {
-        const previous: image.PixelMap | null = this.proChanlianQrPixelMap;
-        this.proChanlian = manifest;
-        this.proChanlianQrPixelMap = pixelMap;
-        this.proChanlianError = '';
-        this.releasePixelMap(previous);
-      } else {
-        const previous: image.PixelMap | null = this.proQqQrPixelMap;
-        this.proQq = manifest;
-        this.proQqQrPixelMap = pixelMap;
-        this.proQqError = '';
-        this.releasePixelMap(previous);
-      }
+      const previous: image.PixelMap | null = this.proQqQrPixelMap;
+      this.proQq = manifest;
+      this.proQqQrPixelMap = pixelMap;
+      this.proQqError = '';
+      this.releasePixelMap(previous);
       this.nowMs = Date.now();
     } catch (error) {
       if (epoch !== this.proLoadEpoch) { return; }
       const message: string = this.errorMessage(error as Object);
-      if (channel === 'chanlian') {
-        this.proChanlian = null;
-        this.releasePixelMap(this.proChanlianQrPixelMap);
-        this.proChanlianQrPixelMap = null;
-        this.proChanlianError = '畅联二维码：' + message;
-      } else {
-        this.proQq = null;
-        this.releasePixelMap(this.proQqQrPixelMap);
-        this.proQqQrPixelMap = null;
-        this.proQqError = 'QQ 二维码：' + message;
-      }
+      this.proQq = null;
+      this.releasePixelMap(this.proQqQrPixelMap);
+      this.proQqQrPixelMap = null;
+      this.proQqError = 'QQ 二维码：' + message;
     }
   }
 
@@ -273,16 +277,11 @@ export struct FeedbackSettingsSheet {
     if (this.proLoading || !this.proVisible()) { return; }
     this.proLoading = true;
     const epoch: number = ++this.proLoadEpoch;
-    this.proChanlian = null;
     this.proQq = null;
-    this.proChanlianError = '';
     this.proQqError = '';
     this.clearProQrPixelMaps();
     try {
-      await Promise.all([
-        this.loadProChannel(PRO_FEEDBACK_CHANLIAN_MANIFEST_URL, 'chanlian', epoch),
-        this.loadProChannel(PRO_FEEDBACK_QQ_MANIFEST_URL, 'qq', epoch)
-      ]);
+      await this.loadProQq(epoch);
     } finally {
       if (epoch === this.proLoadEpoch) { this.proLoading = false; }
     }
@@ -309,9 +308,10 @@ export struct FeedbackSettingsSheet {
     if (current === null || !this.proVisible() || this.savingQr) { return; }
     this.savingQr = true;
     try {
-      const latest: FeedbackCommunityManifest = await this.communityService.fetchManifest(manifestUrl);
+      const latest: FeedbackCommunityManifest = await this.communityService.fetchManifest(manifestUrl, true);
       if (!this.proVisible()) { return; }
-      if (!this.proManifestIsCurrent(current, latest) || latest.expiresAt <= Date.now()) {
+      if (!this.proManifestIsCurrent(current, latest) ||
+        (!latest.permanent && latest.expiresAt <= Date.now())) {
         await this.refreshProQr();
         throw new Error('二维码已更新或过期，已刷新，请重试保存');
       }
@@ -615,7 +615,7 @@ export struct FeedbackSettingsSheet {
       Column({ space: 12 }) {
         Text('Pro 专属反馈').fontSize(20).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 14, bottom: 2 })
-        Text('可任选畅联群或 QQ 群加入；二维码会按清单有效期轮换。')
+        Text('加入 Pro QQ 群；二维码长期有效，换新图时更新。')
           .fontSize(13).lineHeight(20).textAlign(TextAlign.Center)
           .fontColor(this.pal().text2).fontFamily(this.font()).width('100%')
           .padding({ left: 8, right: 8, bottom: 4 })
@@ -623,9 +623,6 @@ export struct FeedbackSettingsSheet {
           Text('Pro 权益已失效，请刷新账号状态后重试。').fontSize(13)
             .fontColor(this.pal().text2).margin({ top: 24, bottom: 24 })
         } else {
-          this.proChannelCard('Pro 畅联群', '请使用畅连扫描。', this.proChanlian,
-            this.proChanlianQrPixelMap, this.proChanlianError,
-            PRO_FEEDBACK_CHANLIAN_MANIFEST_URL, 'Pro 畅联群二维码')
           this.proChannelCard('Pro QQ 群', '请使用 QQ 扫描。', this.proQq,
             this.proQqQrPixelMap, this.proQqError,
             PRO_FEEDBACK_QQ_MANIFEST_URL, 'Pro QQ 群二维码')

@@ -85,13 +85,12 @@ function personalization(): ProFeature {
   return feature;
 }
 /**
- * Pro 反馈 (the Pro-only 畅联群 and QQ 群) is closed to users for now (2026-10-09): it is left out of the catalog, so
- * its 反馈 tab and its Pro listings do not show. The groups stay ready behind this switch.
+ * Pro 反馈 currently exposes the Pro QQ 群 only. The old Pro 畅联群 route is retired.
  */
-export const PRO_FEEDBACK_OPEN: boolean = false;
+export const PRO_FEEDBACK_OPEN: boolean = true;
 function proFeedback(): ProFeature {
   const feature = planned('pro.feedback', 'Pro 反馈',
-    '加入 Pro 专属畅联群或 QQ 群，选择适合你的反馈渠道。');
+    '加入 Pro 专属 QQ 群，二维码长期有效，换新图时更新。');
   feature.availability = 'available';
   return feature;
 }
@@ -229,7 +228,7 @@ export function proFeatureProgress(id: string): string {
         '多显示器是实验功能：需要 Windows 专业版或服务器版逐一实测，PC 多窗口多屏（每块本地屏一个窗口）要等鸿蒙 PC 真机和外接显示器';
     case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE:
       return '已上线（试用） · 能否改分辨率取决于被控端的 RustDesk 版本、显示器和权限，各种组合还在逐一验证';
-    case 'pro.feedback': return '暂不开放 · Pro 专属畅联群与 QQ 群已准备好，开放时间另行通知';
+    case 'pro.feedback': return '已上线 · Pro 专属 QQ 群；二维码长期有效，换新图时更新';
     case PRO_DIAGNOSTICS_FEATURE:
       return '已上线（试用） · 聊天、助理诊断、AI 语音（Beta）、文档与数据管理、需求收集 · 各家 AI 服务的接口不完全一样，仍在逐家实测';
     case PRO_DIAGNOSTICS_PROVIDER_FEATURE: return '已上线（试用） · 多家服务商、本机安全存储密钥、模型列表';

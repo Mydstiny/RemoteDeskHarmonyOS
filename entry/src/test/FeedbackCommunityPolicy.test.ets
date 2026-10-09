@@ -93,6 +93,24 @@ export default function feedbackCommunityPolicyTest() {
       }
     });
 
+    it('allows_permanent_only_when_the_caller_explicitly_allows_it', 0, (): void => {
+      const now: number = 1000000000;
+      const payload: Record<string, Object> = {
+        'version': 'qq-permanent',
+        'issuedAt': now,
+        'expiresAt': 0,
+        'permanent': true,
+        'qrImageUrl': 'https://lijiong.online/feedback/pro-qq-current.jpg'
+      };
+      expect(validateFeedbackCommunityManifest(payload, now, false).ok).assertFalse();
+      const result = validateFeedbackCommunityManifest(payload, now, true);
+      expect(result.ok).assertTrue();
+      if (result.manifest !== null) {
+        expect(result.manifest.permanent).assertTrue();
+        expect(feedbackCommunityRemainingText(result.manifest.expiresAt, now)).assertEqual('长期有效');
+      }
+    });
+
     it('accepts_only_feedback_origin_json_manifest_urls', 0, (): void => {
       expect(isFeedbackCommunityManifestUrl('https://lijiong.online/feedback/pro-qq.json')).assertTrue();
       expect(isFeedbackCommunityManifestUrl('https://lijiong.online/feedback/pro-qq.json?x=1')).assertTrue();

@@ -188,12 +188,17 @@ const catalogSource = entryTs.transpileModule(fs.readFileSync(catalogPath, 'utf8
 }).outputText;
 vm.runInNewContext(catalogSource, { module: entryModule, exports: entryModule.exports, require: () => ({}) }, { filename: catalogPath });
 const proCatalog = entryModule.exports.proFeatures();
-// Pro 反馈 is closed to users for now: out of the catalog (so its 反馈 tab is hidden) until the switch opens it.
-assert.equal(entryModule.exports.PRO_FEEDBACK_OPEN, false);
-assert.equal(proCatalog.some(item => item.id === 'pro.feedback'), false);
-assert.match(entryModule.exports.proFeatureProgress('pro.feedback'), /Pro.*畅联群.*QQ 群/);
+// Pro 反馈 exposes the QQ 群 only; the retired 畅联 route is no longer part of the entry.
+assert.equal(entryModule.exports.PRO_FEEDBACK_OPEN, true);
+const proFeedback = proCatalog.find(item => item.id === 'pro.feedback');
+assert.ok(proFeedback);
+assert.match(proFeedback.description, /QQ 群/);
+assert.doesNotMatch(proFeedback.description, /畅联/);
+assert.match(entryModule.exports.proFeatureProgress('pro.feedback'), /Pro.*QQ 群/);
 assert.match(fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/components/FeedbackSettingsSheet.ets'), 'utf8'),
   /return PRO_FEEDBACK_OPEN && this\.proFeedbackVisible && ProEntries\.visible\(PRO_FEEDBACK_FEATURE\);/);
+assert.doesNotMatch(fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/components/FeedbackSettingsSheet.ets'), 'utf8'),
+  /PRO_FEEDBACK_CHANLIAN|Pro 畅联群/);
 for (const id of ['pro.workspaces', 'pro.hostManagement']) {
   const item = proCatalog.find(item => item.id === id); assert.ok(item);
   assert.equal(item.requiredEntitlementId, 'pro.lifetime');

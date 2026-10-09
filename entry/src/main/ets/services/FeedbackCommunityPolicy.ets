@@ -16,6 +16,7 @@ export interface FeedbackCommunityManifest {
   version: string;
   issuedAt: number;
   expiresAt: number;
+  permanent: boolean;
   qrImageUrl: string;
   joinUrl: string;
   title: string;
@@ -36,6 +37,10 @@ function numberValue(value: Object | undefined): number {
   return typeof value === 'number' ? value as number : 0;
 }
 
+function booleanValue(value: Object | undefined): boolean {
+  return value === true;
+}
+
 function isHttpsUrl(value: string): boolean {
   return value.indexOf('https://') === 0;
 }
@@ -53,24 +58,26 @@ export function isFeedbackCommunityManifestUrl(value: string): boolean {
 
 export function validateFeedbackCommunityManifest(
   payload: Object,
-  now: number
+  now: number,
+  allowPermanent: boolean = false
 ): FeedbackCommunityValidation {
   const raw: Record<string, Object> = payload as Record<string, Object>;
   const issuedAt: number = numberValue(raw['issuedAt']);
   const expiresAt: number = numberValue(raw['expiresAt']);
+  const permanent: boolean = allowPermanent && booleanValue(raw['permanent']) && expiresAt === 0;
   const version: string = stringValue(raw['version']);
   const qrImageUrl: string = stringValue(raw['qrImageUrl']);
   const joinUrl: string = stringValue(raw['joinUrl']);
-  if (issuedAt <= 0 || expiresAt <= 0 || expiresAt <= issuedAt) {
+  if (issuedAt <= 0 || (!permanent && (expiresAt <= 0 || expiresAt <= issuedAt))) {
     return { ok: false, message: '云端二维码时间戳无效', manifest: null };
   }
-  if (expiresAt - issuedAt > FEEDBACK_COMMUNITY_QR_MAX_AGE_MS) {
+  if (!permanent && expiresAt - issuedAt > FEEDBACK_COMMUNITY_QR_MAX_AGE_MS) {
     return { ok: false, message: '云端二维码有效期超过 7 天', manifest: null };
   }
   if (issuedAt > now + FEEDBACK_COMMUNITY_CLOCK_SKEW_MS) {
     return { ok: false, message: '云端二维码发布时间异常', manifest: null };
   }
-  if (expiresAt <= now) {
+  if (!permanent && expiresAt <= now) {
     return { ok: false, message: '二维码已过期，请刷新后重试', manifest: null };
   }
   if (!isFeedbackCommunityQrImageUrl(qrImageUrl)) {
@@ -84,6 +91,7 @@ export function validateFeedbackCommunityManifest(
     version: version || expiresAt.toString(),
     issuedAt: issuedAt,
     expiresAt: expiresAt,
+    permanent: permanent,
     qrImageUrl: qrImageUrl,
     joinUrl: joinUrl,
     title: stringValue(raw['title']) || '加入 RemoteDesktop 畅联群聊',
@@ -98,6 +106,7 @@ export function feedbackCommunityImageUrl(manifest: FeedbackCommunityManifest): 
 }
 
 export function feedbackCommunityRemainingText(expiresAt: number, now: number): string {
+  if (expiresAt === 0) { return '长期有效'; }
   const remainingMs: number = expiresAt - now;
   if (remainingMs <= 0) { return '已过期'; }
   const remainingHours: number = Math.ceil(remainingMs / (60 * 60 * 1000));

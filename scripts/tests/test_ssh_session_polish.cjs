@@ -141,9 +141,11 @@ check('应用分身 says it cannot use Pro instead of offering a purchase that f
   assert.ok(fs.existsSync(path.resolve(__dirname, '../../docs/codex/plans/2026-10-08-app-clone-pro-plan.md')), 'plan A is recorded');
 });
 
-check('acceptance round 2026-10-09: Pro 反馈 closed, no empty workspace banner or extra add button, sheets fit a Pad window', () => {
+check('acceptance round 2026-10-09: Pro 反馈 QQ-only, no empty workspace banner or extra add button, sheets fit a Pad window', () => {
   const catalog = read('services/pro/ProFeatureCatalog.ets');
-  assert.ok(catalog.includes('export const PRO_FEEDBACK_OPEN: boolean = false;'));
+  assert.ok(catalog.includes('export const PRO_FEEDBACK_OPEN: boolean = true;'));
+  assert.ok(catalog.includes("'加入 Pro 专属 QQ 群，二维码长期有效，换新图时更新。'"));
+  assert.ok(!catalog.includes('Pro 专属畅联群或 QQ 群'));
   assert.ok(catalog.includes('...(PRO_FEEDBACK_OPEN ? [proFeedback()] : []),'));
   const host = read('pages/HostListPage.ets');
   const strip = read('components/pro/workspace/WorkspaceStrip.ets');

@@ -6,7 +6,5 @@
  */
 
 export const PRO_FEEDBACK_FEATURE: string = 'pro.feedback';
-export const PRO_FEEDBACK_CHANLIAN_MANIFEST_URL: string =
-  'https://lijiong.online/feedback/pro-chanlian.json';
 export const PRO_FEEDBACK_QQ_MANIFEST_URL: string =
   'https://lijiong.online/feedback/pro-qq.json';
