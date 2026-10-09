@@ -130,6 +130,17 @@ check('SSH: screen text on request from the interactive tab, confirmed and edita
   assert.match(read('entry/src/main/ets/components/pro/evidence/SessionTextToAiSheet.ets'), /this\.onSend\(this\.text\)/);
 });
 
+check('Moonlight: 控制中心 entry through the session sheet (input suspended while it shows)', () => {
+  const page = read('entry/src/main/ets/pages/MoonlightStreamPage.ets');
+  assert.match(page, /'stop' \| 'screenshot';/);
+  assert.match(page, /else if \(this\.sheetMode === 'screenshot'\) \{ this\.screenshotSheet\(\) \}/);
+  assert.match(page, /this\.firstFrameSeen && !this\.surfaceRecovering && this\.rendererHandle > 0 &&\s*ProEntries\.visible\(PRO_SESSION_EVIDENCE_FEATURE/);
+  assert.match(page, /screenshotAvailable: this\.sessionScreenshotVisible\(\),\s*onScreenshot: \(\): void => \{ this\.openSessionScreenshot\(\); \}/);
+  assert.match(page, /AppStorage\.setOrCreate<string>\(AI_SESSION_ASK/);
+  assert.match(read('entry/src/main/ets/components/moonlight/MoonlightControlCenter.ets'),
+    /if \(this\.screenshotAvailable\) \{[\s\S]{0,160}'截屏给 AI 看'/);
+});
+
 check('catalog and AI knowledge describe it', () => {
   const catalog = read('entry/src/main/ets/services/pro/ProFeatureCatalog.ets');
   assert.match(catalog, /planned\('pro\.session\.evidence', '截屏给 AI 看与诊断证据包'/);

@@ -4,6 +4,13 @@ import { AiTouchShieldTracker } from '../services/diagnosticAi/AiTouchShield';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { SessionScreenshotSheet } from '../components/pro/evidence/SessionScreenshotSheet';
+import {
+  PRO_SESSION_EVIDENCE_FEATURE,
+  SessionEvidenceFacts,
+  sessionEvidenceSummary
+} from '../services/pro/evidence/SessionEvidencePolicy';
+import { AI_SESSION_ASK } from '../services/diagnosticAi/AiBridgeKeys';
 import { diagnosticMoonlightRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 import {
@@ -341,7 +348,7 @@ class MoonlightStreamXComponentController extends XComponentController {
   onSurfaceDestroyed(surfaceId: string): void { this.onSurfaceDetached(surfaceId); }
 }
 
-type MoonlightSessionSheetMode = 'none' | 'connect' | 'control' | 'controller' | 'stop';
+type MoonlightSessionSheetMode = 'none' | 'connect' | 'control' | 'controller' | 'stop' | 'screenshot';
 type MoonlightPointerAction = 'relative' | 'absolute' | 'absoluteButton' | 'button' | 'scroll';
 type MoonlightTouchPhase = 'down' | 'move' | 'up' | 'cancel';
 type MoonlightInputLifecycleReason = 'overlay_opened' | 'control_mode_changed' |
@@ -6057,6 +6064,53 @@ struct MoonlightStreamPage {
     return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
+  /** Pro 截屏给 AI 看: in 控制中心 once the stream shows a picture. */
+  private sessionScreenshotVisible(): boolean {
+    return this.firstFrameSeen && !this.surfaceRecovering && this.rendererHandle > 0 &&
+      ProEntries.visible(PRO_SESSION_EVIDENCE_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+  private sessionScreenshotSummary: string = '';
+
+  private openSessionScreenshot(): void {
+    if (!this.sessionScreenshotVisible()) {
+      promptAction.showToast({ message: '串流画面显示出来后才能截屏', duration: 1600 });
+      return;
+    }
+    const facts: SessionEvidenceFacts = {
+      protocol: 'moonlight', hostLabel: '', capturedAt: Date.now(),
+      remoteWidth: this.streamWidth, remoteHeight: this.streamHeight,
+      viewportWidth: Math.round(this.surfaceWidthVp), viewportHeight: Math.round(this.surfaceHeightVp),
+      codec: '', decoder: '', fps: 0, route: '', lastError: '', appVersion: '',
+      deviceType: this.isDesktopDevice ? 'PC' : (this.isPadDevice ? '平板' : '手机')
+    };
+    this.sessionScreenshotSummary = sessionEvidenceSummary(facts);
+    this.openSheet('screenshot');
+  }
+
+  private askSessionAiAboutScreenshot(question: string): void {
+    this.closeSheet();
+    if (!this.sessionAiVisible()) {
+      promptAction.showToast({ message: 'AI 助理未开启', duration: 1600 });
+      return;
+    }
+    setTimeout((): void => {
+      AppStorage.setOrCreate<string>(AI_SESSION_ASK, Date.now().toString() + '|' + question);
+    }, 350);
+  }
+
+  @Builder private screenshotSheet() {
+    Column() {
+      SessionScreenshotSheet({
+        rendererHandle: this.rendererHandle,
+        protocol: 'moonlight',
+        summary: this.sessionScreenshotSummary,
+        onAskAi: (question: string): void => { this.askSessionAiAboutScreenshot(question); },
+        onClose: (): void => { this.closeSheet(); }
+      })
+    }.width('100%').height(this.breakpoint === 'sm' ? 560 : 600)
+  }
+
   private toolbarAction(action: MoonlightToolbarAction): void {
     if (action === 'ai') { this.aiSessionOpenRequest = Date.now(); return; }
     if (action === 'more') { this.openSheet('control'); return; }
@@ -6221,6 +6275,8 @@ struct MoonlightStreamPage {
       onControlMode: (mode: MoonlightControlMode): void => {
         this.applyMoonlightControlMode(mode);
       },
+      screenshotAvailable: this.sessionScreenshotVisible(),
+      onScreenshot: (): void => { this.openSessionScreenshot(); },
       onDisconnect: (): void => { this.openSheet('stop'); }
     })
   }
@@ -6288,6 +6344,7 @@ struct MoonlightStreamPage {
     else if (this.sheetMode === 'control') { this.controlCenterSheet() }
     else if (this.sheetMode === 'controller') { this.physicalControllerSheet() }
     else if (this.sheetMode === 'stop') { this.stopSheet() }
+    else if (this.sheetMode === 'screenshot') { this.screenshotSheet() }
     else { Column().width('100%').height(1) }
   }
 

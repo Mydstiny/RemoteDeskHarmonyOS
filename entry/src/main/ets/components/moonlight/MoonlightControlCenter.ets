@@ -38,6 +38,9 @@ export struct MoonlightControlCenter {
   @Prop canvasResetAvailable: boolean = false;
   @Prop desktopFlipAvailable: boolean = false;
   @Prop desktopFlipMode: MoonlightDesktopFlipMode = 'reset';
+  /** Pro 截屏给 AI 看 is on and the stream shows a picture. */
+  @Prop screenshotAvailable: boolean = false;
+  onScreenshot: () => void = (): void => {};
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenModifiers: () => void = (): void => {};
@@ -164,6 +167,12 @@ export struct MoonlightControlCenter {
             this.actionRow($r('sys.symbol.display'), '复位画面',
               this.canvasResetAvailable ? '恢复适应窗口的基线缩放与居中位置' : '画面已处于适应窗口的基线位置',
               (): void => { this.onResetCanvas(); })
+            if (this.screenshotAvailable) {
+              Divider().color(this.pal().divider).margin({ left: 58 })
+              this.actionRow($r('sys.symbol.camera_fill'), '截屏给 AI 看',
+                '截下串流画面，识别文字后交给 AI，或保存、打包证据',
+                (): void => { this.onScreenshot(); })
+            }
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
 
