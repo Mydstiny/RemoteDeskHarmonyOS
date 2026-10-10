@@ -220,11 +220,13 @@ export function rdpCertificateEffectiveRiskFlags(
 
 /**
  * After a normal connection failed, the credential-free check may only run
- * for a route whose target is reached directly: through an RD Gateway the
- * route preflight already reports the target's security layer.
+ * for a route whose target is reached directly (through an RD Gateway the
+ * route preflight already reports the target's security layer), and not for
+ * Restricted Admin, which needs CredSSP and cannot use the old layer.
  */
-export function rdpStandardSecurityCheckAllowed(endpointMode: string): boolean {
-  return endpointMode === 'direct_rdp' || endpointMode === 'transparent_tcp_rdp';
+export function rdpStandardSecurityCheckAllowed(endpointMode: string, authenticationMode: string = 'password'): boolean {
+  return (endpointMode === 'direct_rdp' || endpointMode === 'transparent_tcp_rdp') &&
+    authenticationMode !== 'restricted_admin';
 }
 
 /**
@@ -234,6 +236,16 @@ export function rdpStandardSecurityCheckAllowed(endpointMode: string): boolean {
  */
 export function rdpProbeRequiresStandardSecurity(errorCode: number, riskFlags: string[] = []): boolean {
   return errorCode === -18 || riskFlags.indexOf('STANDARD_RDP_SECURITY') >= 0;
+}
+
+/**
+ * A remembered Standard RDP Security choice applies only while no TLS
+ * certificate is pinned for the route: with a pin, the host has shown it
+ * speaks TLS, and allowing the old layer would let an attacker who answers
+ * without TLS bypass the pin.
+ */
+export function rdpRememberedStandardSecurityApplies(remembered: boolean, pinnedTargetFingerprint: string): boolean {
+  return remembered && pinnedTargetFingerprint.trim() === '';
 }
 
 export function shouldEnableStandardRdpSecurityOnce(

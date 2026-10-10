@@ -32,7 +32,7 @@ import {
   rustDeskQualityVerdictIsFinal,
   rustDeskQualityVerdictMessage
 } from '../services/RustDeskQualityConfirmationPolicy';
-import { CLIPBOARD_AUTHORITY_BUSY, CLIPBOARD_CHANNEL_NOT_NEGOTIATED, CLIPBOARD_NATIVE_REJECTED, CLIPBOARD_READ_PERMISSION_MISSING, CLIPBOARD_START_ERROR, CLIPBOARD_STARTED, RDP_FAILURE_IN_SESSION, RDP_FAILURE_WHILE_CONNECTING, recordRdpAudio, recordRdpDrive, recordRdpFailure, recordRdpStandardSecurityCheck, recordSessionClipboard } from '../services/RdpDiagnosticEvents';
+import { CLIPBOARD_AUTHORITY_BUSY, CLIPBOARD_CHANNEL_NOT_NEGOTIATED, CLIPBOARD_NATIVE_REJECTED, CLIPBOARD_READ_PERMISSION_MISSING, CLIPBOARD_START_ERROR, CLIPBOARD_STARTED, RDP_FAILURE_IN_SESSION, RDP_FAILURE_WHILE_CONNECTING, recordRdpAudio, recordRdpDrive, recordRdpFailure, recordRdpStandardSecurityCheck, recordSessionClipboard, withoutRdpSecurityLayerEvidence } from '../services/RdpDiagnosticEvents';
 import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 import {
@@ -182,6 +182,7 @@ import {
   rdpCertificateRouteIsCurrent,
   rdpCertificatePreflightSkipAllowed,
   rdpProbeRequiresStandardSecurity,
+  rdpRememberedStandardSecurityApplies,
   rdpStandardSecurityCheckAllowed,
   shouldUseRdpTlsWithoutNla
 } from '../services/RdpCertificatePreflightPolicy';
@@ -1458,6 +1459,8 @@ struct RemoteDesktop {
   @State rdpSessionErrorRestoreStandardSecurity: boolean = false;
   /** Generation of the credential-free check started for the current error sheet. */
   private rdpStandardSecurityCheckGeneration: number = 0;
+  /** The address the current RDP attempt connected to (kept past cleanup for the security-layer check). */
+  private rdpConnectionTransportHost: string = '';
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
   /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
@@ -14789,8 +14792,9 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     this.rdpSessionErrorRestoreNla = this.rdpConnectionTlsWithoutNlaByHostChoice && host !== null &&
       host.protocol === 'rdp' && model.source === RdpSessionErrorSource.CONNECT_FAILURE;
+    // TLS sign-in cannot help a host already used over the old Standard RDP Security layer.
     this.rdpSessionErrorSuggestTls = model.suggestTlsWithoutNla === true && host !== null &&
-      host.protocol === 'rdp' && !this.rdpConnectionTlsWithoutNla &&
+      host.protocol === 'rdp' && !this.rdpConnectionTlsWithoutNla && !this.rdpConnectionStandardSecurity &&
       shouldUseRdpTlsWithoutNla(true, normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost),
         normalizeRdpAuthMode(host.rdpAuthMode));
     this.rdpSessionErrorRestoreStandardSecurity = this.rdpConnectionStandardSecurityByHostChoice &&
@@ -14799,7 +14803,8 @@ struct RemoteDesktop {
     this.rdpStandardSecurityCheckGeneration++;
     if (model.checkStandardSecurity === true && host !== null && host.protocol === 'rdp' &&
       !this.rdpConnectionStandardSecurity &&
-      rdpStandardSecurityCheckAllowed(normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost))) {
+      rdpStandardSecurityCheckAllowed(normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost),
+        normalizeRdpAuthMode(host.rdpAuthMode))) {
       this.checkRdpStandardSecurityAfterFailure(host, this.rdpStandardSecurityCheckGeneration);
     }
     this.rdpSessionErrorBackPending = false;
@@ -14852,11 +14857,13 @@ struct RemoteDesktop {
    * downgrade choice, and the user still has to confirm it.
    */
   private checkRdpStandardSecurityAfterFailure(host: RemoteHost, generation: number): void {
-    const probeHost: string = this.rdpTransportHostOverride.length > 0 ? this.rdpTransportHostOverride : host.host;
+    const probeHost: string = this.rdpConnectionTransportHost.length > 0 ? this.rdpConnectionTransportHost : host.host;
     const serverName: string = host.customHostname.trim() !== '' ? host.customHostname : host.host;
     this.loader.probeRdpCertificateAsync(probeHost, host.port, serverName)
       .then((info: RdpCertificateInfo): void => {
-        if (generation !== this.rdpStandardSecurityCheckGeneration || !this.showRdpSessionErrorSheet ||
+        // The sheet may still be waiting for the control panel to close.
+        if (generation !== this.rdpStandardSecurityCheckGeneration ||
+          !(this.showRdpSessionErrorSheet || this.rdpSessionErrorPendingAfterControlPanel) ||
           this.pendingHost === null || this.pendingHost.id !== host.id) {
           return;
         }
@@ -16690,9 +16697,14 @@ struct RemoteDesktop {
           this.rdpCertificateAllowUnpinnedOnce;
         // The old Standard RDP Security layer: the Continue Once choice from
         // the preflight sheet, or this host's own choice made after a normal
-        // connection failed (remembered for this host and route only).
-        const hostStandardSecurity: boolean = RdpLegacyTlsConsentStore.getInstance().allowedKind(
-          getContext(this) as common.UIAbilityContext, 'standard-rdp-security', host.id, routeIdentity);
+        // connection failed (remembered for this host and route only). A
+        // remembered choice never applies once a TLS certificate is pinned
+        // for the route: an attacker answering without TLS must not be able
+        // to bypass that pin.
+        const hostStandardSecurity: boolean = rdpRememberedStandardSecurityApplies(
+          RdpLegacyTlsConsentStore.getInstance().allowedKind(
+            getContext(this) as common.UIAbilityContext, 'standard-rdp-security', host.id, routeIdentity),
+          expectedRdpTargetFingerprint);
         rdpAllowStandardSecurityOnce = (transientRouteMatches && this.rdpAllowStandardSecurityOnce) ||
           hostStandardSecurity;
         this.rdpConnectionStandardSecurity = rdpAllowStandardSecurityOnce;
@@ -17011,6 +17023,9 @@ struct RemoteDesktop {
       if (host.protocol === 'rdp' && this.rdpTransportHostOverride !== '') {
         sessionHost = this.rdpTransportHostOverride;
       }
+      // The address this attempt really uses; a failure's security-layer
+      // check asks the same address after cleanup has cleared the override.
+      this.rdpConnectionTransportHost = host.protocol === 'rdp' ? sessionHost : '';
       if (isVnc && vncEndpointForConnect !== null) {
         sessionHost = vncEndpointForConnect.connectHost;
         sessionPort = vncEndpointForConnect.connectPort;
@@ -17575,7 +17590,8 @@ struct RemoteDesktop {
         host.rustdeskAuthMode === 'request_approval' && rawConnectionDetail.indexOf('等待远端批准超时') >= 0) {
         rustDeskErrorKind = 'approval_timeout';
       }
-      this.connectionErrorDetail = rustDeskNativeErrorDetail(rawConnectionDetail);
+      this.connectionErrorDetail = rustDeskNativeErrorDetail(
+        host.protocol === 'rdp' ? withoutRdpSecurityLayerEvidence(rawConnectionDetail) : rawConnectionDetail);
       if (host.protocol === 'rustdesk' && rustDeskErrorKind !== 'unknown') {
         const controlPlaneProfile: RustDeskControlPlaneProfile =
           rustDeskConnection === null

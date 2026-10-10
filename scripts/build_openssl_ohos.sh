@@ -94,8 +94,11 @@ build_abi() {
 
     local archive
     for archive in "$SRC/$build/libcrypto.a" "$SRC/$build/libssl.a"; do
-        if "$OHOS_NATIVE_HOME/llvm/bin/llvm-strings" -a "$archive" |
-            grep -q -e "$WORK_DIR" -e "$PROJECT_DIR" -e '/Users/' -e '/home/' -e '\\Users\\'; then
+        # Strings go to a file first: with pipefail, grep -q closing the pipe
+        # early would turn a found leak into a SIGPIPE "no match".
+        "$OHOS_NATIVE_HOME/llvm/bin/llvm-strings" -a "$archive" > "$WORK_DIR/strings.txt"
+        if grep -e "$WORK_DIR" -e "$PROJECT_DIR" -e '/Users/' -e '/home/' -e '\\Users\\' \
+            "$WORK_DIR/strings.txt" > /dev/null; then
             echo "ERROR: $(basename "$archive") embeds a local path"
             exit 1
         fi

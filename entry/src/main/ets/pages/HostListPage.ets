@@ -397,6 +397,7 @@ import {
   rdpCertificateLegacyProbeErrorCode,
   rdpCertificateLegacyProbeStage,
   rdpCertificateEffectiveRiskFlags,
+  rdpRememberedStandardSecurityApplies,
   rdpCertificatePreflightAllowsRealConnection,
   rdpCertificatePreflightSkipAllowed,
   rdpCertificatePreflightBypassHintAllowed,
@@ -9727,7 +9728,7 @@ struct HostListPage {
         // The host only speaks the old Standard RDP Security layer and its
         // user already chose that layer for it (after a normal connection
         // failed): connect without asking again, as for a trusted pin.
-        if (this.rdpStandardSecurityRemembered(host, routeResult.routeIdentity,
+        if (this.rdpStandardSecuritySkipsSheet(host, routeResult.routeIdentity,
           rdpCertificateEffectiveRiskFlags(routeResult.targetRiskFlags, info.riskFlags))) {
           hilog.info(0x0001, 'HostList',
             'RDP Standard RDP Security already chosen for host=' + maskHost(host.host));
@@ -10137,6 +10138,14 @@ struct HostListPage {
     }
   }
 
+  /** A remembered Standard RDP Security choice that may skip the sheet: never for a route with a pinned certificate. */
+  private rdpStandardSecuritySkipsSheet(host: RemoteHost, routeIdentity: string, riskFlags: string[]): boolean {
+    const pinned: string = rdpCertificateRouteIsCurrent(host.rdpCertificateRouteIdentity, routeIdentity) ?
+      host.rdpCertificateFingerprintSha256 : '';
+    return rdpRememberedStandardSecurityApplies(
+      this.rdpStandardSecurityRemembered(host, routeIdentity, riskFlags), pinned);
+  }
+
   /** The sheet shows a host that only speaks Standard RDP Security: there is no certificate to trust. */
   private rdpCertificateStandardSecurityOnly(): boolean {
     const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
@@ -10169,6 +10178,7 @@ struct HostListPage {
         this.rejectStaleRdpCertificateResult();
         return;
       }
+      recordRdpCertificateDecision(RDP_CERTIFICATE_TRUST);
       const saved: boolean = RdpLegacyTlsConsentStore.getInstance().allowKind(
         getContext(this) as common.UIAbilityContext, 'standard-rdp-security', host.id, result.routeIdentity);
       this.refreshRdpSecurityDowngradeHosts();
@@ -10195,15 +10205,16 @@ struct HostListPage {
       return;
     }
     if (!this.rdpCertificateRouteResult) { return; }
-    recordRdpCertificateDecision(RDP_CERTIFICATE_TRUST);
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
+    if (this.rdpCertificateStandardSecurityOnly() && !this.rdpGatewayConfirmationPending(result)) {
+      // Recorded as a trust decision only once the user confirms it.
+      this.confirmRememberRdpStandardSecurity(host, result);
+      return;
+    }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_TRUST);
     if (this.rdpGatewayConfirmationPending(result)) {
       this.continueAfterRdpGatewayCertificateDecision(
         host, result, RdpCertificatePreflightDecision.TRUST);
-      return;
-    }
-    if (this.rdpCertificateStandardSecurityOnly()) {
-      this.confirmRememberRdpStandardSecurity(host, result);
       return;
     }
     if (!this.rdpCertificateInfo || this.rdpCertificateInfo.fingerprintSha256.trim() === '') {
@@ -10236,6 +10247,13 @@ struct HostListPage {
       this.rdpCertificateWarning =
         '无法保存 RDP 证书信任；风险仍保留。可选择继续连接一次，或返回修改配置。';
       return;
+    }
+    // The host now speaks TLS and its certificate is pinned: an earlier
+    // choice to use the old Standard RDP Security layer no longer applies.
+    if (this.rdpStandardSecurityRemembered(host, result.routeIdentity, ['STANDARD_RDP_SECURITY'])) {
+      RdpLegacyTlsConsentStore.getInstance().revokeKind(getContext(this) as common.UIAbilityContext,
+        'standard-rdp-security', host.id, result.routeIdentity);
+      this.refreshRdpSecurityDowngradeHosts();
     }
     this.doRdpCertificateRoute(updated);
   }

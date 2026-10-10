@@ -8267,7 +8267,8 @@ void FreeRdpAdapter::connectThreadFunc(
     // Authentication and transport security are independent. The default is
     // unchanged TLS/NLA. An explicit direct-password compatibility request can
     // select certificate-validated TLS without NLA, but never Gateway,
-    // Restricted Admin, blank-password, or Standard RDP Security.
+    // Restricted Admin or blank-password. Standard RDP Security is a separate,
+    // per-host user choice that applies in either mode (D-026).
     const bool gatewayRoute = route.endpointMode == RdpEndpointMode::MicrosoftRdGateway;
     const RdpTransportSecurityPolicy transportSecurity = ResolveRdpTransportSecurityPolicy(
         cfg.rdpTlsWithoutNla, route.endpointMode != RdpEndpointMode::DirectRdp, authPolicy.mode);

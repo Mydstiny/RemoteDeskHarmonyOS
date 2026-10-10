@@ -28,6 +28,7 @@ import {
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldEnableStandardRdpSecurityOnce,
   rdpProbeRequiresStandardSecurity,
+  rdpRememberedStandardSecurityApplies,
   rdpStandardSecurityCheckAllowed,
   shouldUseRdpTlsWithoutNla,
   shouldPersistRdpCertificateTrust,
@@ -377,12 +378,22 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(rdpStandardSecurityCheckAllowed('transparent_tcp_rdp')).assertTrue();
       expect(rdpStandardSecurityCheckAllowed('microsoft_rd_gateway')).assertFalse();
       expect(rdpStandardSecurityCheckAllowed('vendor_https_bastion')).assertFalse();
+      expect(rdpStandardSecurityCheckAllowed('direct_rdp', 'blank_password')).assertTrue();
+      // Restricted Admin needs CredSSP; the old layer cannot carry it.
+      expect(rdpStandardSecurityCheckAllowed('direct_rdp', 'restricted_admin')).assertFalse();
       expect(rdpProbeRequiresStandardSecurity(-18)).assertTrue();
       expect(rdpProbeRequiresStandardSecurity(-19, ['STANDARD_RDP_SECURITY'])).assertTrue();
       // A reset, a TLS failure or an unreachable host is not a reason to downgrade.
       expect(rdpProbeRequiresStandardSecurity(-22, ['TLS_PROBE_RESET'])).assertFalse();
       expect(rdpProbeRequiresStandardSecurity(-12)).assertFalse();
       expect(rdpProbeRequiresStandardSecurity(0)).assertFalse();
+    });
+
+    it('a_remembered_old_security_layer_never_overrides_a_pinned_certificate', 0, (): void => {
+      expect(rdpRememberedStandardSecurityApplies(true, '')).assertTrue();
+      expect(rdpRememberedStandardSecurityApplies(true, '  ')).assertTrue();
+      expect(rdpRememberedStandardSecurityApplies(true, 'AB:CD')).assertFalse();
+      expect(rdpRememberedStandardSecurityApplies(false, '')).assertFalse();
     });
 
     it('tls_without_nla_is_opt_in_direct_password_only', 0, (): void => {

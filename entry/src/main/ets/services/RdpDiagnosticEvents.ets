@@ -110,6 +110,11 @@ export function rdpSecurityLayerEvidence(message: string): number[] | null {
   return [values[0], flags, values[1], values[2]];
 }
 
+/** The failure message without its security-layer evidence, for showing to the user. */
+export function withoutRdpSecurityLayerEvidence(message: string): string {
+  return message.replace(new RegExp('\\s*\\[RDP-SEC [^\\]]*\\]', 'g'), '');
+}
+
 function recordRdpSecurityLayerEvidence(message: string): void {
   const evidence: number[] | null = rdpSecurityLayerEvidence(message);
   if (evidence === null) { return; }

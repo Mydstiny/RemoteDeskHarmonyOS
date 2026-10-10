@@ -15,7 +15,8 @@ const GLOSSARY: string[] = [
   'rdp_preflight：证书/路由预检；failed 表示预检阶段就无法连上（多为网络或端口问题）；count 1 表示这台电脑只接受旧版 TLS' +
     '（1.0/1.1 或弱加密，常见于未更新的 Windows 7 / Server 2008 R2），用户在证书提示里同意降低安全要求后才会连接；' +
     'failed 且 code 为 -18 表示服务器不提供 TLS、只支持旧版 RDP 安全层（Standard RDP Security，常见于堡垒机和很旧的 Windows，' +
-    '包括服务器明确拒绝 TLS 的 SSL_NOT_ALLOWED_BY_SERVER），这不是网络问题，用户确认后才会用旧版安全层连接。',
+    '包括服务器明确拒绝 TLS 的 SSL_NOT_ALLOWED_BY_SERVER），这不是网络问题，用户确认后才会用旧版安全层连接。' +
+    '连接失败后紧接着出现的 rdp_preflight 是失败后的安全层复检（随后有 generation 8 的 rdp_security_layer），不是第二次连接前检查。',
   'rdp_name_resolution：RDP 主机名解析（预检时名称解析失败或解析出的地址连不上才会进行；只有数量和步骤，没有名称和地址）。' +
     'succeeded 找到地址、failed 都没找到；count 为最终方式：1 DNS、2 DNS 加网络的域名后缀（office-pc → office-pc.corp.local）、' +
     '3 局域网（xxx.local 用 mDNS，计算机名用 LLMNR 和 NetBIOS，与 mstsc 在局域网里的做法相同）、0 未找到；' +

@@ -206,4 +206,10 @@ OpenSSL 3.4.1 is built by `scripts/build_openssl_ohos.sh` with the original
 FIPS encryption level. OpenSSL 3 has no TLS 3DES suites, so TLS cipher lists
 (SECLEVEL 0/1/2 and `ALL`) are byte-identical to the previous build, libssl
 exports are unchanged and libssh2 (built against `OPENSSL_NO_DES` headers)
-does not offer 3DES; only EVP `des-ede3-cbc` becomes available.
+does not negotiate 3DES. What changes is libcrypto's 3DES itself: FreeRDP's
+EVP `des-ede3-cbc`, and private keys encrypted with 3DES (PEM `DEK-Info:
+DES-EDE3-CBC`, PKCS#8/PKCS#12), which SSH key import now reads instead of
+reporting a wrong passphrase. A remembered Standard RDP Security choice never
+applies to a route with a pinned TLS certificate, and trusting a TLS
+certificate for the route withdraws it, so an attacker answering without TLS
+cannot bypass the pin.
