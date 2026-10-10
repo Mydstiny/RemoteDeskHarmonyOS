@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-next-features",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "e757a7d8",
+  "head": "4a89d93fc",
   "phase": "Full acceptance active; Pro QQ-only feedback and permanent QR manifest implemented; device deployment partially complete",
   "currentFocus": "Pro 反馈仅保留 QQ 群，QQ 二维码长期有效；当前在线 SGT-AL10 已安装，另外两台设备待重新连接",
   "status": "in-progress",
@@ -2272,8 +2272,8 @@
   },
   "rdpStandardSecurity": {
     "decision": "D-026",
-    "commit": "afc99ab28",
-    "status": "implemented; independent review running; device/bastion acceptance (checklist section R) not run",
+    "commit": "afc99ab28, 804b06f78, 581c7997a, 4a89d93fc",
+    "status": "implemented; independent review PASS (receipt rdp-standard-security-581c7997a-20261010); device/bastion acceptance (checklist section R, R1-R12) not run",
     "summary": "Bastion/old-Windows hosts limited to Standard RDP Security: downgrade only after a failed normal path and the user's confirmation (preflight 继续连接/记住这台电脑, or error-sheet 使用旧版 RDP 安全层 after a credential-free -18 check); OpenSSL 3.4.1 rebuilt without no-des (TLS unchanged); diagnostics rdp_security_layer (catalog v5), AI knowledge v31.",
     "gates": {
       "testCompile": "PASS exit 0; default@OhosTestCompileArkTS BUILD SUCCESSFUL in 55 s 991 ms",
@@ -2284,6 +2284,7 @@
       "host": "PASS ai_session_continuity 16/16, connection_observability 27/27, video_diagnostics 52/52, settings_overhaul 24, multi_picture 13 and 5 other suites",
       "openssl": "reproducible (rebuild hash-identical); headers identical except OPENSSL_NO_DES; libssl exports identical; TLS cipher lists identical; FIDO2 verify PASS",
       "device": "NOT RUN"
-    }
+    },
+    "receipt": "rdp-standard-security-581c7997a-20261010"
   }
 }
