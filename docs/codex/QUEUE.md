@@ -4,6 +4,8 @@ Updated: 2026-10-04 Asia/Shanghai
 
 ## Now
 
+- 堡垒机/旧版 RDP 安全层（2026-10-10，D-026，`afc99ab28`）：用户反馈堡垒机连不上而 mstsc 正常。已实现：仅在正常连接不行时经用户确认降级到旧版 RDP 安全层（可记住、可恢复），OpenSSL 补回 3DES（FIPS 级），诊断与 AI 已更新。下一步：独立复核结论；请反馈用户用新包重测并导出日志（`rdp_security_layer`），按清单 R 节验收。
+
 - Pro 反馈 QQ-only（2026-10-09）：移除 Pro 畅联群入口；QQ 清单使用 `permanent:true`/`expiresAt:0`，仅在提供新图片时更换；当前在线 SGT-AL10 已安装，其他两台设备待重新连接。
 
 - 电脑端 RemoteDesk 插件：Codex/DSH 二维码默认、`remotedesk://pair` 链接回退和 App 解析已实现；本机 Codex/DSH 服务与 loopback 控制面板可达，Claude Code 仅完成 2.1.286 probe-only 骨架，等待独立协议/权限/会话验收后再做功能对齐。
