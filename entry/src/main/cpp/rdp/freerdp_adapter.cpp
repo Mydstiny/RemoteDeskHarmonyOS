@@ -1120,6 +1120,14 @@ RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, in
             host, effectivePort, -18,
             "RDP server selected Standard RDP Security; TLS certificate probe is unavailable");
     }
+    if (negotiation.kind == RdpNegotiation::ResponseKind::NegotiationFailure &&
+        RdpNegotiation::failureRequiresStandardSecurity(negotiation.failureCode)) {
+        close(fd);
+        return makeProbeError(
+            host, effectivePort, -18,
+            "RDP server refused TLS (SSL_NOT_ALLOWED_BY_SERVER) and requires Standard RDP Security; "
+            "TLS certificate probe is unavailable");
+    }
     if (negotiation.kind == RdpNegotiation::ResponseKind::NegotiationFailure) {
         std::ostringstream message;
         message << "RDP security negotiation failed: "
@@ -1549,6 +1557,28 @@ static std::string rdpErrorInfoMessage(UINT32 code) {
         message += official;
     }
     return message;
+}
+
+/**
+ * What the security layer looked like when a connection failed, for the
+ * diagnostics log (no host or account): the selected protocol, whether the
+ * Standard RDP Security fallback was allowed and reached, and the server's
+ * encryption level/method (meaningful once the old layer was reached).
+ */
+static std::string rdpSecurityLayerEvidence(rdpSettings* settings) {
+    if (settings == nullptr) {
+        return "";
+    }
+    const bool allowed = freerdp_settings_get_bool(settings, FreeRDP_RdpSecurity);
+    const bool reached = freerdp_settings_get_bool(settings, FreeRDP_UseRdpSecurityLayer);
+    char evidence[112] = {0};
+    std::snprintf(evidence, sizeof(evidence),
+                  " [RDP-SEC proto=0x%X allowed=%d layer=%d level=%u method=0x%X]",
+                  static_cast<unsigned int>(freerdp_settings_get_uint32(settings, FreeRDP_SelectedProtocol)),
+                  allowed ? 1 : 0, reached ? 1 : 0,
+                  static_cast<unsigned int>(freerdp_settings_get_uint32(settings, FreeRDP_EncryptionLevel)),
+                  static_cast<unsigned int>(freerdp_settings_get_uint32(settings, FreeRDP_EncryptionMethods)));
+    return evidence;
 }
 
 static void logFreeRdpFailureDiagnostics(freerdp* instance, rdpSettings* settings, DWORD err, const char* errName) {
@@ -8252,15 +8282,17 @@ void FreeRdpAdapter::connectThreadFunc(
     }
     const bool tlsWithoutNla =
         transportSecurity.mode == RdpTransportSecurityMode::TlsWithoutNla;
-    const bool allowStandardSecurityOnce =
-        !tlsWithoutNla && cfg.rdpAllowStandardSecurityOnce;
+    const bool standardSecurityEnabled =
+        RdpStandardSecurityEnabled(transportSecurity, cfg.rdpAllowStandardSecurityOnce);
     freerdp_settings_set_bool(s, FreeRDP_NegotiateSecurityLayer, TRUE);
     freerdp_settings_set_bool(s, FreeRDP_UseRdpSecurityLayer, FALSE);
-    // Standard RDP Security is enabled only by the route-bound Continue Once
-    // handoff. The preflight never enables this fallback itself.
-    freerdp_settings_set_bool(s, FreeRDP_RdpSecurity,
-                              (transportSecurity.rdpSecurity || allowStandardSecurityOnce)
-                                  ? TRUE : FALSE);
+    // Standard RDP Security is enabled only by the user's choice for this
+    // host (route-bound Continue Once, or the remembered choice made after a
+    // normal connection failed). The preflight never enables it itself.
+    freerdp_settings_set_bool(s, FreeRDP_RdpSecurity, standardSecurityEnabled ? TRUE : FALSE);
+    if (standardSecurityEnabled) {
+        OH_LOG_WARN(LOG_APP, "[RDP] Standard RDP Security fallback allowed by the user for this connection");
+    }
     freerdp_settings_set_bool(s, FreeRDP_TlsSecurity,
                               transportSecurity.tlsSecurity ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_ExtSecurity, FALSE);
@@ -8562,10 +8594,11 @@ void FreeRdpAdapter::connectThreadFunc(
         logFreeRdpFailureDiagnostics(instance_, s, err, errName);
         if (getState() != ConnectionState::ERROR) {
             const UINT32 errorInfo = freerdp_error_info(instance_);
+            const std::string securityEvidence = rdpSecurityLayerEvidence(instance_->context->settings);
             if (errorInfo != 0) {
-                impl_->setState(ConnectionState::ERROR, rdpErrorInfoMessage(errorInfo));
+                impl_->setState(ConnectionState::ERROR, rdpErrorInfoMessage(errorInfo) + securityEvidence);
             } else {
-                impl_->setState(ConnectionState::ERROR, freerdpErrorMessage(err, errName));
+                impl_->setState(ConnectionState::ERROR, freerdpErrorMessage(err, errName) + securityEvidence);
             }
         }
         // 正确释放: context_free → free

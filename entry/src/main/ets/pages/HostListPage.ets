@@ -9724,6 +9724,16 @@ struct HostListPage {
           }
           return;
         }
+        // The host only speaks the old Standard RDP Security layer and its
+        // user already chose that layer for it (after a normal connection
+        // failed): connect without asking again, as for a trusted pin.
+        if (this.rdpStandardSecurityRemembered(host, routeResult.routeIdentity,
+          rdpCertificateEffectiveRiskFlags(routeResult.targetRiskFlags, info.riskFlags))) {
+          hilog.info(0x0001, 'HostList',
+            'RDP Standard RDP Security already chosen for host=' + maskHost(host.host));
+          this.doRdpCertificateRoute(host, routeResult, true);
+          return;
+        }
         // A certificate probe is advisory. Standard RDP Security, an
         // intermediary reset, or a protocol-compatible probe that cannot
         // expose a certificate is a risk result, not a user decision made by
@@ -10093,7 +10103,7 @@ struct HostListPage {
   private restoreRdpSecurityForAssistant(): void {
     this.refreshRdpSecurityDowngradeHosts();
     if (this.rdpSecurityDowngradeHosts <= 0) {
-      promptAction.showToast({ message: '没有电脑单独改用旧版 TLS 或 TLS 登录，已经是默认安全设置', duration: 2600 });
+      promptAction.showToast({ message: '没有电脑单独改用旧版 TLS、TLS 登录或旧版 RDP 安全层，已经是默认安全设置', duration: 2600 });
       return;
     }
     this.confirmRestoreRdpSecurityDowngrades();
@@ -10102,7 +10112,7 @@ struct HostListPage {
   private confirmRestoreRdpSecurityDowngrades(): void {
     promptAction.showDialog({
       title: '恢复默认安全设置？',
-      message: '这些电脑以后会重新要求 TLS 1.2 以上和网络级身份验证（NLA）；只支持旧系统的电脑会在连接时重新询问。',
+      message: '这些电脑以后会重新要求 TLS 1.2 以上和网络级身份验证（NLA），不再使用旧版 RDP 安全层；只支持旧系统的电脑会在连接时重新询问。',
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '全部恢复', color: this.accentColor }
@@ -10113,6 +10123,60 @@ struct HostListPage {
       RdpLegacyTlsConsentStore.getInstance().revokeAll(getContext(this) as common.UIAbilityContext);
       this.refreshRdpSecurityDowngradeHosts();
       promptAction.showToast({ message: '已恢复默认安全设置', duration: 2000 });
+    }).catch((_error: Error): void => {});
+  }
+
+  /** Whether this host's user chose the old Standard RDP Security layer for the probed route. */
+  private rdpStandardSecurityRemembered(host: RemoteHost, routeIdentity: string, riskFlags: string[]): boolean {
+    if (riskFlags.indexOf('STANDARD_RDP_SECURITY') < 0) { return false; }
+    try {
+      return RdpLegacyTlsConsentStore.getInstance().allowedKind(getContext(this) as common.UIAbilityContext,
+        'standard-rdp-security', host.id, routeIdentity);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  /** The sheet shows a host that only speaks Standard RDP Security: there is no certificate to trust. */
+  private rdpCertificateStandardSecurityOnly(): boolean {
+    const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
+    if (result === null || result.endpointMode === 'microsoft_rd_gateway' ||
+      (this.rdpCertificateInfo !== null && this.rdpCertificateInfo.fingerprintSha256.trim() !== '')) {
+      return false;
+    }
+    return rdpCertificateEffectiveRiskFlags(result.targetRiskFlags, result.riskFlags)
+      .indexOf('STANDARD_RDP_SECURITY') >= 0;
+  }
+
+  /**
+   * 「记住这台电脑」 on a host that only speaks Standard RDP Security: confirmed
+   * once more, remembered for this host and route only, then connected.
+   */
+  private confirmRememberRdpStandardSecurity(host: RemoteHost, result: RdpPreflightResult): void {
+    promptAction.showDialog({
+      title: '记住这台电脑使用旧版 RDP 安全层？',
+      message: '这台电脑（常见于堡垒机或很旧的 Windows）不提供 TLS，只支持旧版 RDP 安全层：无法用证书确认对方身份，' +
+        '加密强度较低（RC4 或 3DES）。记住后连接它时不再询问，只对这台电脑和当前地址生效，' +
+        '可以在连接失败时或「设置 → Windows RDP」里恢复默认。只想这一次连接请选「继续连接」。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '记住并连接', color: this.accentColor }
+      ]
+    }).then((response: Object): void => {
+      const choice: Record<string, number> = response as Record<string, number>;
+      if (choice['index'] !== 1 || this.rdpCertificateRouteResult !== result) { return; }
+      if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
+        this.rejectStaleRdpCertificateResult();
+        return;
+      }
+      const saved: boolean = RdpLegacyTlsConsentStore.getInstance().allowKind(
+        getContext(this) as common.UIAbilityContext, 'standard-rdp-security', host.id, result.routeIdentity);
+      this.refreshRdpSecurityDowngradeHosts();
+      if (!saved) {
+        this.rdpCertificateWarning = '没能保存这个选择；可以选「继续连接」只连接这一次。';
+        return;
+      }
+      this.doRdpCertificateRoute(host, result, true);
     }).catch((_error: Error): void => {});
   }
 
@@ -10136,6 +10200,10 @@ struct HostListPage {
     if (this.rdpGatewayConfirmationPending(result)) {
       this.continueAfterRdpGatewayCertificateDecision(
         host, result, RdpCertificatePreflightDecision.TRUST);
+      return;
+    }
+    if (this.rdpCertificateStandardSecurityOnly()) {
+      this.confirmRememberRdpStandardSecurity(host, result);
       return;
     }
     if (!this.rdpCertificateInfo || this.rdpCertificateInfo.fingerprintSha256.trim() === '') {
@@ -19758,7 +19826,7 @@ struct HostListPage {
               icon: $r('app.media.icon_info'),
               title: '恢复各电脑的默认安全设置',
               detail: this.rdpSecurityDowngradeHosts.toString() +
-                ' 台电脑单独改用了旧版 TLS 或 TLS 登录；点此全部恢复',
+                ' 台电脑单独改用了旧版 TLS、TLS 登录或旧版 RDP 安全层；点此全部恢复',
               onAction: (): void => { this.confirmRestoreRdpSecurityDowngrades(); }
             })
           }
@@ -21136,7 +21204,8 @@ struct HostListPage {
             .backgroundColor(this.pal().surface).fontColor(this.pal().text).borderRadius(10)
             .onClick(() => { this.doRdpCertificateContinueOnceWrap(); })
           Button(this.rdpGatewayConfirmationPending() ? '信任 Gateway 并检查目标' :
-            (this.rdpGatewayCertificateInfo === null ? '信任' : '同时信任两张'))
+            (this.rdpCertificateStandardSecurityOnly() ? '记住这台电脑' :
+              (this.rdpGatewayCertificateInfo === null ? '信任' : '同时信任两张')))
             .fontSize(14).height(40).layoutWeight(1)
             .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10).margin({ left: 12 })
             .onClick(() => { this.doRdpCertificateTrustWrap(); })

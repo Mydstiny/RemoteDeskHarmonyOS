@@ -66,6 +66,20 @@ RDP_TEST_CASE(rdp_transport_security_allows_explicit_direct_tls_password_mode) {
     RDP_ASSERT(policy.requestedProtocols == 0x00000001);
 }
 
+RDP_TEST_CASE(rdp_standard_security_needs_the_users_choice_in_both_modes) {
+    const RdpTransportSecurityPolicy nla = ResolveRdpTransportSecurityPolicy(
+        false, false, RdpAuthenticationPolicyMode::Password);
+    const RdpTransportSecurityPolicy tls = ResolveRdpTransportSecurityPolicy(
+        true, false, RdpAuthenticationPolicyMode::Password);
+    RDP_ASSERT(!RdpStandardSecurityEnabled(nla, false));
+    RDP_ASSERT(!RdpStandardSecurityEnabled(tls, false));
+    RDP_ASSERT(RdpStandardSecurityEnabled(nla, true));
+    RDP_ASSERT(RdpStandardSecurityEnabled(tls, true));
+    const RdpTransportSecurityPolicy invalid = ResolveRdpTransportSecurityPolicy(
+        true, true, RdpAuthenticationPolicyMode::Password);
+    RDP_ASSERT(!RdpStandardSecurityEnabled(invalid, true));
+}
+
 RDP_TEST_CASE(rdp_transport_security_rejects_tls_compatibility_for_gateway) {
     const RdpTransportSecurityPolicy policy = ResolveRdpTransportSecurityPolicy(
         true, true, RdpAuthenticationPolicyMode::Password);

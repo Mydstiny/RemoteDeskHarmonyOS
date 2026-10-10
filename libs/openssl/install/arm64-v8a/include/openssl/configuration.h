@@ -88,9 +88,6 @@ extern "C" {
 # ifndef OPENSSL_NO_DEMOS
 #  define OPENSSL_NO_DEMOS
 # endif
-# ifndef OPENSSL_NO_DES
-#  define OPENSSL_NO_DES
-# endif
 # ifndef OPENSSL_NO_DEVCRYPTOENG
 #  define OPENSSL_NO_DEVCRYPTOENG
 # endif

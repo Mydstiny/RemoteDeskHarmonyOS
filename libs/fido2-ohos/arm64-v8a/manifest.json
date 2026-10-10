@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "opensslVersion": "3.4.1",
-    "libcryptoSha256": "6954824f69db5ec7e7fe6b2e1963f5a39333b863f25bb19127a113c9e3d58d45",
+    "libcryptoSha256": "f0947a889eb6ae9338c352c4f03f8fa8fb06f711155eb95bc2e3411ac7ac6449",
     "opensslVersionHeaderSha256": "266366d956c114ed6d23a1440a2cbb20abf9bd06c7703307c3d7fdd276f34a83",
     "systemZlibSha256": "0365cfb4b732b84fdba900e499529e11be76549a5ee0de1352ba0302ce4b0398"
   },

@@ -6,9 +6,11 @@ import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 /**
  * Security a user may lower for one host: legacy TLS (1.0/1.1, security level
- * 0), or signing in over TLS without Network Level Authentication.
+ * 0), signing in over TLS without Network Level Authentication, or the old
+ * Standard RDP Security layer without TLS (bastion hosts, old Windows), chosen
+ * only after a normal connection failed.
  */
-export type RdpSecurityDowngrade = 'legacy-tls' | 'tls-without-nla';
+export type RdpSecurityDowngrade = 'legacy-tls' | 'tls-without-nla' | 'standard-rdp-security';
 
 /** rdp_security_choice codes (see the AI event glossary). */
 const CHOICE_ALLOW_LEGACY_TLS: number = 1;
@@ -17,6 +19,24 @@ const CHOICE_REVOKE_TLS_SIGN_IN: number = 3;
 const CHOICE_REVOKE_LEGACY_TLS: number = 4;
 const CHOICE_REVOKE_HOST: number = 5;
 const CHOICE_REVOKE_ALL: number = 6;
+const CHOICE_ALLOW_STANDARD_SECURITY: number = 7;
+const CHOICE_REVOKE_STANDARD_SECURITY: number = 8;
+
+function allowChoice(kind: RdpSecurityDowngrade): number {
+  switch (kind) {
+    case 'legacy-tls': return CHOICE_ALLOW_LEGACY_TLS;
+    case 'tls-without-nla': return CHOICE_ALLOW_TLS_SIGN_IN;
+    default: return CHOICE_ALLOW_STANDARD_SECURITY;
+  }
+}
+
+function revokeChoice(kind: RdpSecurityDowngrade): number {
+  switch (kind) {
+    case 'legacy-tls': return CHOICE_REVOKE_LEGACY_TLS;
+    case 'tls-without-nla': return CHOICE_REVOKE_TLS_SIGN_IN;
+    default: return CHOICE_REVOKE_STANDARD_SECURITY;
+  }
+}
 
 /**
  * Hosts whose user agreed to lower RDP security for them, per signed-in
@@ -74,10 +94,10 @@ export class RdpLegacyTlsConsentStore {
     try {
       store.putSync(this.key(kind, hostId, routeIdentity), true);
       store.flush().catch((): void => {});
-      this.recordChoice(context, kind === 'legacy-tls' ? CHOICE_ALLOW_LEGACY_TLS : CHOICE_ALLOW_TLS_SIGN_IN, 'succeeded');
+      this.recordChoice(context, allowChoice(kind), 'succeeded');
       return true;
     } catch (_error) {
-      this.recordChoice(context, kind === 'legacy-tls' ? CHOICE_ALLOW_LEGACY_TLS : CHOICE_ALLOW_TLS_SIGN_IN, 'failed');
+      this.recordChoice(context, allowChoice(kind), 'failed');
       return false;
     }
   }
@@ -89,7 +109,7 @@ export class RdpLegacyTlsConsentStore {
       store.deleteSync(this.key(kind, hostId, routeIdentity));
       store.flush().catch((): void => {});
     } catch (_error) { /* nothing stored */ }
-    this.recordChoice(context, kind === 'legacy-tls' ? CHOICE_REVOKE_LEGACY_TLS : CHOICE_REVOKE_TLS_SIGN_IN, 'succeeded');
+    this.recordChoice(context, revokeChoice(kind), 'succeeded');
   }
 
   /** Every choice for a host (all routes), e.g. when the host is deleted. */

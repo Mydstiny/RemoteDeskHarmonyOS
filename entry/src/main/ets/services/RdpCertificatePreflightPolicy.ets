@@ -218,6 +218,24 @@ export function rdpCertificateEffectiveRiskFlags(
   return merged;
 }
 
+/**
+ * After a normal connection failed, the credential-free check may only run
+ * for a route whose target is reached directly: through an RD Gateway the
+ * route preflight already reports the target's security layer.
+ */
+export function rdpStandardSecurityCheckAllowed(endpointMode: string): boolean {
+  return endpointMode === 'direct_rdp' || endpointMode === 'transparent_tcp_rdp';
+}
+
+/**
+ * The probe's verdict that the host only speaks the old Standard RDP Security
+ * layer: no negotiation data, an explicit RDP selection, or a TLS refusal
+ * (SSL_NOT_ALLOWED_BY_SERVER) are all reported as native code -18.
+ */
+export function rdpProbeRequiresStandardSecurity(errorCode: number, riskFlags: string[] = []): boolean {
+  return errorCode === -18 || riskFlags.indexOf('STANDARD_RDP_SECURITY') >= 0;
+}
+
 export function shouldEnableStandardRdpSecurityOnce(
   userApprovedAdvisory: boolean, riskFlags: string[] = []
 ): boolean {

@@ -9,7 +9,7 @@ import { proFeatureStatusKnowledge } from '../pro/ProFeatureCatalog';
  * 也不包含密码、主机地址、日志原文或用户资料。后续可以按版本拆成独立文档资源，
  * 但 Agent 必须始终带上知识版本，避免模型把过期操作当成当前 UI。
  */
-export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-09-v30';
+export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-10-v31';
 
 /**
  * What the AI itself can do and where things are (1.2.0). Shared by 助理 (with the catalogs below) and by 聊天 and
@@ -54,6 +54,16 @@ const AI_GUIDE: string[] = [
     '则对所有电脑生效。有电脑单独降低过安全要求时，「设置 → Windows RDP」里会出现「恢复各电脑的默认安全设置」，一次全部恢复' +
     '（动作 rdp.restoreSecurity，会先确认；settings.rdpSecurity 打开这一页）；删除主机时它的选择一并清除。降低安全要求只能由用户在' +
     '证书提示或错误界面里自己选择，AI 不能代为开启。',
+  'RDP 堡垒机与旧版 RDP 安全层：部分堡垒机（跳板机）和很旧的 Windows 不提供 TLS，只支持旧版 RDP 安全层（Standard RDP Security），' +
+    'mstsc 会自动降级，本应用默认只用 TLS/NLA，不会自己降级。连接前检查发现这种情况时，证书提示写「服务器未提供 TLS 证书，' +
+    '连接安全性较低」，选「继续连接」只对这一次使用旧版安全层，选「记住这台电脑」并再次确认后以后不再询问；' +
+    '正常连接失败（安全协商失败、连接被关闭）时，应用会不带账号密码' +
+    '再问一次这台电脑支持的安全层，确认只支持旧版安全层后，错误界面才出现「使用旧版 RDP 安全层」，用户再次确认后记住这台电脑' +
+    '（只存在本机，按账号、主机和地址记住），下次连接生效；用了这项选择仍连不上时错误界面提供「恢复默认安全设置」，' +
+    '「设置 → Windows RDP → 恢复各电脑的默认安全设置」也会一并恢复。旧版安全层不经过 TLS、无法用证书确认对方身份，' +
+    '加密为 RC4 或 3DES（服务器设为 FIPS 加密级别时）。日志里 rdp_preflight 的 code -18、rdp_security_layer 的事件可以' +
+    '确认这类情况；1.1.5.1 及更早版本缺少 3DES，FIPS 加密级别的堡垒机即使选了「继续连接」也会立即失败，新版本不再因此失败。' +
+    '这项降级同样只能由用户自己选择，AI 不能代为开启。',
   'RustDesk 画面方向（鸿蒙 PC）：鸿蒙 PC 用硬件解码 H.264/H.265（多为连接 Windows）时，部分机型的画面曾上下颠倒；VP8/VP9 软件解码' +
     '（多为连接 Mac）和手机、平板不受影响。现在 PC 上的 RustDesk 会在后台做方向自检：用本机解码器解一张已知的四色测试图并读回画面，' +
     '发现颠倒或镜像就自动纠正，结果写进诊断日志。仍然不对时：PC 会话侧栏的「画面翻转」里可以「画面上下翻转」「画面左右翻转」' +

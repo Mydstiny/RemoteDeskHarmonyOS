@@ -13,7 +13,9 @@ const GLOSSARY: string[] = [
     '131092=0x20014 登录失败）或服务器 ErrorInfo；generation 为 1 连接过程中、2 会话进行中；durationMs 为从开始连接到失败的毫秒数。',
   'rdp_certificate：用户对证书提示的选择，code 1 本次继续、2 信任并保存、3 取消连接、4 跳过预检。',
   'rdp_preflight：证书/路由预检；failed 表示预检阶段就无法连上（多为网络或端口问题）；count 1 表示这台电脑只接受旧版 TLS' +
-    '（1.0/1.1 或弱加密，常见于未更新的 Windows 7 / Server 2008 R2），用户在证书提示里同意降低安全要求后才会连接。',
+    '（1.0/1.1 或弱加密，常见于未更新的 Windows 7 / Server 2008 R2），用户在证书提示里同意降低安全要求后才会连接；' +
+    'failed 且 code 为 -18 表示服务器不提供 TLS、只支持旧版 RDP 安全层（Standard RDP Security，常见于堡垒机和很旧的 Windows，' +
+    '包括服务器明确拒绝 TLS 的 SSL_NOT_ALLOWED_BY_SERVER），这不是网络问题，用户确认后才会用旧版安全层连接。',
   'rdp_name_resolution：RDP 主机名解析（预检时名称解析失败或解析出的地址连不上才会进行；只有数量和步骤，没有名称和地址）。' +
     'succeeded 找到地址、failed 都没找到；count 为最终方式：1 DNS、2 DNS 加网络的域名后缀（office-pc → office-pc.corp.local）、' +
     '3 局域网（xxx.local 用 mDNS，计算机名用 LLMNR 和 NetBIOS，与 mstsc 在局域网里的做法相同）、0 未找到；' +
@@ -22,8 +24,13 @@ const GLOSSARY: string[] = [
     '防火墙拦截 UDP 5353/5355/137，或名称写错），建议改填 IP 地址。',
   'rdp_security_choice：用户对单台电脑降低或恢复 RDP 安全要求（只保存在本机，按账号、主机和地址区分）。code：1 同意这台电脑用旧版 TLS、' +
     '2 这台电脑改用 TLS 登录（不做 NLA）、3 恢复这台电脑的 NLA 登录、4 撤销旧版 TLS、5 删除主机时一并清除、' +
-    '6 在「设置 → Windows RDP → 恢复各电脑的默认安全设置」里全部恢复；failed 表示没能保存（选择没有生效）；' +
-    'count 为之后仍有降级选择的电脑数。',
+    '6 在「设置 → Windows RDP → 恢复各电脑的默认安全设置」里全部恢复、7 正常连接失败后同意这台电脑用旧版 RDP 安全层（不走 TLS）、' +
+    '8 恢复这台电脑的默认安全层；failed 表示没能保存（选择没有生效）；count 为之后仍有降级选择的电脑数。',
+  'rdp_security_layer：RDP 安全层。failed 是一次连接失败时的安全层：code 为选中的协议（0 旧版 RDP 安全层、1 TLS、2 NLA、8 NLA 扩展），' +
+    'generation 位：1 本次允许回退到旧版 RDP 安全层、2 已经进入旧版安全层；进入旧版安全层后 count 为服务器加密级别' +
+    '（0 无、1 低、2 客户端兼容、3 高、4 FIPS）、bytes 为加密方法（1 40 位、2 128 位、8 56 位、16 FIPS/3DES）。' +
+    'generation 为 8 时是正常连接失败后不带账号密码的安全层检查：succeeded（code -18）表示这台电脑只支持旧版 RDP 安全层，' +
+    '界面会提供「使用旧版 RDP 安全层」并需用户确认；skipped 表示它支持 TLS，失败另有原因。',
   'rdp_clipboard / rustdesk_clipboard：剪贴板同步通道，code 0 已启动、1 被另一个连接占用、2 缺少本机剪贴板读取权限（只能远端到本机）、' +
     '3 本次连接没有协商剪贴板通道（需开启剪贴板后重连）、4 启动异常、5 原生层拒绝；count 1 表示本机读取可用。',
   'rdp_drive：驱动器映射，succeeded 已挂载、failed 服务器端不可用（组策略或远端禁止驱动器重定向）、timeout 15 秒内未挂载。',

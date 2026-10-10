@@ -82,6 +82,17 @@ RDP_TEST_CASE(rdp_negotiation_parser_reports_server_failure) {
     RDP_ASSERT(result.failureCode == 0x00000005);
     RDP_ASSERT(std::string(RdpNegotiation::failureCodeName(result.failureCode)) ==
                "HYBRID_REQUIRED_BY_SERVER");
+    RDP_ASSERT(!RdpNegotiation::failureRequiresStandardSecurity(result.failureCode));
+}
+
+RDP_TEST_CASE(rdp_negotiation_parser_reads_tls_refusal_as_standard_security) {
+    const auto result = parseFragmented(failureFrame(0x00000002));
+    RDP_ASSERT_EQ(static_cast<int>(result.kind),
+                  static_cast<int>(RdpNegotiation::ResponseKind::NegotiationFailure));
+    RDP_ASSERT(std::string(RdpNegotiation::failureCodeName(result.failureCode)) ==
+               "SSL_NOT_ALLOWED_BY_SERVER");
+    RDP_ASSERT(RdpNegotiation::failureRequiresStandardSecurity(result.failureCode));
+    RDP_ASSERT(!RdpNegotiation::failureRequiresStandardSecurity(0x00000001));
 }
 
 RDP_TEST_CASE(rdp_negotiation_parser_classifies_standard_security) {

@@ -111,6 +111,15 @@ inline const char* failureCodeName(uint32_t failureCode) {
     }
 }
 
+/**
+ * SSL_NOT_ALLOWED_BY_SERVER: the server (often a bastion host or an old
+ * Windows) refuses TLS and only speaks Standard RDP Security. It means the
+ * same as a confirm without negotiation data.
+ */
+inline bool failureRequiresStandardSecurity(uint32_t failureCode) {
+    return failureCode == 0x00000002;
+}
+
 inline ParseResult invalidResult(const char* error) {
     ParseResult result;
     result.status = ParseStatus::Invalid;

@@ -62,4 +62,13 @@ RdpTransportSecurityPolicy ResolveRdpTransportSecurityPolicy(
     bool nonDirectRoute,
     RdpAuthenticationPolicyMode authenticationMode);
 
+/**
+ * Whether FreeRDP may fall back to Standard RDP Security (no TLS) on this
+ * attempt. Only the user's explicit choice for this host enables it, and that
+ * choice holds in both the NLA and the TLS-without-NLA modes: a host that only
+ * speaks the old security layer is unreachable in either.
+ */
+bool RdpStandardSecurityEnabled(const RdpTransportSecurityPolicy& policy,
+                                bool userAllowedStandardSecurity);
+
 #endif // RDP_AUTH_MODE_POLICY_H

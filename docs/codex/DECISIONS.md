@@ -184,3 +184,26 @@ KeyVaultService set a master password on, or wipe hosts/keys/TOTP from, the
 real store and can sync that to the cloud. A first run on 2026-10-04 stopped in
 a root `beforeAll` before any test body ran, so no data changed. Behaviour is
 verified with host runs and focused tests instead.
+
+## D-026 - RDP security downgrades need a failed normal path and the user's confirmation
+
+RDP connects with TLS/NLA only. The old Standard RDP Security layer (no TLS,
+used by some bastion hosts and very old Windows) is never chosen by the
+program: it is enabled for one attempt by 「继续连接」 on the preflight sheet,
+or remembered per account × host × route only after the user confirms it,
+either from the preflight sheet's 「记住这台电脑」 or from the connection error
+sheet. The error sheet offers it only when a normal connection failed with a
+negotiation/transport code (0x20006/0x20008/0x2000C/0x2000D) and a
+credential-free X.224 check then reports native code -18 (no negotiation
+data, an RDP selection, or `SSL_NOT_ALLOWED_BY_SERVER`). The choice lives in
+the same local store as legacy TLS and TLS sign-in, is never synced, is
+withdrawn by 「恢复默认安全设置」 and goes with a deleted host; the AI cannot
+enable it. It also holds in TLS-without-NLA mode, which alone can never reach
+such a host.
+
+OpenSSL 3.4.1 is built by `scripts/build_openssl_ohos.sh` with the original
+`no-*` set except `no-des`: FreeRDP needs 3DES when such a server uses the
+FIPS encryption level. OpenSSL 3 has no TLS 3DES suites, so TLS cipher lists
+(SECLEVEL 0/1/2 and `ALL`) are byte-identical to the previous build, libssl
+exports are unchanged and libssh2 (built against `OPENSSL_NO_DES` headers)
+does not offer 3DES; only EVP `des-ede3-cbc` becomes available.

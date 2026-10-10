@@ -16,6 +16,12 @@ export interface RdpSessionErrorDialogModel {
   source: RdpSessionErrorSource;
   /** NLA (CredSSP / NTLM) did not pass: the user may choose TLS sign-in without NLA for this host. */
   suggestTlsWithoutNla?: boolean;
+  /**
+   * The security layer itself could not be agreed on or the server dropped
+   * the TLS/NLA request: worth a credential-free check whether the host only
+   * speaks the old Standard RDP Security layer (bastion hosts, old Windows).
+   */
+  checkStandardSecurity?: boolean;
 }
 
 /** FreeRDP connect errors from the NLA stage: authentication failed, logon failure, security negotiation. */
@@ -23,6 +29,18 @@ const RDP_NLA_FAILURE_CODES: string[] = ['0x20009', '0x20014', '0x2000C'];
 
 export function rdpErrorSuggestsTlsWithoutNla(code: string): boolean {
   return RDP_NLA_FAILURE_CODES.indexOf(code.toUpperCase().replace('0X', '0x')) >= 0;
+}
+
+/**
+ * FreeRDP connect errors a host limited to Standard RDP Security produces when
+ * only TLS/NLA is offered: no security layer agreed, the connection or TLS
+ * handshake refused, or the transport closed. Authentication failures are not
+ * here: they prove TLS/NLA was negotiated.
+ */
+const RDP_STANDARD_SECURITY_SUSPECT_CODES: string[] = ['0x20006', '0x20008', '0x2000C', '0x2000D'];
+
+export function rdpErrorMayNeedStandardSecurity(code: string): boolean {
+  return RDP_STANDARD_SECURITY_SUSPECT_CODES.indexOf(code.toUpperCase().replace('0X', '0x')) >= 0;
 }
 
 function extractBracketedHexCode(text: string, marker: string): string {
@@ -293,7 +311,11 @@ export function rdpSessionErrorFromNativeMessage(message: string, fallbackCode: 
   const source: RdpSessionErrorSource = containsRdpServerErrorInfo(message)
     ? RdpSessionErrorSource.SERVER_ERROR_INFO
     : fallbackSource;
-  return modelForCode(code, source);
+  const model: RdpSessionErrorDialogModel = modelForCode(code, source);
+  if (source === RdpSessionErrorSource.CONNECT_FAILURE && rdpErrorMayNeedStandardSecurity(code)) {
+    model.checkStandardSecurity = true;
+  }
+  return model;
 }
 
 export function rdpNoFrameWatchdogError(): RdpSessionErrorDialogModel {

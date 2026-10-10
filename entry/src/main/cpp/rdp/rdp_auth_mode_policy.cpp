@@ -75,3 +75,8 @@ RdpTransportSecurityPolicy ResolveRdpTransportSecurityPolicy(
     result.requestedProtocols = 0x00000001; // SSL only
     return result;
 }
+
+bool RdpStandardSecurityEnabled(const RdpTransportSecurityPolicy& policy,
+                                bool userAllowedStandardSecurity) {
+    return policy.valid && (policy.rdpSecurity || userAllowedStandardSecurity);
+}

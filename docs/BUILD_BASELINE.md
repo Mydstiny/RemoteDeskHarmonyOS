@@ -30,7 +30,7 @@ $env:OHOS_SDK_HOME='C:\Program Files\Huawei\DevEco Studio\sdk'
 | hvigor | 6.0.0 (`tools\hvigor\bin\hvigorw.js`) |
 | CMake | DevEco SDK 内置 |
 | Rust (OHOS) | aarch64-unknown-linux-ohos / x86_64-unknown-linux-ohos |
-| OpenSSL | 3.4.1 静态链接 (libs/openssl/) |
+| OpenSSL | 3.4.1 静态链接 (libs/openssl/，`scripts/build_openssl_ohos.sh` 可复现构建，含 3DES，见 D-026) |
 | libssh2 | 静态链接 (libs/libssh2/) |
 | FreeRDP | 3.26.1-dev0 (git submodule, 默认 OFF) |
 

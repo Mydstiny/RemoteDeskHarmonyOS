@@ -27,6 +27,8 @@ import {
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldEnableStandardRdpSecurityOnce,
+  rdpProbeRequiresStandardSecurity,
+  rdpStandardSecurityCheckAllowed,
   shouldUseRdpTlsWithoutNla,
   shouldPersistRdpCertificateTrust,
   shouldRequireRdpCertificateConfirmation,
@@ -368,6 +370,19 @@ export default function rdpCertificatePreflightPolicyTest() {
         true, [])).assertFalse();
       expect(shouldEnableStandardRdpSecurityOnce(
         true, ['STANDARD_RDP_SECURITY'])).assertTrue();
+    });
+
+    it('the_check_after_a_failed_connection_only_reads_a_direct_host_and_a_clear_verdict', 0, (): void => {
+      expect(rdpStandardSecurityCheckAllowed('direct_rdp')).assertTrue();
+      expect(rdpStandardSecurityCheckAllowed('transparent_tcp_rdp')).assertTrue();
+      expect(rdpStandardSecurityCheckAllowed('microsoft_rd_gateway')).assertFalse();
+      expect(rdpStandardSecurityCheckAllowed('vendor_https_bastion')).assertFalse();
+      expect(rdpProbeRequiresStandardSecurity(-18)).assertTrue();
+      expect(rdpProbeRequiresStandardSecurity(-19, ['STANDARD_RDP_SECURITY'])).assertTrue();
+      // A reset, a TLS failure or an unreachable host is not a reason to downgrade.
+      expect(rdpProbeRequiresStandardSecurity(-22, ['TLS_PROBE_RESET'])).assertFalse();
+      expect(rdpProbeRequiresStandardSecurity(-12)).assertFalse();
+      expect(rdpProbeRequiresStandardSecurity(0)).assertFalse();
     });
 
     it('tls_without_nla_is_opt_in_direct_password_only', 0, (): void => {

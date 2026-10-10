@@ -32,7 +32,7 @@ import {
   rustDeskQualityVerdictIsFinal,
   rustDeskQualityVerdictMessage
 } from '../services/RustDeskQualityConfirmationPolicy';
-import { CLIPBOARD_AUTHORITY_BUSY, CLIPBOARD_CHANNEL_NOT_NEGOTIATED, CLIPBOARD_NATIVE_REJECTED, CLIPBOARD_READ_PERMISSION_MISSING, CLIPBOARD_START_ERROR, CLIPBOARD_STARTED, RDP_FAILURE_IN_SESSION, RDP_FAILURE_WHILE_CONNECTING, recordRdpAudio, recordRdpDrive, recordRdpFailure, recordSessionClipboard } from '../services/RdpDiagnosticEvents';
+import { CLIPBOARD_AUTHORITY_BUSY, CLIPBOARD_CHANNEL_NOT_NEGOTIATED, CLIPBOARD_NATIVE_REJECTED, CLIPBOARD_READ_PERMISSION_MISSING, CLIPBOARD_START_ERROR, CLIPBOARD_STARTED, RDP_FAILURE_IN_SESSION, RDP_FAILURE_WHILE_CONNECTING, recordRdpAudio, recordRdpDrive, recordRdpFailure, recordRdpStandardSecurityCheck, recordSessionClipboard } from '../services/RdpDiagnosticEvents';
 import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 import {
@@ -181,6 +181,8 @@ import {
 import {
   rdpCertificateRouteIsCurrent,
   rdpCertificatePreflightSkipAllowed,
+  rdpProbeRequiresStandardSecurity,
+  rdpStandardSecurityCheckAllowed,
   shouldUseRdpTlsWithoutNla
 } from '../services/RdpCertificatePreflightPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
@@ -822,7 +824,8 @@ import {
   SessionRdpDrive,
   SessionRdpFileOfferProgress,
   SessionRdpReceivedFileFact,
-  SessionTransferPermissions
+  SessionTransferPermissions,
+  RdpCertificateInfo
 } from '../types/rdpnapi';
 import {
   resolveRustDeskHostEndpoint,
@@ -1445,6 +1448,16 @@ struct RemoteDesktop {
   private rdpConnectionTlsWithoutNlaByHostChoice: boolean = false;
   /** The failed connection used this host's TLS sign-in choice: offer 「恢复 NLA 登录」. */
   @State rdpSessionErrorRestoreNla: boolean = false;
+  /** Whether the current RDP attempt may fall back to the old Standard RDP Security layer. */
+  private rdpConnectionStandardSecurity: boolean = false;
+  /** ...because of this host's remembered choice: a failure offers to restore the default security. */
+  private rdpConnectionStandardSecurityByHostChoice: boolean = false;
+  /** A normal connection failed and a credential-free check found the host only speaks Standard RDP Security. */
+  @State rdpSessionErrorSuggestStandardSecurity: boolean = false;
+  /** The failed connection used this host's Standard RDP Security choice: offer to restore the default. */
+  @State rdpSessionErrorRestoreStandardSecurity: boolean = false;
+  /** Generation of the credential-free check started for the current error sheet. */
+  private rdpStandardSecurityCheckGeneration: number = 0;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
   /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
@@ -14780,6 +14793,15 @@ struct RemoteDesktop {
       host.protocol === 'rdp' && !this.rdpConnectionTlsWithoutNla &&
       shouldUseRdpTlsWithoutNla(true, normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost),
         normalizeRdpAuthMode(host.rdpAuthMode));
+    this.rdpSessionErrorRestoreStandardSecurity = this.rdpConnectionStandardSecurityByHostChoice &&
+      host !== null && host.protocol === 'rdp' && model.source === RdpSessionErrorSource.CONNECT_FAILURE;
+    this.rdpSessionErrorSuggestStandardSecurity = false;
+    this.rdpStandardSecurityCheckGeneration++;
+    if (model.checkStandardSecurity === true && host !== null && host.protocol === 'rdp' &&
+      !this.rdpConnectionStandardSecurity &&
+      rdpStandardSecurityCheckAllowed(normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost))) {
+      this.checkRdpStandardSecurityAfterFailure(host, this.rdpStandardSecurityCheckGeneration);
+    }
     this.rdpSessionErrorBackPending = false;
     this.rdpSessionErrorPendingCleanupReason = cleanupReason;
     void this.applyRdpOrientationPolicy('ERROR');
@@ -14821,6 +14843,77 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '已对这台电脑改用 TLS 登录，请重新连接', duration: 2600 });
       this.closeRdpSessionErrorSheet();
     }).catch((_error: Error): void => {});
+  }
+
+  /**
+   * The normal TLS/NLA connection failed in a way a host limited to the old
+   * Standard RDP Security layer causes. Ask the host, without credentials,
+   * which security layer it offers; only a confirmed answer shows the
+   * downgrade choice, and the user still has to confirm it.
+   */
+  private checkRdpStandardSecurityAfterFailure(host: RemoteHost, generation: number): void {
+    const probeHost: string = this.rdpTransportHostOverride.length > 0 ? this.rdpTransportHostOverride : host.host;
+    const serverName: string = host.customHostname.trim() !== '' ? host.customHostname : host.host;
+    this.loader.probeRdpCertificateAsync(probeHost, host.port, serverName)
+      .then((info: RdpCertificateInfo): void => {
+        if (generation !== this.rdpStandardSecurityCheckGeneration || !this.showRdpSessionErrorSheet ||
+          this.pendingHost === null || this.pendingHost.id !== host.id) {
+          return;
+        }
+        const required: boolean = rdpProbeRequiresStandardSecurity(info.errorCode, info.riskFlags ?? []);
+        recordRdpStandardSecurityCheck(required);
+        if (!required) { return; }
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'RDP host only offers Standard RDP Security host=' + maskHost(host.host));
+        // TLS sign-in cannot help a host that refuses TLS altogether.
+        this.rdpSessionErrorSuggestTls = false;
+        this.rdpSessionErrorSuggestStandardSecurity = true;
+      })
+      .catch((_error: Error): void => {});
+  }
+
+  /**
+   * The user confirms the downgrade to Standard RDP Security for this host:
+   * remembered for this host and route only, revocable here after a failure
+   * and in 「设置 → Windows RDP」, used from the next connection.
+   */
+  private chooseRdpStandardSecurityForHost(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null) { return; }
+    promptAction.showDialog({
+      title: '对这台电脑使用旧版 RDP 安全层？',
+      message: '这台电脑（常见于堡垒机或很旧的 Windows）不接受 TLS，只支持旧版 RDP 安全层。' +
+        '降级后连接不再经过 TLS，无法用证书确认对方身份，加密强度也较低（RC4 或 3DES），' +
+        '账号密码仍在加密通道里传送。只对这台电脑和当前地址生效，' +
+        '可以在连接失败时或「设置 → Windows RDP」里恢复默认。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '降级并记住', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) { return; }
+      const saved: boolean = RdpLegacyTlsConsentStore.getInstance().allowKind(
+        getContext(this) as common.UIAbilityContext, 'standard-rdp-security', host.id, rdpRouteIdentity(host));
+      if (!saved) {
+        promptAction.showToast({ message: '没能保存这个选择，安全设置没有改变', duration: 2600 });
+        return;
+      }
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP Standard RDP Security chosen for host=' + maskHost(host.host));
+      promptAction.showToast({ message: '已对这台电脑启用旧版 RDP 安全层，请重新连接', duration: 2600 });
+      this.closeRdpSessionErrorSheet();
+    }).catch((_error: Error): void => {});
+  }
+
+  /** Withdraw this host's Standard RDP Security choice: the next connection requires TLS again. */
+  private restoreRdpDefaultSecurityForHost(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null) { return; }
+    RdpLegacyTlsConsentStore.getInstance().revokeKind(getContext(this) as common.UIAbilityContext,
+      'standard-rdp-security', host.id, rdpRouteIdentity(host));
+    hilog.info(RD_DOMAIN, RD_TAG, 'RDP default security restored for host=' + maskHost(host.host));
+    promptAction.showToast({ message: '已恢复默认安全设置，请重新连接', duration: 2600 });
+    this.closeRdpSessionErrorSheet();
   }
 
   /** Withdraw this host's TLS sign-in choice: the next connection uses NLA again. */
@@ -16595,8 +16688,15 @@ struct RemoteDesktop {
         rdpTargetAllowHostMismatch = targetIdentityMatches && host.rdpCertificateAllowHostMismatch;
         rdpTargetAllowUnpinnedOnce = transientRouteMatches &&
           this.rdpCertificateAllowUnpinnedOnce;
-        rdpAllowStandardSecurityOnce = transientRouteMatches &&
-          this.rdpAllowStandardSecurityOnce;
+        // The old Standard RDP Security layer: the Continue Once choice from
+        // the preflight sheet, or this host's own choice made after a normal
+        // connection failed (remembered for this host and route only).
+        const hostStandardSecurity: boolean = RdpLegacyTlsConsentStore.getInstance().allowedKind(
+          getContext(this) as common.UIAbilityContext, 'standard-rdp-security', host.id, routeIdentity);
+        rdpAllowStandardSecurityOnce = (transientRouteMatches && this.rdpAllowStandardSecurityOnce) ||
+          hostStandardSecurity;
+        this.rdpConnectionStandardSecurity = rdpAllowStandardSecurityOnce;
+        this.rdpConnectionStandardSecurityByHostChoice = hostStandardSecurity;
         rdpAllowLegacyTls = transientRouteMatches && this.rdpAllowLegacyTls;
         rdpTargetAllowTimeAnomalyOnce = transientRouteMatches &&
           this.rdpCertificateAllowTimeAnomalyOnce;
@@ -26477,6 +26577,45 @@ struct RemoteDesktop {
           .margin({ top: 20 })
           .onClick(() => { this.chooseRdpTlsSignInForHost(); })
       }
+      if (this.rdpSessionErrorRestoreStandardSecurity) {
+        Text('这台电脑之前改用了旧版 RDP 安全层（不走 TLS）。如果它已经支持 TLS，可以恢复默认安全设置后重新连接。')
+          .fontSize(13)
+          .fontColor(this.pal().text2)
+          .lineHeight(19)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ top: 14 })
+        Button('恢复默认安全设置')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .height(48)
+          .width('100%')
+          .backgroundColor(appUiTint(this.accentColor, '1F'))
+          .fontColor(this.accentColor)
+          .borderRadius(14)
+          .margin({ top: 20 })
+          .onClick(() => { this.restoreRdpDefaultSecurityForHost(); })
+      }
+      if (this.rdpSessionErrorSuggestStandardSecurity) {
+        Text('这台电脑（常见于堡垒机或很旧的 Windows）不接受 TLS，只支持旧版 RDP 安全层，所以正常连接失败。' +
+          '可以对这台电脑降级使用旧版安全层：不再经过 TLS，安全性较低，需要你确认。')
+          .fontSize(13)
+          .fontColor(this.pal().text2)
+          .lineHeight(19)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ top: 14 })
+        Button('使用旧版 RDP 安全层')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .height(48)
+          .width('100%')
+          .backgroundColor(appUiTint(this.accentColor, '1F'))
+          .fontColor(this.accentColor)
+          .borderRadius(14)
+          .margin({ top: 20 })
+          .onClick(() => { this.chooseRdpStandardSecurityForHost(); })
+      }
       Button('断开')
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
@@ -26485,7 +26624,8 @@ struct RemoteDesktop {
         .backgroundColor(this.accentColor)
         .fontColor(appUiOnAccentText(this.accentColor))
         .borderRadius(14)
-        .margin({ top: this.rdpSessionErrorSuggestTls || this.rdpSessionErrorRestoreNla ? 10 : 26 })
+        .margin({ top: this.rdpSessionErrorSuggestTls || this.rdpSessionErrorRestoreNla ||
+          this.rdpSessionErrorSuggestStandardSecurity || this.rdpSessionErrorRestoreStandardSecurity ? 10 : 26 })
         .onClick(() => { this.closeRdpSessionErrorSheet(); })
     }
     .width('100%')

@@ -84,6 +84,47 @@ export function recordRdpFailure(message: string, stage: number, elapsedMs: numb
   }
   recordDiagnosticEvent('connection.rdp', 'rdp_failure', 'failed', 0, stage, classified[1],
     Math.max(0, Math.round(elapsedMs)), classified[0]);
+  recordRdpSecurityLayerEvidence(message);
+}
+
+/** rdp_security_layer generation bits. */
+export const RDP_SECURITY_LAYER_ALLOWED: number = 1;
+export const RDP_SECURITY_LAYER_REACHED: number = 2;
+export const RDP_SECURITY_LAYER_CHECK: number = 8;
+
+/**
+ * The native security-layer evidence of a failed connection,
+ * "[RDP-SEC proto=0x0 allowed=1 layer=1 level=4 method=0x10]", as numbers:
+ * code the selected protocol, generation 1 Standard RDP Security allowed +
+ * 2 reached, count the server encryption level, bytes the encryption method.
+ * Null when the message carries no such evidence.
+ */
+export function rdpSecurityLayerEvidence(message: string): number[] | null {
+  const match: RegExpMatchArray | null = message.match(new RegExp(
+    '\\[RDP-SEC proto=0x([0-9a-fA-F]{1,8}) allowed=([01]) layer=([01]) level=([0-9]{1,10}) method=0x([0-9a-fA-F]{1,8})\\]'));
+  if (match === null || match.length < 6) { return null; }
+  const values: number[] = [parseInt(match[1], 16), parseInt(match[4], 10), parseInt(match[5], 16)];
+  if (values.some((value: number): boolean => !Number.isSafeInteger(value))) { return null; }
+  const flags: number = (match[2] === '1' ? RDP_SECURITY_LAYER_ALLOWED : 0) +
+    (match[3] === '1' ? RDP_SECURITY_LAYER_REACHED : 0);
+  return [values[0], flags, values[1], values[2]];
+}
+
+function recordRdpSecurityLayerEvidence(message: string): void {
+  const evidence: number[] | null = rdpSecurityLayerEvidence(message);
+  if (evidence === null) { return; }
+  recordDiagnosticEvent('connection.rdp', 'rdp_security_layer', 'failed', 0, evidence[1], evidence[0], 0,
+    evidence[2], evidence[3]);
+}
+
+/**
+ * After a normal connection failed, the credential-free check of the host's
+ * security layer: succeeded when it only speaks Standard RDP Security (the
+ * downgrade choice is then offered), skipped when it does not.
+ */
+export function recordRdpStandardSecurityCheck(required: boolean): void {
+  recordDiagnosticEvent('connection.rdp', 'rdp_security_layer', required ? 'succeeded' : 'skipped', 0,
+    RDP_SECURITY_LAYER_CHECK, required ? -18 : 0);
 }
 
 /** rdp_certificate code: what the user did with the certificate sheet. */

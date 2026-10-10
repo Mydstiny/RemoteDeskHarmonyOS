@@ -10,7 +10,8 @@ import {
   RdpSessionErrorSource,
   shouldCleanupRdpSessionBeforeErrorDismiss,
   shouldShowRdpSessionErrorAfterControlPanelDismiss,
-  rdpErrorSuggestsTlsWithoutNla
+  rdpErrorSuggestsTlsWithoutNla,
+  rdpErrorMayNeedStandardSecurity
 } from '../main/ets/services/RdpSessionErrorPolicy';
 
 export default function rdpSessionErrorPolicyTest() {
@@ -187,6 +188,29 @@ export default function rdpSessionErrorPolicyTest() {
       expect(rdpErrorSuggestsTlsWithoutNla('0x2000c')).assertTrue();
       expect(rdpErrorSuggestsTlsWithoutNla('0x20008')).assertFalse();
       expect(rdpErrorSuggestsTlsWithoutNla('0x10')).assertFalse();
+    });
+
+    it('checks_for_the_old_security_layer_only_after_a_negotiation_or_transport_failure', 0, (): void => {
+      expect(rdpErrorMayNeedStandardSecurity('0x2000C')).assertTrue();
+      expect(rdpErrorMayNeedStandardSecurity('0x2000d')).assertTrue();
+      expect(rdpErrorMayNeedStandardSecurity('0x20006')).assertTrue();
+      expect(rdpErrorMayNeedStandardSecurity('0x20008')).assertTrue();
+      // Authentication failures prove TLS/NLA was negotiated.
+      expect(rdpErrorMayNeedStandardSecurity('0x20009')).assertFalse();
+      expect(rdpErrorMayNeedStandardSecurity('0x20014')).assertFalse();
+      const nego = rdpSessionErrorFromNativeMessage(
+        'FreeRDP 连接错误: ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED [E-CONN-0x0002000C]' +
+          ' [RDP-SEC proto=0x0 allowed=0 layer=0 level=0 method=0x0]',
+        RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(nego.code).assertEqual('0x2000C');
+      expect(nego.checkStandardSecurity === true).assertTrue();
+      const logon = rdpSessionErrorFromNativeMessage(
+        'FreeRDP 连接错误: ERRCONNECT_LOGON_FAILURE [E-CONN-0x00020014]', RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(logon.checkStandardSecurity === true).assertFalse();
+      const inSession = rdpSessionErrorFromNativeMessage(
+        'FreeRDP 连接错误: ERRCONNECT_CONNECT_TRANSPORT_FAILED [E-CONN-0x0002000D]',
+        RDP_SESSION_END_UNCLASSIFIED, RdpSessionErrorSource.TRANSPORT_FAILURE);
+      expect(inSession.checkStandardSecurity === true).assertFalse();
     });
   });
 }

@@ -569,7 +569,7 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-09-v30$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-10-v31$/);
   const guide = kb.aiAppGuide();
   for (const words of ['Pi（Pi 编程代理，9445', 'pi-gui', '全部项目（含电脑 App 里的项目）', '修改前询问', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {
@@ -819,12 +819,13 @@ test('the log the AI reads names RDP name lookup, security choices and the orien
   const glossary = load(D + 'DiagnosticAiEventGlossary').diagnosticAiEventGlossary();
   const facets = load('services/DiagnosticCaptureFacetPolicy');
   const capture = load('services/DiagnosticCapturePolicy');
-  for (const [code, facet] of [['rdp_name_resolution', 'rdp.connect'], ['rdp_security_choice', 'rdp.security']]) {
+  for (const [code, facet] of [['rdp_name_resolution', 'rdp.connect'], ['rdp_security_choice', 'rdp.security'],
+    ['rdp_security_layer', 'rdp.security']]) {
     assert.ok(capture.diagnosticEventIsAllowed('connection.rdp', code), code + ' is in the catalog');
     assert.ok(facets.diagnosticEventInFacets('connection.rdp', code, [facet]), code + ' belongs to ' + facet);
     assert.ok(glossary.includes(code + '：'), code + ' is explained');
   }
-  assert.equal(capture.DIAGNOSTIC_EVENT_CATALOG_VERSION, 4);
+  assert.equal(capture.DIAGNOSTIC_EVENT_CATALOG_VERSION, 5);
   for (const words of ['orientationSelfTests', 'appliedOrientation', 'orientationCorrection', '3 上下颠倒', 'count 1 表示这台电脑只接受旧版 TLS',
     '在纹理空间纠正时再加 256']) {
     assert.ok(glossary.includes(words), 'the glossary explains ' + words);
