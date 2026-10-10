@@ -1461,6 +1461,10 @@ struct RemoteDesktop {
   private rdpStandardSecurityCheckGeneration: number = 0;
   /** The address the current RDP attempt connected to (kept past cleanup for the security-layer check). */
   private rdpConnectionTransportHost: string = '';
+  /** The current RDP attempt carried a pinned TLS certificate for the target. */
+  private rdpConnectionTargetPinned: boolean = false;
+  /** A pinned host now only answers with the old security layer: warn instead of offering the downgrade. */
+  @State rdpSessionErrorStandardSecurityPinned: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
   /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
@@ -14800,6 +14804,7 @@ struct RemoteDesktop {
     this.rdpSessionErrorRestoreStandardSecurity = this.rdpConnectionStandardSecurityByHostChoice &&
       host !== null && host.protocol === 'rdp' && model.source === RdpSessionErrorSource.CONNECT_FAILURE;
     this.rdpSessionErrorSuggestStandardSecurity = false;
+    this.rdpSessionErrorStandardSecurityPinned = false;
     this.rdpStandardSecurityCheckGeneration++;
     if (model.checkStandardSecurity === true && host !== null && host.protocol === 'rdp' &&
       !this.rdpConnectionStandardSecurity &&
@@ -14859,6 +14864,7 @@ struct RemoteDesktop {
   private checkRdpStandardSecurityAfterFailure(host: RemoteHost, generation: number): void {
     const probeHost: string = this.rdpConnectionTransportHost.length > 0 ? this.rdpConnectionTransportHost : host.host;
     const serverName: string = host.customHostname.trim() !== '' ? host.customHostname : host.host;
+    const pinned: boolean = this.rdpConnectionTargetPinned;
     this.loader.probeRdpCertificateAsync(probeHost, host.port, serverName)
       .then((info: RdpCertificateInfo): void => {
         // The sheet may still be waiting for the control panel to close.
@@ -14874,6 +14880,12 @@ struct RemoteDesktop {
           'RDP host only offers Standard RDP Security host=' + maskHost(host.host));
         // TLS sign-in cannot help a host that refuses TLS altogether.
         this.rdpSessionErrorSuggestTls = false;
+        if (pinned) {
+          // A host that once showed a pinned TLS certificate now refuses TLS:
+          // possibly an impostor. The downgrade is not offered here.
+          this.rdpSessionErrorStandardSecurityPinned = true;
+          return;
+        }
         this.rdpSessionErrorSuggestStandardSecurity = true;
       })
       .catch((_error: Error): void => {});
@@ -14961,8 +14973,10 @@ struct RemoteDesktop {
       this.keepKeyboardAfterSheetClose = false;
     }
     if (this.rdpSessionErrorPendingAfterControlPanel) {
-      this.rdpSessionErrorPendingAfterControlPanel = false;
       setTimeout((): void => {
+        // Cleared only once the sheet is up, so a security-layer check that
+        // finishes in between still finds the error pending.
+        this.rdpSessionErrorPendingAfterControlPanel = false;
         void this.applyRdpOrientationPolicy('ERROR');
         this.showRdpSessionErrorSheet = true;
       }, 60);
@@ -16709,6 +16723,7 @@ struct RemoteDesktop {
           hostStandardSecurity;
         this.rdpConnectionStandardSecurity = rdpAllowStandardSecurityOnce;
         this.rdpConnectionStandardSecurityByHostChoice = hostStandardSecurity;
+        this.rdpConnectionTargetPinned = expectedRdpTargetFingerprint !== '';
         rdpAllowLegacyTls = transientRouteMatches && this.rdpAllowLegacyTls;
         rdpTargetAllowTimeAnomalyOnce = transientRouteMatches &&
           this.rdpCertificateAllowTimeAnomalyOnce;
@@ -26611,6 +26626,16 @@ struct RemoteDesktop {
           .borderRadius(14)
           .margin({ top: 20 })
           .onClick(() => { this.restoreRdpDefaultSecurityForHost(); })
+      }
+      if (this.rdpSessionErrorStandardSecurityPinned) {
+        Text('这台电脑之前用 TLS 证书确认过身份，现在却只回应不带 TLS 的旧版 RDP 安全层，可能有人冒充它。' +
+          '若确认已更换为堡垒机或旧系统，请先到「设置 → RDP 证书信任」里忘记它的证书，再重新连接。')
+          .fontSize(13)
+          .fontColor(this.pal().danger)
+          .lineHeight(19)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ top: 14 })
       }
       if (this.rdpSessionErrorSuggestStandardSecurity) {
         Text('这台电脑（常见于堡垒机或很旧的 Windows）不接受 TLS，只支持旧版 RDP 安全层，所以正常连接失败。' +

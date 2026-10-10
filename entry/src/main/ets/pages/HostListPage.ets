@@ -9748,6 +9748,12 @@ struct HostListPage {
           info.errorMessage || '无法完整读取 RDP 主机证书';
         this.rdpCertificateWarning = rdpPreflightStatusLabel(routeResult.preflightStatus) +
           '：' + diagnosticMessage + ' 最终是否继续由你决定。';
+        if (rdpCertificateEffectiveRiskFlags(routeResult.targetRiskFlags, routeResult.riskFlags)
+          .indexOf('STANDARD_RDP_SECURITY') >= 0 &&
+          this.rdpRouteHasPinnedCertificate(host, routeResult.routeIdentity)) {
+          this.rdpCertificateWarning += ' 注意：这台电脑之前用 TLS 证书确认过身份，现在却不提供 TLS，可能有人冒充它；' +
+            '若确认已更换为堡垒机或旧系统，请先到「设置 → RDP 证书信任」里忘记它的证书。';
+        }
         if (!this.showRdpCertificatePreflight) {
           this.openSheetSafely((): void => {
             this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -10138,9 +10144,14 @@ struct HostListPage {
     }
   }
 
+  private rdpRouteHasPinnedCertificate(host: RemoteHost, routeIdentity: string): boolean {
+    return rdpCertificateRouteIsCurrent(host.rdpCertificateRouteIdentity, routeIdentity) &&
+      host.rdpCertificateFingerprintSha256.trim() !== '';
+  }
+
   /** A remembered Standard RDP Security choice that may skip the sheet: never for a route with a pinned certificate. */
   private rdpStandardSecuritySkipsSheet(host: RemoteHost, routeIdentity: string, riskFlags: string[]): boolean {
-    const pinned: string = rdpCertificateRouteIsCurrent(host.rdpCertificateRouteIdentity, routeIdentity) ?
+    const pinned: string = this.rdpRouteHasPinnedCertificate(host, routeIdentity) ?
       host.rdpCertificateFingerprintSha256 : '';
     return rdpRememberedStandardSecurityApplies(
       this.rdpStandardSecurityRemembered(host, routeIdentity, riskFlags), pinned);
@@ -10151,6 +10162,12 @@ struct HostListPage {
     const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
     if (result === null || result.endpointMode === 'microsoft_rd_gateway' ||
       (this.rdpCertificateInfo !== null && this.rdpCertificateInfo.fingerprintSha256.trim() !== '')) {
+      return false;
+    }
+    // A route with a pinned TLS certificate is never remembered as using the
+    // old layer: only 「继续连接」 (this once) stays available there.
+    const host: RemoteHost | undefined = this.srv.getHost(this.rdpCertificateHostId);
+    if (host === undefined || this.rdpRouteHasPinnedCertificate(host, result.routeIdentity)) {
       return false;
     }
     return rdpCertificateEffectiveRiskFlags(result.targetRiskFlags, result.riskFlags)

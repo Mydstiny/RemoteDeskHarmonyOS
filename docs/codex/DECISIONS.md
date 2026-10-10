@@ -212,4 +212,7 @@ DES-EDE3-CBC`, PKCS#8/PKCS#12), which SSH key import now reads instead of
 reporting a wrong passphrase. A remembered Standard RDP Security choice never
 applies to a route with a pinned TLS certificate, and trusting a TLS
 certificate for the route withdraws it, so an attacker answering without TLS
-cannot bypass the pin.
+cannot bypass the pin. On such a route the downgrade is not offered to be
+remembered at all: the sheet keeps only 「继续连接」 (this once) and both the
+sheet and the error screen warn of a possible impostor, pointing to
+「设置 → RDP 证书信任」 to forget the certificate if the host really changed.
