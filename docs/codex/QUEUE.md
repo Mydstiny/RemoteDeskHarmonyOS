@@ -75,6 +75,8 @@ Updated: 2026-10-04 Asia/Shanghai
 
 ## Later
 
+- PC 会话控制（[计划](plans/2026-10-10-pc-session-controls-plan.md)，2026-10-10 用户决定等鸿蒙 PC 真机再推进）：四指切换为系统行为、应用层无法实现，待真机确认；会话内隐藏顶栏开关 + Ctrl+Alt+G 远程菜单需一起做；3 个范围问题待用户决定。
+
 0. Add a controllable Moonlight ProductStreaming accepted-to-active synchronous terminal barrier regression.
 1. Extend network diagnostics from configured/candidate IP family facts to the resolver's actual winning family, owner and sanitized fallback stage.
 2. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.
