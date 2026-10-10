@@ -26666,7 +26666,8 @@ struct RemoteDesktop {
         .fontColor(appUiOnAccentText(this.accentColor))
         .borderRadius(14)
         .margin({ top: this.rdpSessionErrorSuggestTls || this.rdpSessionErrorRestoreNla ||
-          this.rdpSessionErrorSuggestStandardSecurity || this.rdpSessionErrorRestoreStandardSecurity ? 10 : 26 })
+          this.rdpSessionErrorSuggestStandardSecurity || this.rdpSessionErrorRestoreStandardSecurity ? 10 :
+          (this.rdpSessionErrorStandardSecurityPinned ? 20 : 26) })
         .onClick(() => { this.closeRdpSessionErrorSheet(); })
     }
     .width('100%')
